@@ -73,6 +73,8 @@ pub struct Context {
     col: u32,
     indent: u32,
     no_text: bool,
+    /// Newlines are not allowed
+    flat: bool,
 }
 
 pub(crate) struct Layout {
@@ -194,6 +196,7 @@ impl<'a> Resolver<'a> {
                 col: 0,
                 indent: 0,
                 no_text: false,
+                flat: false,
             },
             self.root,
         );
@@ -227,6 +230,7 @@ impl<'a> Resolver<'a> {
             DocNode::Text(text) => {
                 resolve_text(text.as_str())
             }
+            DocNode::Newline if ctx.flat => LayoutSet::empty(),
             DocNode::Newline => LayoutSet::single(Layout {
                 measure: Measure {
                     last: ctx.indent,
@@ -259,6 +263,7 @@ impl<'a> Resolver<'a> {
                             col: layout1.measure.last,
                             indent: ctx.indent,
                             no_text: ctx.no_text,
+                            flat: ctx.flat,
                         },
                         *doc2,
                     );
@@ -274,6 +279,7 @@ impl<'a> Resolver<'a> {
                 }
                 out
             }
+            DocNode::Flat(doc) => self.resolve(Context { flat: true, ..ctx }, *doc),
             DocNode::Alt(doc1, doc2) => {
                 let la = self.resolve(ctx, *doc1);
                 let lb = self.resolve(ctx, *doc2);
