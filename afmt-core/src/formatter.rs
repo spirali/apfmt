@@ -9,6 +9,7 @@ use ra_ap_syntax::{ast, PreorderWithTokens, RustLanguage, SyntaxElement, SyntaxK
 use ra_ap_syntax::ast::{ArgList, BlockExpr, CallExpr, Comment, Expr, HasArgList, HasModuleItem, HasName, Item, Literal, Name, Path, PathExpr, PathSegment, Stmt, StmtList, Fn as AstFn, ParamList};
 use crate::formatter::Edge::{Break, BraceClose, BraceOpen, Close, Comma, Nothing, Open, Operator, Tight, Word};
 use smallvec::{SmallVec, smallvec};
+use crate::comments::{multiline_comment_doc, normalize_block_comment};
 
 pub(crate) struct Formatter<'a> {
     doc_arena: RefCell<DocArena>,
@@ -156,6 +157,17 @@ impl<'a> Formatter<'a> {
         Resolver::new(self.doc_arena.into_inner(), self.config, root)
     }
 
+    fn comment_doc(&self, token: &SyntaxToken) -> DocId {
+        if let Some(doc_id) = multiline_comment_doc(self, token) {
+            return doc_id;
+        }
+        let normalized = self.config.normalize_comments.then(|| normalize_block_comment(token.text())).flatten();
+        self.make_node(match normalized {
+            Some(text) => DocNode::Text(text),
+            None => DocNode::Token(token.clone()),
+        })
+    }
+
     pub fn simple_length_doc(&self, doc_id: DocId) -> Option<usize> {
         match self.doc_arena.borrow().get_node(doc_id) {
             DocNode::Token(token) => Some(unicode_width::UnicodeWidthStr::width(token.text())),
@@ -259,22 +271,6 @@ impl Default for Frag {
 
 fn count_newlines(token: &SyntaxToken) -> u32 {
     token.text().bytes().filter(|c| *c == b'\n').count() as u32
-}
-
-/// Puts a single space after the opening and before the closing sigil of a single-line
-/// block comment (`/*a*/` -> `/* a */`). Returns `None` when the text stays as it is.
-/// Doc comments and empty comments are left alone.
-fn normalize_block_comment(text: &str) -> Option<String> {
-    let inner = text.strip_prefix("/*")?.strip_suffix("*/")?;
-    if inner.contains('\n') || inner.starts_with('*') || inner.starts_with('!') {
-        return None;
-    }
-    let trimmed = inner.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    let normalized = format!("/* {trimmed} */");
-    (normalized != text).then_some(normalized)
 }
 
 fn compute_space(left: Edge, right: Edge) -> DocId {
@@ -429,11 +425,7 @@ impl<'a> Builder<'a> {
                         self.push_line_break_if(NEWLINE_DOC, |end| end != Nothing);
                     }
                     let end = if token.text().starts_with("//") { Break } else { Word };
-                    let normalized = self.fmt.config.normalize_comments.then(|| normalize_block_comment(token.text())).flatten();
-                    let doc_id = self.fmt.make_node(match normalized {
-                        Some(text) => DocNode::Text(text),
-                        None => DocNode::Token(token.clone()),
-                    });
+                    let doc_id = self.fmt.comment_doc(&token);
                     self.push(Frag::new(doc_id, Word, end, None));
                     cursor = token.clone();
                 }

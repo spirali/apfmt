@@ -6,6 +6,7 @@ mod measure;
 mod resolver;
 mod format;
 mod list;
+mod comments;
 
 pub use crate::config::Config;
 use crate::formatter::{Formatter};
