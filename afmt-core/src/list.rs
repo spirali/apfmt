@@ -8,11 +8,8 @@ pub(crate) fn list_comma_separated(fmt: &Formatter, frags: &[Frag]) -> Frag {
     for (i, frag) in frags.iter().enumerate() {
         builder.push(frag.clone());
         // No trailing comma, but the source one and its comments still have to be consumed
-        if i + 1 < frags.len() {
-            builder.push_delimiter(SyntaxKind::COMMA);
-        } else {
-            builder.skip_delimiter(SyntaxKind::COMMA);
-        }
+        let emit = i + 1 < frags.len();
+        builder.consume_delimiter(SyntaxKind::COMMA, emit);
     }
     builder.flush_trivia(false);
     // A line comment ends the line inside the list, so `Flat` rejects such a layout

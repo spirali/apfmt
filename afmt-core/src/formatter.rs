@@ -198,6 +198,7 @@ impl<'a> Formatter<'a> {
 pub enum Edge {
     Nothing,
     Word,
+    Keyword,   // let — always followed by a space
     Open,      // ( [ {
     Close,     // ) ] }
     BraceOpen,  // { of a block or struct literal
@@ -267,9 +268,11 @@ fn compute_space(left: Edge, right: Edge) -> DocId {
         (Nothing, _) | (_, Nothing) => EMPTY_DOC,
         (BraceOpen, BraceClose)     => EMPTY_DOC,   // {}
         (_, Comma)                  => EMPTY_DOC,   // x,
+        (Comma, Close)              => EMPTY_DOC,   // (x,)
         (Comma, _)                  => SPACE_DOC,    // , x
         (BraceOpen, _) | (_, BraceClose) => SPACE_DOC, // { x }
         (Open, _) | (_, Close)      => EMPTY_DOC,   // (x)
+        (Keyword, _)                => SPACE_DOC,    // let (a, b)  let &x
         (Tight, _) | (_, Tight)     => EMPTY_DOC,   // a.b  a::b  &x
         (_, BraceOpen)              => SPACE_DOC,    // f() {
         (Operator, _) | (_, Operator) => SPACE_DOC,  // a + b
@@ -463,7 +466,7 @@ impl<'a> Builder<'a> {
 
     /// Consumes the source delimiter `kind` after the cursor (if there is one) together with
     /// the comments around it; the comments are placed after the delimiter
-    fn consume_delimiter(&mut self, kind: SyntaxKind, emit: bool) {
+    pub fn consume_delimiter(&mut self, kind: SyntaxKind, emit: bool) {
         let token = self.frag.token.take();
         if emit {
             let doc_id = match kind {

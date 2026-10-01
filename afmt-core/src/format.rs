@@ -1,9 +1,9 @@
 use ra_ap_syntax::{ast, PreorderWithTokens, RustLanguage, SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken, WalkEvent, AstNode, SourceFile, Direction};
-use ra_ap_syntax::ast::{ArgList, BlockExpr, CallExpr, Expr, Literal, Name, ParamList, Path, PathExpr, Stmt, StmtList, Fn as AstFn, Item, HasArgList, HasName, HasModuleItem};
+use ra_ap_syntax::ast::{ArgList, BlockExpr, CallExpr, Expr, IdentPat, LetStmt, Literal, Name, ParamList, Pat, Path, PathExpr, RefType, Stmt, StmtList, TuplePat, Type, Fn as AstFn, Item, HasArgList, HasName, HasModuleItem};
 use crate::doc::{DocId, DocNode, NEWLINE_DOC, NEWLINE_OR_SPACE_DOC};
 use crate::formatter::{Branch, Edge, Formatter, Frag, Builder};
 use crate::list::{list_comma_separated, list_nl_separated};
-use super::formatter::Edge::{BraceClose, BraceOpen, Close, Nothing, Open, Word};
+use super::formatter::Edge::{BraceClose, BraceOpen, Close, Comma, Keyword, Nothing, Open, Operator, Tight, Word};
 
 
 fn format_path_expr(fmt: &Formatter, path_expr: PathExpr) -> Frag {
@@ -21,6 +21,11 @@ fn format_token(fmt: &Formatter, token: SyntaxToken, edge: Edge) -> Frag {
 
 fn format_name(fmt: &Formatter, name: Name) -> Frag {
     format_token(fmt, name.ident_token().unwrap(), Word)
+}
+
+/// Keyword that is always followed by a space, e.g. `let (a, b)`
+fn format_keyword(fmt: &Formatter, token: SyntaxToken) -> Frag {
+    Frag::new(fmt.make_node(DocNode::Token(token.clone())), Word, Keyword, Some(token))
 }
 
 /// Formats just the token; the caller is responsible for the tokens that follow it
@@ -81,6 +86,100 @@ fn format_expr(fmt: &Formatter, expr: Expr) -> Frag {
     }
 }
 
+fn format_ident_pat(fmt: &Formatter, pat: IdentPat) -> Frag {
+    let mut builder = Builder::new(fmt);
+    if let Some(token) = pat.ref_token() {
+        builder.push(format_token(fmt, token, Word));
+    }
+    if let Some(token) = pat.mut_token() {
+        builder.push(format_token(fmt, token, Word));
+    }
+    builder.push(format_name(fmt, pat.name().unwrap()));
+    if let Some(token) = pat.at_token() {
+        builder.push(format_token(fmt, token, Operator));
+        builder.push(format_pat(fmt, pat.pat().unwrap()));
+    }
+    builder.finish_node(pat.syntax())
+}
+
+fn format_tuple_pat(fmt: &Formatter, pat: TuplePat) -> Frag {
+    let mut builder = Builder::new(fmt);
+    builder.push(format_token(fmt, pat.l_paren_token().unwrap(), Open));
+    let fields = pat.fields().map(|p| format_pat(fmt, p)).collect::<Vec<Frag>>();
+    if fields.len() == 1 {
+        // `(a,)` is a tuple, `(a)` is just a parenthesized pattern
+        builder.push(fields[0].clone());
+        builder.push_delimiter(SyntaxKind::COMMA);
+    } else {
+        builder.push(list_comma_separated(fmt, &fields));
+    }
+    builder.push(format_token(fmt, pat.r_paren_token().unwrap(), Close));
+    builder.finish_node(pat.syntax())
+}
+
+fn format_pat(fmt: &Formatter, pat: Pat) -> Frag {
+    match pat {
+        Pat::IdentPat(pat) => format_ident_pat(fmt, pat),
+        Pat::WildcardPat(pat) => format_token(fmt, pat.underscore_token().unwrap(), Word),
+        Pat::TuplePat(pat) => format_tuple_pat(fmt, pat),
+        x => {
+            panic!("{x:?}")
+        }
+    }
+}
+
+fn format_ref_type(fmt: &Formatter, ty: RefType) -> Frag {
+    let mut builder = Builder::new(fmt);
+    builder.push(format_token(fmt, ty.amp_token().unwrap(), Tight));
+    if let Some(lifetime) = ty.lifetime() {
+        builder.push(format_token(fmt, lifetime.lifetime_ident_token().unwrap(), Word));
+    }
+    if let Some(token) = ty.mut_token() {
+        builder.push(format_token(fmt, token, Word));
+    }
+    builder.push(format_type(fmt, ty.ty().unwrap()));
+    builder.finish_node(ty.syntax())
+}
+
+fn format_type(fmt: &Formatter, ty: Type) -> Frag {
+    match ty {
+        Type::PathType(ty) => format_path(fmt, ty.path().unwrap()),
+        Type::RefType(ty) => format_ref_type(fmt, ty),
+        x => {
+            panic!("{x:?}")
+        }
+    }
+}
+
+fn format_assign_rhs(fmt: &Formatter, rhs: Frag) -> Frag {
+    let next_line = fmt.map_branches(rhs.clone(), |b| Branch {
+        start: Nothing,
+        doc_id: fmt.concat(NEWLINE_DOC, b.doc_id),
+        ..b
+    });
+    fmt.alt_frag(rhs, fmt.nest(next_line))
+}
+
+fn format_let_stmt(fmt: &Formatter, stmt: LetStmt) -> Frag {
+    let mut builder = Builder::new(fmt);
+    builder.push(format_keyword(fmt, stmt.let_token().unwrap()));
+    builder.push(format_pat(fmt, stmt.pat().unwrap()));
+    if let Some(ty) = stmt.ty() {
+        builder.push(format_token(fmt, stmt.colon_token().unwrap(), Comma));
+        builder.push(format_type(fmt, ty));
+    }
+    if let Some(init) = stmt.initializer() {
+        builder.push(format_token(fmt, stmt.eq_token().unwrap(), Operator));
+        builder.push(format_assign_rhs(fmt, format_expr(fmt, init)));
+    }
+    if let Some(let_else) = stmt.let_else() {
+        builder.push(format_token(fmt, let_else.else_token().unwrap(), Word));
+        builder.push(format_block_expr(fmt, let_else.block_expr().unwrap()));
+    }
+    builder.push_delimiter(SyntaxKind::SEMICOLON);
+    builder.finish_node(stmt.syntax())
+}
+
 fn format_stmt(fmt: &Formatter, stmt: Stmt) -> Frag {
     match stmt {
         Stmt::ExprStmt(expr) => {
@@ -93,9 +192,7 @@ fn format_stmt(fmt: &Formatter, stmt: Stmt) -> Frag {
         Stmt::Item(_) => {
             todo!()
         }
-        Stmt::LetStmt(_) => {
-            todo!()
-        }
+        Stmt::LetStmt(stmt) => format_let_stmt(fmt, stmt),
     }
 }
 
@@ -118,6 +215,12 @@ fn format_stmt_list(fmt: &Formatter, stmt_list: StmtList) -> Frag {
             builder.ensure_newline();
         }
         builder.push(format_stmt(fmt, child));
+    }
+    if let Some(expr) = stmt_list.tail_expr() {
+        if !builder.is_empty() {
+            builder.ensure_newline();
+        }
+        builder.push(format_expr(fmt, expr));
     }
 
     // Blank lines before `}` are dropped
