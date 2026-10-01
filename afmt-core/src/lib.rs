@@ -68,3 +68,23 @@ pub fn format_source_code(config: &Config, code: &str) -> Result<String, Vec<Syn
     let out = fmt.into_resolver(doc).render(code.len() * 2);
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_comments() {
+        let code = "fn/*a*/f() { g(/**/ 1 /*  b  */, /** c*/ 2); }";
+        let config = Config::default();
+        assert_eq!(
+            format_source_code(&config, code).unwrap(),
+            "fn /* a */ f() {\n    g(/**/ 1, /* b */ /** c*/ 2);\n}"
+        );
+        let config = Config { normalize_comments: false, ..Config::default() };
+        assert_eq!(
+            format_source_code(&config, code).unwrap(),
+            "fn /*a*/ f() {\n    g(/**/ 1, /*  b  */ /** c*/ 2);\n}"
+        );
+    }
+}

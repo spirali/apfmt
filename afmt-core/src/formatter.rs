@@ -261,6 +261,22 @@ fn count_newlines(token: &SyntaxToken) -> u32 {
     token.text().bytes().filter(|c| *c == b'\n').count() as u32
 }
 
+/// Puts a single space after the opening and before the closing sigil of a single-line
+/// block comment (`/*a*/` -> `/* a */`). Returns `None` when the text stays as it is.
+/// Doc comments and empty comments are left alone.
+fn normalize_block_comment(text: &str) -> Option<String> {
+    let inner = text.strip_prefix("/*")?.strip_suffix("*/")?;
+    if inner.contains('\n') || inner.starts_with('*') || inner.starts_with('!') {
+        return None;
+    }
+    let trimmed = inner.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let normalized = format!("/* {trimmed} */");
+    (normalized != text).then_some(normalized)
+}
+
 fn compute_space(left: Edge, right: Edge) -> DocId {
     use Edge::*;
     match (left, right) {
@@ -413,7 +429,11 @@ impl<'a> Builder<'a> {
                         self.push_line_break_if(NEWLINE_DOC, |end| end != Nothing);
                     }
                     let end = if token.text().starts_with("//") { Break } else { Word };
-                    let doc_id = self.fmt.make_node(DocNode::Token(token.clone()));
+                    let normalized = self.fmt.config.normalize_comments.then(|| normalize_block_comment(token.text())).flatten();
+                    let doc_id = self.fmt.make_node(match normalized {
+                        Some(text) => DocNode::Text(text),
+                        None => DocNode::Token(token.clone()),
+                    });
                     self.push(Frag::new(doc_id, Word, end, None));
                     cursor = token.clone();
                 }
