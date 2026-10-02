@@ -18,6 +18,7 @@ Usage:
   uv run tests/run.py basic            # only tests whose path contains "basic"
   uv run tests/run.py 'basic/*main*'   # glob filters are supported too
   uv run tests/run.py --list           # list tests
+  uv run tests/run.py -v basic         # for failures also print input, afmt and reference output
 """
 
 import argparse
@@ -38,6 +39,7 @@ from rich.progress import (
     TextColumn,
     TimeElapsedColumn,
 )
+from rich.syntax import Syntax
 from rich.text import Text
 
 EXPECTED_SUFFIX = ".expected.rs"
@@ -109,12 +111,16 @@ def make_diff(expected: str, actual: str, a_name: str, b_name: str) -> list[str]
     )
 
 
+def expected_path_for(source: Path) -> Path:
+    return source.with_name(source.name.removesuffix(".rs") + EXPECTED_SUFFIX)
+
+
 def run_test(source: Path, args) -> Result:
     name = source.relative_to(SOURCES_DIR).as_posix()
     result = Result(name, CURRENT_DIR / name.removesuffix(".rs"))
     result.outputs["input.rs"] = code = source.read_text()
 
-    expected_path = source.with_name(source.name.removesuffix(".rs") + EXPECTED_SUFFIX)
+    expected_path = expected_path_for(source)
     if expected_path.exists():
         expected_name = "expected.rs"
         expected = expected_path.read_text()
@@ -195,8 +201,18 @@ def print_diff(lines: list[str], max_lines: int) -> None:
         console.print(f"[dim]... {len(lines) - len(shown)} more diff lines[/dim]")
 
 
-def report_failure(result: Result, max_diff_lines: int) -> None:
+def print_source(title: str, code: str) -> None:
+    console.print(f"[bold]{title}:[/bold]", highlight=False)
+    console.print(Syntax(code, "rust", line_numbers=True, theme="ansi_dark", word_wrap=False))
+
+REPORT_ORDER = ("input.rs", "afmt.rs", "expected.rs", "rustfmt.rs", "afmt2.rs")
+
+def report_failure(result: Result, max_diff_lines: int, verbose: bool) -> None:
     console.rule(f"[bold red]FAIL[/bold red] {result.name}", align="left")
+    if verbose:
+        for filename in REPORT_ORDER:
+            if filename in result.outputs:
+                print_source(filename, result.outputs[filename])
     for f in result.failures:
         console.print(f"[bold red]{f.kind}[/bold red]: {f.message}", highlight=False)
         if f.diff:
@@ -246,6 +262,12 @@ def main() -> None:
         "the given substring or matches the given glob",
     )
     parser.add_argument("--list", action="store_true", help="list selected tests and exit")
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="for failed tests print input, afmt output and reference output before the diff",
+    )
     parser.add_argument("--afmt", type=Path, help=f"afmt binary (default: {DEFAULT_AFMT})")
     parser.add_argument("--rustfmt", default="rustfmt", help="rustfmt binary")
     parser.add_argument("--edition", default="2024", help="edition passed to rustfmt")
@@ -260,8 +282,14 @@ def main() -> None:
 
     sources = collect_sources(args.filters)
     if args.list:
-        for s in sources:
-            print(s.relative_to(SOURCES_DIR).as_posix())
+        names = [s.relative_to(SOURCES_DIR).as_posix() for s in sources]
+        width = max((len(n) for n in names), default=0)
+        for name, s in zip(names, sources):
+            if expected_path_for(s).exists():
+                reference = Text("expected.rs", style="bold cyan")
+            else:
+                reference = Text("rustfmt", style="dark_orange")
+            console.print(Text(f"{name:<{width}}  ") + reference, soft_wrap=True)
         return
     if not sources:
         console.print("[yellow]No tests selected[/yellow]")
@@ -309,7 +337,7 @@ def main() -> None:
 
     console.print()
     for r in failures:
-        report_failure(r, args.max_diff_lines)
+        report_failure(r, args.max_diff_lines, args.verbose)
 
     passed = len(results) - len(failures)
     if failures:
@@ -317,6 +345,14 @@ def main() -> None:
             f"[bold red]{len(failures)} failed[/bold red], [green]{passed} passed[/green]"
         )
         console.print(f"Results directory: {CURRENT_DIR}", highlight=False)
+        if not args.verbose:
+            names = " ".join(r.name for r in failures)
+            console.print(
+                f"[dim]Hint: run `uv run tests/run.py -v {names}` to also see the input, "
+                "afmt output and reference output[/dim]",
+                highlight=False,
+                soft_wrap=True,
+            )
         sys.exit(1)
 
     console.print(f"[bold green]All {passed} tests passed[/bold green]")
