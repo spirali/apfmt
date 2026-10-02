@@ -40,17 +40,24 @@ fn is_combinable_expr(expr: &Expr) -> bool {
 
 fn format_arg_list(fmt: &Formatter, arg_list: ArgList) -> Frag {
     let mut builder = Builder::new(fmt);
-    builder.push(format_token(fmt, arg_list.l_paren_token().unwrap(), Open));
+    let l_paren = arg_list.l_paren_token().unwrap();
 
     let args = arg_list.args().map(|a| format_expr(fmt, a.clone())).collect::<Vec<Frag>>();
-    if !args.is_empty() {
-        let mut variants = list_nl_separated(fmt, &args);
-        let flat = list_comma_separated(fmt, &args);
-        if args.len() == 1 || fmt.simple_length_frag(&flat).is_some_and(|s| s as u32 <= fmt.config().fn_call_width) {
+    if args.is_empty() {
+        builder.push(format_token(fmt, l_paren, Open));
+    } else {
+        // The comments following `(` belong to the list, so each layout places them itself
+        builder.push(format_token_no_follows(fmt, l_paren.clone(), Open));
+        let own_line_comment = Builder::new_with(fmt, Some(l_paren.clone())).has_own_line_comment();
+        let mut variants = list_nl_separated(fmt, &args, Some(l_paren.clone()));
+        let flat = list_comma_separated(fmt, &args, Some(l_paren.clone()));
+        // An own-line comment after `(` keeps the list vertical
+        if !own_line_comment && (args.len() == 1 || fmt.simple_length_frag(&flat).is_some_and(|s| s as u32 <= fmt.config().fn_call_width)) {
             variants = fmt.alt_frag(variants, fmt.flat(flat));
         }
-        if args.len() == 1 && let Some(expr) = arg_list.args().next() && is_combinable_expr(&expr) {
-            let mut overflow = Builder::new(fmt);
+        if !own_line_comment && args.len() == 1 && let Some(expr) = arg_list.args().next() && is_combinable_expr(&expr) {
+            let mut overflow = Builder::new_with(fmt, Some(l_paren));
+            overflow.flush_trivia(false);
             overflow.push(args[0].clone());
             overflow.skip_delimiter(SyntaxKind::COMMA);
             overflow.flush_trivia(false);
@@ -111,7 +118,7 @@ fn format_tuple_pat(fmt: &Formatter, pat: TuplePat) -> Frag {
         builder.push(fields[0].clone());
         builder.push_delimiter(SyntaxKind::COMMA);
     } else {
-        builder.push(list_comma_separated(fmt, &fields));
+        builder.push(list_comma_separated(fmt, &fields, None));
     }
     builder.push(format_token(fmt, pat.r_paren_token().unwrap(), Close));
     builder.finish_node(pat.syntax())
@@ -208,7 +215,8 @@ fn format_stmt_list(fmt: &Formatter, stmt_list: StmtList) -> Frag {
 
     // Tokens following `{` belong to the body, so they are nested with it
     let mut builder = Builder::new_with(fmt, Some(l_curly.clone()));
-    builder.flush_trivia(false);
+    // The cursor is kept, so `ensure_newline` can tell whether the last comment belongs to the first statement
+    builder.consume_comments();
     for child in stmt_list.statements() {
         if !builder.is_empty() {
             builder.ensure_newline();

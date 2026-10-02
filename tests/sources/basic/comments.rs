@@ -4,10 +4,10 @@ fn main() {
     //Comment2
 
 
-    /*aa*/
+    /* aa */
 
 
-    /* foo */f()/*bar*/; /* baz *//* end */
+    /* foo */f()/* bar */; /* baz *//* end */
 
     let   a = 10   /* hello */;
     test1(); /*a*/   /*c*/ test2();
@@ -53,6 +53,6 @@ fn main() {
         )
     ;
 
-    g(a, /*a*/);
+    g(a, /* a */);
 
     b(); c(); }

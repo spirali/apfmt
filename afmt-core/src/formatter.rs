@@ -273,10 +273,19 @@ fn count_newlines(token: &SyntaxToken) -> u32 {
     token.text().bytes().filter(|c| *c == b'\n').count() as u32
 }
 
-/// Start edges of fragments that continue the expression on their left: `f(…)`, `.foo()`, `+ b`.
-/// Own-line comments in front of them are indented together with them.
+/// Start edges of fragments that continue the construct on their left: everything except closing
+/// delimiters and the `{` of a block. Own-line comments in front of them are indented together with them.
 fn is_continuation(edge: Edge) -> bool {
-    matches!(edge, Open | Tight | Operator)
+    !matches!(edge, Close | BraceClose | BraceOpen)
+}
+
+/// An own-line block comment directly followed by code on the same line, e.g. `/* c */ f();`
+fn is_leading_block_comment(token: &SyntaxToken) -> bool {
+    let has_newline = |t: Option<SyntaxToken>| t.is_some_and(|t| t.kind() == SyntaxKind::WHITESPACE && count_newlines(&t) > 0);
+    token.kind() == SyntaxKind::COMMENT
+        && token.text().starts_with("/*")
+        && has_newline(token.prev_token())
+        && !has_newline(token.next_token())
 }
 
 fn compute_space(left: Edge, right: Edge) -> DocId {
@@ -374,7 +383,13 @@ impl<'a> Builder<'a> {
 
     /// Ends the line; blank lines from the source are kept
     pub fn ensure_newline(&mut self) {
+        self.consume_comments();
+        // The comment belongs to the following code, so no line break after it
+        let leading_comment = self.frag.token.as_ref().is_some_and(is_leading_block_comment);
         self.flush_trivia(true);
+        if leading_comment {
+            return;
+        }
         if self.frag.is_empty() {
             self.push_newline();
         } else {
@@ -412,7 +427,7 @@ impl<'a> Builder<'a> {
 
     /// Consumes the comments after the cursor (`frag.token`) and moves the cursor to the last consumed token.
     /// The whitespace after the cursor is left for `flush_trivia`.
-    fn consume_comments(&mut self) {
+    pub fn consume_comments(&mut self) {
         if let Some(token) = self.frag.token.take() {
             self.frag.token = Some(self.scan_comments(token, None, false));
         }
@@ -426,12 +441,24 @@ impl<'a> Builder<'a> {
         let mut cursor = token;
         let mut newlines = 0;
         let mut element = cursor.next_token();
+        if delimiter.is_some() {
+            // The delimiter is only taken from the source when it follows the comments
+            let next = std::iter::successors(element.clone(), |t| t.next_token())
+                .find(|t| !matches!(t.kind(), SyntaxKind::WHITESPACE | SyntaxKind::COMMENT));
+            if next.map(|t| t.kind()) != delimiter {
+                delimiter = None;
+            }
+        }
         while let Some(token) = element {
             match token.kind() {
                 SyntaxKind::WHITESPACE => {
                     newlines += count_newlines(&token);
                 }
                 SyntaxKind::COMMENT => {
+                    if delimiter.is_some() {
+                        // The comment is moved after the delimiter, so it stays on the delimiter's line
+                        newlines = 0;
+                    }
                     let own_line = newlines > 0;
                     if own_line && stop_at_own_line {
                         break;
@@ -460,6 +487,23 @@ impl<'a> Builder<'a> {
             element = token.next_token();
         }
         cursor
+    }
+
+    /// Starts a vertical list after the opening delimiter (the cursor): comments on its line stay
+    /// there, then a line break, then the other comments. A line break after the comments
+    /// is kept when the source has one.
+    pub fn flush_leading_comments(&mut self) {
+        if let Some(token) = self.frag.token.take() {
+            self.frag.token = Some(self.scan_comments(token, None, true));
+        }
+        self.push_newline();
+        self.consume_comments();
+        let Some(cursor) = self.frag.token.take() else {
+            return;
+        };
+        if cursor.next_token().is_some_and(|t| t.kind() == SyntaxKind::WHITESPACE && count_newlines(&t) > 0) {
+            self.push_line_break_if(NEWLINE_DOC, |end| end != Nothing);
+        }
     }
 
     /// Consumes the trivia after the cursor and clears it; blank lines at the end are kept

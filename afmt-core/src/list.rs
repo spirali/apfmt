@@ -1,10 +1,12 @@
-use ra_ap_syntax::SyntaxKind;
+use ra_ap_syntax::{SyntaxKind, SyntaxToken};
 use crate::doc::{NEWLINE_DOC, NEWLINE_OR_SPACE_DOC};
 use crate::formatter::{Formatter, Frag, Builder};
 use crate::formatter::Edge::{Break, Nothing};
 
-pub(crate) fn list_comma_separated(fmt: &Formatter, frags: &[Frag]) -> Frag {
-    let mut builder = Builder::new(fmt);
+/// `open` is the opening delimiter; the comments following it are part of the list
+pub(crate) fn list_comma_separated(fmt: &Formatter, frags: &[Frag], open: Option<SyntaxToken>) -> Frag {
+    let mut builder = Builder::new_with(fmt, open);
+    builder.flush_trivia(false);
     for (i, frag) in frags.iter().enumerate() {
         builder.push(frag.clone());
         // No trailing comma, but the source one and its comments still have to be consumed
@@ -17,9 +19,10 @@ pub(crate) fn list_comma_separated(fmt: &Formatter, frags: &[Frag]) -> Frag {
     builder.to_frag()
 }
 
-pub(crate) fn list_nl_separated(fmt: &Formatter, frags: &[Frag]) -> Frag {
-    let mut builder = Builder::new(fmt);
-    builder.push_newline();
+/// `open` is the opening delimiter; the comments following it are part of the list
+pub(crate) fn list_nl_separated(fmt: &Formatter, frags: &[Frag], open: Option<SyntaxToken>) -> Frag {
+    let mut builder = Builder::new_with(fmt, open);
+    builder.flush_leading_comments();
     for frag in frags.iter() {
         builder.push(frag.clone());
         builder.push_delimiter(SyntaxKind::COMMA);
