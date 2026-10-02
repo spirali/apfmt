@@ -207,8 +207,7 @@ fn format_stmt_list(fmt: &Formatter, stmt_list: StmtList) -> Frag {
     }
 
     // Tokens following `{` belong to the body, so they are nested with it
-    let mut builder = Builder::new(fmt);
-    builder.set_token(l_curly.clone());
+    let mut builder = Builder::new_with(fmt, Some(l_curly.clone()));
     builder.flush_trivia(false);
     for child in stmt_list.statements() {
         if !builder.is_empty() {

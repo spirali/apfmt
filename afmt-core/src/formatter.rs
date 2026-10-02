@@ -273,6 +273,12 @@ fn count_newlines(token: &SyntaxToken) -> u32 {
     token.text().bytes().filter(|c| *c == b'\n').count() as u32
 }
 
+/// Start edges of fragments that continue the expression on their left: `f(…)`, `.foo()`, `+ b`.
+/// Own-line comments in front of them are indented together with them.
+fn is_continuation(edge: Edge) -> bool {
+    matches!(edge, Open | Tight | Operator)
+}
+
 fn compute_space(left: Edge, right: Edge) -> DocId {
     use Edge::*;
     match (left, right) {
@@ -306,6 +312,15 @@ impl<'a> Builder<'a> {
         Builder {
             fmt,
             frag: Frag::empty(),
+        }
+    }
+
+    pub fn new_with(fmt: &'a Formatter, token: Option<SyntaxToken>) -> Self {
+        let mut frag = Frag::empty();
+        frag.token = token;
+        Builder {
+            fmt,
+            frag
         }
     }
 
@@ -399,13 +414,15 @@ impl<'a> Builder<'a> {
     /// The whitespace after the cursor is left for `flush_trivia`.
     fn consume_comments(&mut self) {
         if let Some(token) = self.frag.token.take() {
-            self.frag.token = Some(self.scan_comments(token, None));
+            self.frag.token = Some(self.scan_comments(token, None, false));
         }
     }
 
     /// Pushes the comments following `token`; the source `delimiter`, if found among them, is consumed
-    /// without printing. Returns the last consumed token.
-    fn scan_comments(&mut self, token: SyntaxToken, mut delimiter: Option<SyntaxKind>) -> SyntaxToken {
+    /// without printing. With `stop_at_own_line`, it stops in front of the first own-line comment.
+    /// Returns the last consumed token.
+    fn scan_comments(&mut self, token: SyntaxToken, mut delimiter: Option<SyntaxKind>,
+                     stop_at_own_line: bool) -> SyntaxToken {
         let mut cursor = token;
         let mut newlines = 0;
         let mut element = cursor.next_token();
@@ -416,6 +433,9 @@ impl<'a> Builder<'a> {
                 }
                 SyntaxKind::COMMENT => {
                     let own_line = newlines > 0;
+                    if own_line && stop_at_own_line {
+                        break;
+                    }
                     // Blank lines at the start of a fragment are dropped; the parent decides spacing
                     if newlines > 0 && !self.frag.is_empty() {
                         self.flush_empty_lines(newlines);
@@ -489,8 +509,28 @@ impl<'a> Builder<'a> {
             self.push(Frag::new_simple(doc_id, Comma, None));
         }
         if let Some(token) = token {
-            self.frag.token = Some(self.scan_comments(token, Some(kind)));
+            self.frag.token = Some(self.scan_comments(token, Some(kind), false));
         }
+    }
+
+    pub fn has_own_line_comment(&mut self) -> bool {
+        let Some(token) = self.frag.token.as_ref() else {
+            return false;
+        };
+        let mut token = token.next_token();
+        let mut line_count = 0;
+        while let Some(t) = token {
+            match t.kind() {
+                SyntaxKind::WHITESPACE => {
+                    line_count += count_newlines(&t);
+                }
+                SyntaxKind::COMMENT if line_count > 0 => return true,
+                SyntaxKind::COMMENT => {}
+                _ => break,
+            }
+            token = t.next_token();
+        }
+        false
     }
 
     pub fn push(&mut self, frag: Frag) {
@@ -501,7 +541,41 @@ impl<'a> Builder<'a> {
             self.frag = frag;
             return;
         }
+        if self.frag.token.is_some() && frag.branches.iter().all(|b| is_continuation(b.start)) {
+            self.push_continuation(frag);
+            return;
+        }
         self.flush_trivia(false);
+        self.join(frag);
+    }
+
+    fn push_continuation(&mut self, frag: Frag) {
+        // Comments on the same line as the left side stay there
+        let token = self.frag.token.take().unwrap();
+        self.frag.token = Some(self.scan_comments(token, None, true));
+        if !self.has_own_line_comment() {
+            self.flush_trivia(false);
+            self.join(frag);
+            return;
+        }
+        let fmt = self.fmt;
+        let mut nested = Builder::new_with(fmt, self.frag.token.take());
+        nested.flush_trivia(false);
+        nested.push(frag);
+        // The newline has to be inside the nest, otherwise the resolver measures the first
+        // nested line (and aligns multi-line comments) with the outer indent
+        let nested = fmt.map_branches(nested.to_frag(), |b| Branch {
+            doc_id: fmt.concat(NEWLINE_DOC, b.doc_id),
+            start: Nothing,
+            ..b
+        });
+        // A line comment on the left side is ended by the nested newline
+        self.push_line_break_if(EMPTY_DOC, |end| end == Break);
+        self.join(fmt.nest(nested));
+    }
+
+    /// Concatenates `frag` without processing the trivia in between
+    fn join(&mut self, frag: Frag) {
         let fmt = self.fmt;
         let left = &self.frag.branches;
         let mut branches = Branches::new();
