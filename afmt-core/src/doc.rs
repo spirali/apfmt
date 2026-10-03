@@ -25,7 +25,6 @@ pub(crate) struct DocArena {
     nodes: Vec<DocNode>,
 }
 
-
 pub(crate) const NEWLINE_DOC: DocId = DocId(0);
 pub(crate) const EMPTY_DOC: DocId = DocId(1);
 pub(crate) const SPACE_DOC: DocId = DocId(2);
@@ -33,7 +32,6 @@ pub(crate) const NEWLINE_OR_SPACE_DOC: DocId = DocId(3);
 pub(crate) const EMPTYLINE_DOC: DocId = DocId(4);
 pub(crate) const COMMA_DOC: DocId = DocId(5);
 pub(crate) const SEMICOLON_DOC: DocId = DocId(6);
-
 
 impl DocArena {
     pub fn new() -> Self {

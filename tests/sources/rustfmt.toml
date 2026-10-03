@@ -1,0 +1,3 @@
+# Test inputs must keep their original (unformatted) layout.
+# Prevents rustfmt / `cargo fmt` / editor format-on-save from touching them.
+disable_all_formatting = true

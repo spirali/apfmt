@@ -1,18 +1,18 @@
+mod comments;
 mod config;
 mod doc;
 mod error;
+mod format;
 mod formatter;
+mod list;
 mod measure;
 mod resolver;
-mod format;
-mod list;
-mod comments;
 
 pub use crate::config::Config;
-use crate::formatter::{Formatter};
+use crate::format::format_source_file;
+use crate::formatter::Formatter;
 use ra_ap_syntax::{AstNode, SyntaxError, WalkEvent};
 use ra_ap_syntax::{Edition, NodeOrToken, SourceFile};
-use crate::format::format_source_file;
 
 fn print_tree(source_file: &SourceFile) {
     let mut depth = 0;
@@ -65,8 +65,8 @@ pub fn format_source_code(config: &Config, code: &str) -> Result<String, Vec<Syn
     }
 
     let mut fmt = Formatter::new(config);
-    let doc = format_source_file(&mut fmt, file);
-    let out = fmt.into_resolver(doc).render(code.len() * 2);
+    let frag = format_source_file(&mut fmt, file);
+    let out = fmt.into_resolver(frag).render(code.len() * 2);
     Ok(out)
 }
 
@@ -82,7 +82,10 @@ mod tests {
             format_source_code(&config, code).unwrap(),
             "fn /* a */ f() {\n    g(/**/ 1, /* b */ /** c*/ 2);\n}"
         );
-        let config = Config { normalize_comments: false, ..Config::default() };
+        let config = Config {
+            normalize_comments: false,
+            ..Config::default()
+        };
         assert_eq!(
             format_source_code(&config, code).unwrap(),
             "fn /*a*/ f() {\n    g(/**/ 1, /*  b  */ /** c*/ 2);\n}"

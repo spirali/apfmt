@@ -76,10 +76,10 @@ class CommandError(Exception):
     pass
 
 
-def run_cmd(cmd: list[str], stdin: str | None, timeout: float) -> str:
+def run_cmd(cmd: list[str], stdin: str | None, timeout: float, cwd: Path | None = None) -> str:
     try:
         proc = subprocess.run(
-            cmd, input=stdin, capture_output=True, text=True, timeout=timeout
+            cmd, input=stdin, capture_output=True, text=True, timeout=timeout, cwd=cwd
         )
     except subprocess.TimeoutExpired:
         raise CommandError(f"`{' '.join(cmd)}` timed out after {timeout}s")
@@ -91,8 +91,12 @@ def run_cmd(cmd: list[str], stdin: str | None, timeout: float) -> str:
 
 
 def run_rustfmt(code: str, args) -> str:
-    # stdin mode prints only the formatted code to stdout
-    return run_cmd([args.rustfmt, "--edition", args.edition], stdin=code, timeout=args.timeout)
+    # stdin mode prints only the formatted code to stdout; in stdin mode rustfmt looks
+    # up its config from the cwd, so run it from the repo root to never pick up
+    # tests/sources/rustfmt.toml (which disables formatting)
+    return run_cmd(
+        [args.rustfmt, "--edition", args.edition], stdin=code, timeout=args.timeout, cwd=ROOT_DIR
+    )
 
 
 def run_afmt(code: str, args) -> str:

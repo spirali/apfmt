@@ -1,6 +1,4 @@
 use ra_ap_syntax::SyntaxToken;
-use crate::doc::{DocId, DocNode, NEWLINE_DOC};
-use crate::formatter::Formatter;
 
 /// Puts a single space after the opening and before the closing sigil of a single-line
 /// block comment (`/*a*/` -> `/* a */`). Returns `None` when the text stays as it is.
@@ -32,7 +30,10 @@ fn source_column(token: &SyntaxToken) -> usize {
     col
 }
 
-pub(crate) fn multiline_comment_doc(fmt: &Formatter, token: &SyntaxToken) -> Option<DocId> {
+/// Lines of a multi-line block comment with the indentation of the comment start removed, so they can
+/// be aligned to the new column of the comment; blank lines are empty. `None` when the comment is
+/// single-line or a line is indented less than the comment start.
+pub(crate) fn multiline_comment_lines(token: &SyntaxToken) -> Option<Vec<&str>> {
     let (first, rest) = token.text().split_once('\n')?;
     let col = source_column(token);
     let is_blank = |line: &str| line.trim().is_empty();
@@ -41,12 +42,6 @@ pub(crate) fn multiline_comment_doc(fmt: &Formatter, token: &SyntaxToken) -> Opt
     }) {
         return None;
     }
-    let mut doc_id = fmt.make_node(DocNode::Text(first.to_string()));
-    for line in rest.split('\n') {
-        doc_id = fmt.concat(doc_id, NEWLINE_DOC);
-        if !is_blank(line) {
-            doc_id = fmt.concat(doc_id, fmt.make_node(DocNode::Text(line[col..].to_string())));
-        }
-    }
-    Some(fmt.make_node(DocNode::Align(doc_id)))
+    let rest = rest.split('\n').map(|line| if is_blank(line) { "" } else { &line[col..] });
+    Some(std::iter::once(first).chain(rest).collect())
 }

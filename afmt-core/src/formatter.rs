@@ -1,15 +1,25 @@
-
-use std::cell::RefCell;
 use crate::config::Config;
 use crate::doc::DocNode::Newline;
-use crate::doc::{DocArena, DocId, DocNode, EMPTY_DOC, EMPTYLINE_DOC, NEWLINE_DOC, NEWLINE_OR_SPACE_DOC, SPACE_DOC, SEMICOLON_DOC, COMMA_DOC};
+use crate::doc::{
+    COMMA_DOC, DocArena, DocId, DocNode, EMPTY_DOC, EMPTYLINE_DOC, NEWLINE_DOC,
+    NEWLINE_OR_SPACE_DOC, SEMICOLON_DOC, SPACE_DOC,
+};
 use crate::resolver::Resolver;
-use ra_ap_syntax::{ast, PreorderWithTokens, RustLanguage, SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken, WalkEvent, AstNode, SourceFile, Direction};
+use ra_ap_syntax::{
+    AstNode, Direction, PreorderWithTokens, RustLanguage, SourceFile, SyntaxElement, SyntaxKind,
+    SyntaxNode, SyntaxToken, WalkEvent, ast,
+};
+use std::cell::RefCell;
 
-use ra_ap_syntax::ast::{ArgList, BlockExpr, CallExpr, Comment, Expr, HasArgList, HasModuleItem, HasName, Item, Literal, Name, Path, PathExpr, PathSegment, Stmt, StmtList, Fn as AstFn, ParamList};
-use crate::formatter::Edge::{Break, BraceClose, BraceOpen, Close, Comma, Keyword, Nothing, Open, Operator, Tight, Word};
+use crate::comments::{multiline_comment_lines, normalize_block_comment};
+use crate::formatter::Edge::{
+    BraceClose, BraceOpen, Break, Close, Comma, Keyword, Nothing, Open, Operator, Tight, Word,
+};
+use ra_ap_syntax::ast::{
+    ArgList, BlockExpr, CallExpr, Comment, Expr, Fn as AstFn, HasArgList, HasModuleItem, HasName,
+    Item, Literal, Name, ParamList, Path, PathExpr, PathSegment, Stmt, StmtList,
+};
 use smallvec::{SmallVec, smallvec};
-use crate::comments::{multiline_comment_doc, normalize_block_comment};
 
 pub(crate) struct Formatter<'a> {
     doc_arena: RefCell<DocArena>,
@@ -29,24 +39,34 @@ impl<'a> Formatter<'a> {
         self.config
     }
 
-    pub fn make_node(&self, doc_node: DocNode) -> DocId {
+    fn make_node(&self, doc_node: DocNode) -> DocId {
         self.doc_arena.borrow_mut().make(doc_node)
     }
 
     pub fn token(&self, token: SyntaxToken, edge: Edge) -> Frag {
-        Frag::new_simple(self.make_node(DocNode::Token(token.clone())), edge, Some(token))
+        Frag::new_simple(
+            self.make_node(DocNode::Token(token.clone())),
+            edge,
+            Some(token),
+        )
+    }
+
+    /// Just the token; the caller is responsible for the trivia (comments) that follow it
+    pub fn token_no_follows(&self, token: SyntaxToken, edge: Edge) -> Frag {
+        Frag::new_simple(self.make_node(DocNode::Token(token)), edge, None)
     }
 
     /// Keyword that is always followed by a space, e.g. `let (a, b)`
     pub fn keyword(&self, token: SyntaxToken) -> Frag {
-        Frag::new(self.make_node(DocNode::Token(token.clone())), Word, Keyword, Some(token))
+        Frag::new(
+            self.make_node(DocNode::Token(token.clone())),
+            Word,
+            Keyword,
+            Some(token),
+        )
     }
 
-    pub fn text(&self, text: String, edge: Edge) -> Frag {
-        Frag::new_simple(self.make_node(DocNode::Text(text)), edge, None)
-    }
-
-    pub fn concat(&self, doc1: DocId, doc2: DocId) -> DocId {
+    fn concat(&self, doc1: DocId, doc2: DocId) -> DocId {
         if doc1 == EMPTY_DOC {
             return doc2;
         }
@@ -57,18 +77,30 @@ impl<'a> Formatter<'a> {
     }
 
     pub fn nest(&self, frag: Frag) -> Frag {
-        self.map_branches(frag, |b| Branch { doc_id: self.make_node(DocNode::Nest(b.doc_id)), ..b })
+        self.map_branches(frag, |b| Branch {
+            doc_id: self.make_node(DocNode::Nest(b.doc_id)),
+            ..b
+        })
     }
 
     /// Puts `sep` (usually a line break) in front of every branch. The fragment then starts
     /// with `Nothing`, so no space is computed in front of it.
-    pub fn prefix_break(&self, sep: DocId, frag: Frag) -> Frag {
-        self.map_branches(frag, |b| Branch { start: Nothing, doc_id: self.concat(sep, b.doc_id), ..b })
+    fn prefix_break(&self, sep: DocId, frag: Frag) -> Frag {
+        self.map_branches(frag, |b| Branch {
+            start: Nothing,
+            doc_id: self.concat(sep, b.doc_id),
+            ..b
+        })
     }
 
     /// The fragment starts on a new line with the current indentation
     pub fn on_next_line(&self, frag: Frag) -> Frag {
         self.prefix_break(NEWLINE_DOC, frag)
+    }
+
+    /// The fragment continues the current line after a space, or starts a new line
+    pub fn on_same_or_next_line(&self, frag: Frag) -> Frag {
+        self.prefix_break(NEWLINE_OR_SPACE_DOC, frag)
     }
 
     /// The fragment starts on a new line, indented one level deeper. The newline is inside
@@ -78,16 +110,39 @@ impl<'a> Formatter<'a> {
         self.nest(self.on_next_line(frag))
     }
 
-    /// Restricts the fragment to layouts on a single line
-    pub fn flat(&self, frag: Frag) -> Frag {
-        self.map_branches(frag, |b| Branch { doc_id: self.make_node(DocNode::Flat(b.doc_id)), ..b })
+    /// The fragment continues the current line, or starts an indented next line,
+    /// e.g. the right-hand side of `=`
+    pub fn same_or_indented_line(&self, frag: Frag) -> Frag {
+        self.alt_frag(frag.clone(), self.indented_line(frag))
     }
 
-    pub fn alt_doc(&self, doc1: DocId, doc2: DocId) -> DocId {
+    /// Restricts the fragment to layouts on a single line
+    pub fn flat(&self, frag: Frag) -> Frag {
+        self.map_branches(frag, |b| Branch {
+            doc_id: self.make_node(DocNode::Flat(b.doc_id)),
+            ..b
+        })
+    }
+
+    /// Single-line layout of `frag`, if its width is at most `max_width`
+    pub fn flat_within(&self, frag: Frag, max_width: u32) -> Option<Frag> {
+        self.simple_length_frag(&frag)
+            .is_some_and(|size| size as u32 <= max_width)
+            .then(|| self.flat(frag))
+    }
+
+    fn alt_doc(&self, doc1: DocId, doc2: DocId) -> DocId {
         if doc1 == doc2 {
             return doc1;
         }
         self.make_node(DocNode::Alt(doc1, doc2))
+    }
+
+    pub fn alt_opt(&self, frag: Frag, other: Option<Frag>) -> Frag {
+        match other {
+            Some(other) => self.alt_frag(frag, other),
+            None => frag,
+        }
     }
 
     pub fn alt_frag(&self, frag1: Frag, frag2: Frag) -> Frag {
@@ -101,7 +156,7 @@ impl<'a> Formatter<'a> {
         }
     }
 
-    pub fn map_branches(&self, mut frag: Frag, f: impl FnMut(Branch) -> Branch) -> Frag {
+    fn map_branches(&self, mut frag: Frag, f: impl FnMut(Branch) -> Branch) -> Frag {
         let branches = frag.branches.into_iter().map(f).collect();
         frag.branches = self.group_branches(branches);
         frag
@@ -109,12 +164,15 @@ impl<'a> Formatter<'a> {
 
     /// Merges branches with the same edges into a single branch
     fn group_branches(&self, branches: Branches) -> Branches {
-       if branches.len() <= 1 {
-           return branches;
-       }
+        if branches.len() <= 1 {
+            return branches;
+        }
         let mut out = Branches::new();
         for b in branches {
-            if let Some(o) = out.iter_mut().find(|o| o.start == b.start && o.end == b.end) {
+            if let Some(o) = out
+                .iter_mut()
+                .find(|o| o.start == b.start && o.end == b.end)
+            {
                 o.doc_id = self.alt_doc(o.doc_id, b.doc_id);
             } else {
                 out.push(b);
@@ -124,7 +182,7 @@ impl<'a> Formatter<'a> {
     }
 
     /// Doc of the whole fragment; the edges are dropped
-    pub fn frag_to_doc(&self, frag: &Frag) -> DocId {
+    fn frag_to_doc(&self, frag: &Frag) -> DocId {
         frag.branches
             .iter()
             .map(|b| b.doc_id)
@@ -132,66 +190,41 @@ impl<'a> Formatter<'a> {
             .unwrap()
     }
 
-/*
-    pub fn comma_separated(&self, docs: &[DocId]) -> DocId {
-        let mut it = docs.iter();
-        let Some(doc) = it.next() else {
-            return EMPTY_DOC;
-        };
-        let mut doc = *doc;
-        for d in it {
-            doc = self.concat_s_text(doc, ", ");
-            doc = self.concat(doc, *d);
-        }
-        doc
-    }
-
-    pub fn comma_mix_separated(&self, docs: &[DocId]) -> DocId {
-        let mut it = docs.iter();
-        let Some(doc) = it.next() else {
-            return EMPTY_DOC;
-        };
-        let mut doc = *doc;
-        for d in it {
-            doc = self.concat_s_text(doc, ",");
-            doc = self.concat(doc, NEWLINE_OR_SPACE_DOC);
-            doc = self.concat(doc, *d);
-        }
-        doc = self.nest(doc);
-        doc = self.concat(doc, NEWLINE_DOC);
-        doc
-    }
-
-    pub fn comma_nl_separated(&self, docs: &[DocId]) -> DocId {
-        let mut doc = EMPTY_DOC;
-        for d in docs.iter() {
-            doc = self.concat(doc, *d);
-            doc = self.concat_s_text(doc, ",");
-            doc = self.concat_new_line(doc)
-        }
-        doc
-    }
-*/
-    pub fn dump(&self, root: DocId) {
+    pub fn dump(&self, frag: &Frag) {
+        let root = self.frag_to_doc(frag);
         self.doc_arena.borrow().dump(root);
     }
 
-    pub fn into_resolver(self, root: DocId) -> Resolver<'a> {
+    pub fn into_resolver(self, root: Frag) -> Resolver<'a> {
+        let root = self.frag_to_doc(&root);
         Resolver::new(self.doc_arena.into_inner(), self.config, root)
     }
 
     fn comment_doc(&self, token: &SyntaxToken) -> DocId {
-        if let Some(doc_id) = multiline_comment_doc(self, token) {
-            return doc_id;
+        if let Some(lines) = multiline_comment_lines(token) {
+            // The lines are aligned to the column of the comment start
+            let mut lines = lines.into_iter();
+            let mut doc_id = self.make_node(DocNode::Text(lines.next().unwrap().to_string()));
+            for line in lines {
+                doc_id = self.concat(doc_id, NEWLINE_DOC);
+                if !line.is_empty() {
+                    doc_id = self.concat(doc_id, self.make_node(DocNode::Text(line.to_string())));
+                }
+            }
+            return self.make_node(DocNode::Align(doc_id));
         }
-        let normalized = self.config.normalize_comments.then(|| normalize_block_comment(token.text())).flatten();
+        let normalized = self
+            .config
+            .normalize_comments
+            .then(|| normalize_block_comment(token.text()))
+            .flatten();
         self.make_node(match normalized {
             Some(text) => DocNode::Text(text),
             None => DocNode::Token(token.clone()),
         })
     }
 
-    pub fn simple_length_doc(&self, doc_id: DocId) -> Option<usize> {
+    fn simple_length_doc(&self, doc_id: DocId) -> Option<usize> {
         match self.doc_arena.borrow().get_node(doc_id) {
             DocNode::Token(token) => Some(unicode_width::UnicodeWidthStr::width(token.text())),
             DocNode::Text(t) => Some(unicode_width::UnicodeWidthStr::width(t.as_str())),
@@ -208,24 +241,12 @@ impl<'a> Formatter<'a> {
         }
     }
 
-    pub fn simple_length_frag(&self, frag: &Frag) -> Option<usize> {
-        frag.branches.iter().map(|b| self.simple_length_doc(b.doc_id)).max().unwrap_or_default()
-    }
-
-    pub fn is_short(&self, doc_id: DocId) -> bool {
-        self.simple_length_doc(doc_id).is_some_and(|size| size <= 10)
-    }
-
-    pub fn check_fn_call_width(&self, docs: &[DocId]) -> bool {
-        if docs.is_empty() {
-            return true;
-        }
-        let Some(mut length): Option<usize> = docs.iter().map(|doc| self.simple_length_doc(*doc)).sum()
-        else {
-            return false;
-        };
-        length += (docs.len() - 1) * 2;
-        length < 60
+    fn simple_length_frag(&self, frag: &Frag) -> Option<usize> {
+        frag.branches
+            .iter()
+            .map(|b| self.simple_length_doc(b.doc_id))
+            .max()
+            .unwrap_or_default()
     }
 }
 
@@ -233,23 +254,24 @@ impl<'a> Formatter<'a> {
 pub enum Edge {
     Nothing,
     Word,
-    Keyword,   // let — always followed by a space
-    Open,      // ( [ {
-    Close,     // ) ] }
+    Keyword,    // let — always followed by a space
+    Open,       // ( [ {
+    Close,      // ) ] }
     BraceOpen,  // { of a block or struct literal
     BraceClose, // } of a block or struct literal
-    Comma,     // , ;
-    Tight,     // . :: ! & * # — nelepí mezeru
-    Operator,  // + == => : ->
+    Comma,      // , ;
+    Tight,      // . :: ! & * # — no space around
+    Operator,   // + == => : ->
+    Comment,    // start of a comment
     Break,
 }
 
 /// One alternative of a fragment together with its edges
 #[derive(Clone, Copy, Debug)]
-pub struct Branch {
-    pub doc_id: DocId,
-    pub start: Edge,
-    pub end: Edge,
+struct Branch {
+    doc_id: DocId,
+    start: Edge,
+    end: Edge,
 }
 
 type Branches = SmallVec<[Branch; 1]>;
@@ -265,14 +287,14 @@ pub struct Frag {
 }
 
 impl Frag {
-    pub fn new(doc_id: DocId, start: Edge, end: Edge, token: Option<SyntaxToken>) -> Self {
+    fn new(doc_id: DocId, start: Edge, end: Edge, token: Option<SyntaxToken>) -> Self {
         Frag {
             branches: smallvec![Branch { start, doc_id, end }],
             token,
         }
     }
 
-    pub fn new_simple(doc_id: DocId, edge: Edge, tokem: Option<SyntaxToken>) -> Self {
+    fn new_simple(doc_id: DocId, edge: Edge, tokem: Option<SyntaxToken>) -> Self {
         Frag::new(doc_id, edge, edge, tokem)
     }
 
@@ -304,7 +326,9 @@ fn is_continuation(edge: Edge) -> bool {
 
 /// An own-line block comment directly followed by code on the same line, e.g. `/* c */ f();`
 fn is_leading_block_comment(token: &SyntaxToken) -> bool {
-    let has_newline = |t: Option<SyntaxToken>| t.is_some_and(|t| t.kind() == SyntaxKind::WHITESPACE && count_newlines(&t) > 0);
+    let has_newline = |t: Option<SyntaxToken>| {
+        t.is_some_and(|t| t.kind() == SyntaxKind::WHITESPACE && count_newlines(&t) > 0)
+    };
     token.kind() == SyntaxKind::COMMENT
         && token.text().starts_with("/*")
         && has_newline(token.prev_token())
@@ -316,20 +340,21 @@ fn compute_space(left: Edge, right: Edge) -> DocId {
     match (left, right) {
         (Break, _) | (_, Break) => NEWLINE_DOC,
         (Nothing, _) | (_, Nothing) => EMPTY_DOC,
-        (BraceOpen, BraceClose)     => EMPTY_DOC,   // {}
-        (_, Comma)                  => EMPTY_DOC,   // x,
-        (Comma, Close)              => EMPTY_DOC,   // (x,)
-        (Comma, _)                  => SPACE_DOC,    // , x
+        (BraceOpen, BraceClose) => EMPTY_DOC,          // {}
+        (_, Comma) => EMPTY_DOC,                       // x,
+        (Comma, Close) => EMPTY_DOC,                   // (x,)
+        (Comma, _) => SPACE_DOC,                       // , x
         (BraceOpen, _) | (_, BraceClose) => SPACE_DOC, // { x }
-        (Open, _) | (_, Close)      => EMPTY_DOC,   // (x)
-        (Keyword, _)                => SPACE_DOC,    // let (a, b)  let &x
-        (Operator, Tight)           => SPACE_DOC,    // a == !b
-        (Tight, _) | (_, Tight)     => EMPTY_DOC,   // a.b  a::b  &x
-        (_, BraceOpen)              => SPACE_DOC,    // f() {
-        (Operator, _) | (_, Operator) => SPACE_DOC,  // a + b
-        (Word, Open)                => EMPTY_DOC,   // foo(
-        (Close, Open)               => EMPTY_DOC,   // )(
-        (Word, Word)                => SPACE_DOC,    // fn foo
+        (Open, _) | (_, Close) => EMPTY_DOC,           // (x)
+        (Keyword, _) => SPACE_DOC,                     // let (a, b)  let &x
+        (Operator, Tight) => SPACE_DOC,                // a == !b
+        (Tight, Comment) => SPACE_DOC,                 // a:: /* c */ b
+        (Tight, _) | (_, Tight) => EMPTY_DOC,          // a.b  a::b  &x
+        (_, BraceOpen) => SPACE_DOC,                   // f() {
+        (Operator, _) | (_, Operator) => SPACE_DOC,    // a + b
+        (Word, Open) => EMPTY_DOC,                     // foo(
+        (Close, Open) => EMPTY_DOC,                    // )(
+        (Word, Word) => SPACE_DOC,                     // fn foo
         (Close, Word) | (Word, Close) => SPACE_DOC,
         _ => SPACE_DOC,
     }
@@ -352,17 +377,7 @@ impl<'a> Builder<'a> {
     pub fn with_token(fmt: &'a Formatter, token: Option<SyntaxToken>) -> Self {
         let mut frag = Frag::empty();
         frag.token = token;
-        Builder {
-            fmt,
-            frag
-        }
-    }
-
-    #[inline]
-    pub fn finish_node(mut self, node: &SyntaxNode) -> Frag {
-        //self.push_node_prologue(node);
-        //self.frag.element = Some(SyntaxElement::Node(node.clone()));
-        self.frag
+        Builder { fmt, frag }
     }
 
     #[inline]
@@ -375,24 +390,29 @@ impl<'a> Builder<'a> {
     }
 
     /// Appends line-breaking `doc_id` to the branches whose end edge satisfies `pred`; they then end with nothing
-    pub fn push_line_break_if(&mut self, doc_id: DocId, pred: impl Fn(Edge) -> bool) {
+    fn push_line_break_if(&mut self, doc_id: DocId, pred: impl Fn(Edge) -> bool) {
         let fmt = self.fmt;
         let frag = std::mem::take(&mut self.frag);
         self.frag = fmt.map_branches(frag, |b| {
             if pred(b.end) {
-                Branch { doc_id: fmt.concat(b.doc_id, doc_id), end: Nothing, ..b }
+                Branch {
+                    doc_id: fmt.concat(b.doc_id, doc_id),
+                    end: Nothing,
+                    ..b
+                }
             } else {
                 b
             }
         });
     }
 
-    pub fn set_token(&mut self, token: SyntaxToken) {
-        self.frag.token = Some(token);
-    }
-
     pub fn get_token(&self) -> Option<&SyntaxToken> {
         self.frag.token.as_ref()
+    }
+
+    /// Ends the line after a trailing line comment, which would otherwise swallow the following code
+    pub fn push_break_after_line_comment(&mut self) {
+        self.push_line_break_if(NEWLINE_DOC, |end| end == Break);
     }
 
     pub fn push_newline(&mut self) {
@@ -400,11 +420,24 @@ impl<'a> Builder<'a> {
         //self.frag.empty_lines = self.frag.empty_lines.saturating_sub(1);
     }
 
+    /// Pushes `frag` on a new line; the first item of the builder stays where it is.
+    /// Blank lines from the source in front of it are kept.
+    pub fn push_on_new_line(&mut self, frag: Frag) {
+        if !self.is_empty() {
+            self.ensure_newline();
+        }
+        self.push(frag);
+    }
+
     /// Ends the line; blank lines from the source are kept
-    pub fn ensure_newline(&mut self) {
+    fn ensure_newline(&mut self) {
         self.consume_comments();
         // The comment belongs to the following code, so no line break after it
-        let leading_comment = self.frag.token.as_ref().is_some_and(is_leading_block_comment);
+        let leading_comment = self
+            .frag
+            .token
+            .as_ref()
+            .is_some_and(is_leading_block_comment);
         self.flush_trivia(true);
         if leading_comment {
             return;
@@ -429,7 +462,7 @@ impl<'a> Builder<'a> {
         if blank == 0 {
             // A single source newline is significant only after a line comment;
             // otherwise the caller decides spacing
-            self.push_line_break_if(NEWLINE_DOC, |end| end == Break);
+            self.push_break_after_line_comment();
             return;
         }
         let mut doc_id = EMPTY_DOC;
@@ -455,8 +488,12 @@ impl<'a> Builder<'a> {
     /// Pushes the comments following `token`; the source `delimiter`, if found among them, is consumed
     /// without printing. With `stop_at_own_line`, it stops in front of the first own-line comment.
     /// Returns the last consumed token.
-    fn scan_comments(&mut self, token: SyntaxToken, mut delimiter: Option<SyntaxKind>,
-                     stop_at_own_line: bool) -> SyntaxToken {
+    fn scan_comments(
+        &mut self,
+        token: SyntaxToken,
+        mut delimiter: Option<SyntaxKind>,
+        stop_at_own_line: bool,
+    ) -> SyntaxToken {
         let mut cursor = token;
         let mut newlines = 0;
         let mut element = cursor.next_token();
@@ -490,9 +527,13 @@ impl<'a> Builder<'a> {
                     if own_line {
                         self.push_line_break_if(NEWLINE_DOC, |end| end != Nothing);
                     }
-                    let end = if token.text().starts_with("//") { Break } else { Word };
+                    let end = if token.text().starts_with("//") {
+                        Break
+                    } else {
+                        Word
+                    };
                     let doc_id = self.fmt.comment_doc(&token);
-                    self.push(Frag::new(doc_id, Word, end, None));
+                    self.push(Frag::new(doc_id, Edge::Comment, end, None));
                     cursor = token.clone();
                 }
                 x if Some(x) == delimiter => {
@@ -520,7 +561,10 @@ impl<'a> Builder<'a> {
         let Some(cursor) = self.frag.token.take() else {
             return;
         };
-        if cursor.next_token().is_some_and(|t| t.kind() == SyntaxKind::WHITESPACE && count_newlines(&t) > 0) {
+        if cursor
+            .next_token()
+            .is_some_and(|t| t.kind() == SyntaxKind::WHITESPACE && count_newlines(&t) > 0)
+        {
             self.push_line_break_if(NEWLINE_DOC, |end| end != Nothing);
         }
     }
@@ -606,7 +650,7 @@ impl<'a> Builder<'a> {
 
     pub fn push(&mut self, frag: Frag) {
         if frag.is_empty() {
-            return
+            return;
         }
         if self.frag.is_empty() {
             self.frag = frag;

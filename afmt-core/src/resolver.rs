@@ -145,12 +145,8 @@ impl<'a> Renderer<'a> {
                     }
                 }
                 let s = match self.resolver.doc_arena.get_node(*t) {
-                    DocNode::Token(token) => {
-                        token.text()
-                    }
-                    DocNode::Text(t) => {
-                        t.as_str()
-                    }
+                    DocNode::Token(token) => token.text(),
+                    DocNode::Text(t) => t.as_str(),
                     _ => unreachable!(),
                 };
                 self.out.push_str(s);
@@ -218,18 +214,18 @@ impl<'a> Resolver<'a> {
                 LayoutSet::empty()
             } else {
                 LayoutSet::single(Layout {
-                    measure: Measure::from_text(ctx.col, self.config.max_width, unicode_width::UnicodeWidthStr::width(s) as u32),
+                    measure: Measure::from_text(
+                        ctx.col,
+                        self.config.max_width,
+                        unicode_width::UnicodeWidthStr::width(s) as u32,
+                    ),
                     content: Rc::new(Content::Text(doc)),
                 })
             }
         };
         match self.doc_arena.get_node(doc) {
-            DocNode::Token(token) => {
-                resolve_text(token.text())
-            }
-            DocNode::Text(text) => {
-                resolve_text(text.as_str())
-            }
+            DocNode::Token(token) => resolve_text(token.text()),
+            DocNode::Text(text) => resolve_text(text.as_str()),
             DocNode::Newline if ctx.flat => LayoutSet::empty(),
             DocNode::Newline => LayoutSet::single(Layout {
                 measure: Measure {
@@ -242,13 +238,7 @@ impl<'a> Resolver<'a> {
             }),
             DocNode::Nest(d) => {
                 let indent = ctx.indent + self.config.indent_width;
-                let mut layout_set = self.resolve(
-                    Context {
-                        indent,
-                        ..ctx
-                    },
-                    *d,
-                );
+                let mut layout_set = self.resolve(Context { indent, ..ctx }, *d);
                 for layout in &mut layout_set.layouts {
                     layout.content = Rc::new(Content::Indent(indent, layout.content.clone()));
                 }
