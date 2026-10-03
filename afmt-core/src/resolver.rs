@@ -270,6 +270,11 @@ impl<'a> Resolver<'a> {
                 out
             }
             DocNode::Flat(doc) => self.resolve(Context { flat: true, ..ctx }, *doc),
+            DocNode::MultiLine(doc) => {
+                let mut layout_set = self.resolve(ctx, *doc);
+                layout_set.layouts.retain(|layout| layout.measure.height > 0);
+                layout_set
+            }
             DocNode::Alt(doc1, doc2) => {
                 let la = self.resolve(ctx, *doc1);
                 let lb = self.resolve(ctx, *doc2);

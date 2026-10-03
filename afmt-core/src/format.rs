@@ -1,6 +1,6 @@
 use super::formatter::Edge::{BraceClose, BraceOpen, Close, Comma, Open, Operator, Tight, Word};
 use crate::formatter::{Builder, Formatter, Frag};
-use crate::list::{list_comma_separated, list_nl_separated, list_operator_separated};
+use crate::list::{list_fill_separated, list_comma_separated, list_nl_separated, list_operator_separated};
 use ra_ap_syntax::ast::{
     ArgList, AssocTypeArg, BinExpr, BlockExpr, CallExpr, ElseBranch, Expr, Fn as AstFn, GenericArg,
     GenericArgList, HasArgList, HasGenericArgs, HasModuleItem, HasName, HasTypeBounds, IdentPat,
@@ -175,6 +175,30 @@ fn is_combinable_expr(expr: &Expr) -> bool {
     }
 }
 
+/// Simple expressions in the sense of rustfmt's `is_simple_expr`: literals, plain names and unary
+/// operators applied to them
+fn is_simple_expr(expr: &Expr) -> bool {
+    match expr {
+        Expr::Literal(_) => true,
+        Expr::PathExpr(expr) => expr.path().is_some_and(|path| {
+            path.qualifier().is_none()
+                && path.segment().is_some_and(|s| s.type_anchor().is_none() && s.coloncolon_token().is_none())
+        }),
+        Expr::PrefixExpr(expr) => expr.expr().is_some_and(|e| is_simple_expr(&e)),
+        _ => false,
+    }
+}
+
+/// Whether a broken argument list is filled on lines instead of one argument per line: all arguments
+/// are simple and at most `short_array_element_width_threshold` wide, as in rustfmt. This is an explicit
+/// exception to the Style Guide.
+fn is_fillable_arg_list(fmt: &Formatter, arg_list: &ArgList, args: &[Frag]) -> bool {
+    let threshold = fmt.config().short_array_element_width_threshold as usize;
+    threshold > 0
+        && arg_list.args().all(|a| is_simple_expr(&a))
+        && args.iter().all(|a| fmt.simple_length_frag(a).is_some_and(|w| w <= threshold))
+}
+
 fn format_arg_list(fmt: &Formatter, arg_list: ArgList) -> Frag {
     let mut builder = Builder::new(fmt);
     let l_paren = arg_list.l_paren_token().unwrap();
@@ -190,12 +214,19 @@ fn format_arg_list(fmt: &Formatter, arg_list: ArgList) -> Frag {
         builder.push(fmt.token_no_follows(l_paren.clone(), Open));
         let own_line_comment =
             Builder::with_token(fmt, Some(l_paren.clone())).has_own_line_comment();
-        let mut variants = list_nl_separated(fmt, &args, Some(l_paren.clone()));
+        let mut variants = if is_fillable_arg_list(fmt, &arg_list, &args) {
+            list_fill_separated(fmt, &args, Some(l_paren.clone()))
+        } else {
+            list_nl_separated(fmt, &args, Some(l_paren.clone()))
+        };
         // An own-line comment after `(` keeps the list vertical
         if !own_line_comment {
             let flat = list_comma_separated(fmt, &args, Some(l_paren.clone()));
-            // A single argument is not limited by `fn_call_width`
-            let flat = if args.len() == 1 {
+            // A single argument that cannot overflow is not limited by `fn_call_width`. One that can
+            // (e.g. a call) is: when it does not fit, it is broken instead, like rustfmt does.
+            let single_plain = args.len() == 1
+                && !arg_list.args().next().is_some_and(|e| is_combinable_expr(&e));
+            let flat = if single_plain {
                 Some(fmt.flat(flat))
             } else {
                 fmt.flat_within(flat, fmt.config().fn_call_width)
@@ -212,7 +243,9 @@ fn format_arg_list(fmt: &Formatter, arg_list: ArgList) -> Frag {
             overflow.push(args[0].clone());
             overflow.skip_delimiter(SyntaxKind::COMMA);
             overflow.flush_trivia(false);
-            variants = fmt.alt_frag(variants, overflow.to_frag());
+            // Only an argument that is broken overflows; on a single line, it is the flat layout,
+            // which is limited by `fn_call_width`
+            variants = fmt.alt_frag(variants, fmt.multi_line(overflow.to_frag()));
         }
         builder.push(variants);
     }

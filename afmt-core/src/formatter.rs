@@ -116,6 +116,14 @@ impl<'a> Formatter<'a> {
         self.alt_frag(frag.clone(), self.indented_line(frag))
     }
 
+    /// Restricts the fragment to layouts that span more than one line
+    pub fn multi_line(&self, frag: Frag) -> Frag {
+        self.map_branches(frag, |b| Branch {
+            doc_id: self.make_node(DocNode::MultiLine(b.doc_id)),
+            ..b
+        })
+    }
+
     /// Restricts the fragment to layouts on a single line
     pub fn flat(&self, frag: Frag) -> Frag {
         self.map_branches(frag, |b| Branch {
@@ -230,6 +238,7 @@ impl<'a> Formatter<'a> {
             DocNode::Text(t) => Some(unicode_width::UnicodeWidthStr::width(t.as_str())),
             Newline | DocNode::Nest(_) | DocNode::Align(_) => None,
             DocNode::Flat(d) => self.simple_length_doc(*d),
+            DocNode::MultiLine(_) => None,
             DocNode::Concat(a, b) => self
                 .simple_length_doc(*a)
                 .and_then(|size1| self.simple_length_doc(*b).map(|size2| size1 + size2)),
@@ -241,7 +250,8 @@ impl<'a> Formatter<'a> {
         }
     }
 
-    fn simple_length_frag(&self, frag: &Frag) -> Option<usize> {
+    /// Width of the fragment on a single line; `None` if it cannot be on a single line
+    pub fn simple_length_frag(&self, frag: &Frag) -> Option<usize> {
         frag.branches
             .iter()
             .map(|b| self.simple_length_doc(b.doc_id))
@@ -333,6 +343,43 @@ fn is_leading_block_comment(token: &SyntaxToken) -> bool {
         && token.text().starts_with("/*")
         && has_newline(token.prev_token())
         && !has_newline(token.next_token())
+}
+
+/// Where `Builder::scan_comments` stops at the latest
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ScanStop {
+    /// In front of the first token that is not trivia
+    Code,
+    /// In front of the first own-line comment
+    OwnLine,
+    /// Right after the delimiter; comments behind it are left
+    Delimiter,
+}
+
+fn delimiter_doc(kind: SyntaxKind) -> DocId {
+    match kind {
+        SyntaxKind::SEMICOLON => SEMICOLON_DOC,
+        SyntaxKind::COMMA => COMMA_DOC,
+        _ => unreachable!(),
+    }
+}
+
+/// Whether the rest of the line after `token` holds only comments and the delimiter `kind` (if given),
+/// i.e. no code follows on the same line after the delimiter
+fn rest_of_line_is_comments(token: &SyntaxToken, delimiter: Option<SyntaxKind>) -> bool {
+    let mut seen_delimiter = delimiter.is_none();
+    let mut element = token.next_token();
+    while let Some(t) = element {
+        match t.kind() {
+            SyntaxKind::WHITESPACE if seen_delimiter && count_newlines(&t) > 0 => return true,
+            SyntaxKind::WHITESPACE | SyntaxKind::COMMENT => {}
+            k if Some(k) == delimiter && !seen_delimiter => seen_delimiter = true,
+            // Without the delimiter, the code is the end of the list, e.g. `)`
+            _ => return !seen_delimiter,
+        }
+        element = t.next_token();
+    }
+    true
 }
 
 fn compute_space(left: Edge, right: Edge) -> DocId {
@@ -481,18 +528,18 @@ impl<'a> Builder<'a> {
     /// The whitespace after the cursor is left for `flush_trivia`.
     pub fn consume_comments(&mut self) {
         if let Some(token) = self.frag.token.take() {
-            self.frag.token = Some(self.scan_comments(token, None, false));
+            self.frag.token = Some(self.scan_comments(token, None, ScanStop::Code));
         }
     }
 
     /// Pushes the comments following `token`; the source `delimiter`, if found among them, is consumed
-    /// without printing. With `stop_at_own_line`, it stops in front of the first own-line comment.
+    /// without printing. `stop` says where the scan ends at the latest.
     /// Returns the last consumed token.
     fn scan_comments(
         &mut self,
         token: SyntaxToken,
         mut delimiter: Option<SyntaxKind>,
-        stop_at_own_line: bool,
+        stop: ScanStop,
     ) -> SyntaxToken {
         let mut cursor = token;
         let mut newlines = 0;
@@ -516,7 +563,7 @@ impl<'a> Builder<'a> {
                         newlines = 0;
                     }
                     let own_line = newlines > 0;
-                    if own_line && stop_at_own_line {
+                    if own_line && stop != ScanStop::Code {
                         break;
                     }
                     // Blank lines at the start of a fragment are dropped; the parent decides spacing
@@ -541,6 +588,9 @@ impl<'a> Builder<'a> {
                     newlines = 0;
                     delimiter = None;
                     cursor = token.clone();
+                    if stop == ScanStop::Delimiter {
+                        break;
+                    }
                 }
                 _ => break,
             }
@@ -554,7 +604,7 @@ impl<'a> Builder<'a> {
     /// is kept when the source has one.
     pub fn flush_leading_comments(&mut self) {
         if let Some(token) = self.frag.token.take() {
-            self.frag.token = Some(self.scan_comments(token, None, true));
+            self.frag.token = Some(self.scan_comments(token, None, ScanStop::OwnLine));
         }
         self.push_newline();
         self.consume_comments();
@@ -608,16 +658,77 @@ impl<'a> Builder<'a> {
     pub fn consume_delimiter(&mut self, kind: SyntaxKind, emit: bool) {
         let token = self.frag.token.take();
         if emit {
-            let doc_id = match kind {
-                SyntaxKind::SEMICOLON => SEMICOLON_DOC,
-                SyntaxKind::COMMA => COMMA_DOC,
-                _ => unreachable!(),
-            };
-            self.push(Frag::new_simple(doc_id, Comma, None));
+            self.push(Frag::new_simple(delimiter_doc(kind), Comma, None));
         }
         if let Some(token) = token {
-            self.frag.token = Some(self.scan_comments(token, Some(kind), false));
+            self.frag.token = Some(self.scan_comments(token, Some(kind), ScanStop::Code));
         }
+    }
+
+    /// Consumes the delimiter `kind` after a list item (the cursor) together with the item's post
+    /// comments, as rustfmt calls them: the comments in front of the delimiter and the comments after
+    /// it that end the line. Comments followed by code on the same line and own-line comments are
+    /// pre comments of the next item, so they are left for `push_pre_comments`.
+    /// Returns whether a post comment was pushed.
+    pub fn push_delimiter_with_post_comments(&mut self, kind: SyntaxKind) -> bool {
+        let token = self.frag.token.take();
+        self.push(Frag::new_simple(delimiter_doc(kind), Comma, None));
+        let Some(token) = token else {
+            return false;
+        };
+        let stop = if rest_of_line_is_comments(&token, Some(kind)) {
+            ScanStop::OwnLine
+        } else {
+            ScanStop::Delimiter
+        };
+        let cursor = self.scan_comments(token.clone(), Some(kind), stop);
+        let had_comment = cursor != token
+            && std::iter::successors(token.next_token(), |t| t.next_token())
+                .take_while(|t| t.text_range().start() <= cursor.text_range().start())
+                .any(|t| t.kind() == SyntaxKind::COMMENT);
+        self.frag.token = Some(cursor);
+        had_comment
+    }
+
+    /// Pushes the comments in front of the next list item (rustfmt's pre comments). A line break
+    /// follows them when the source has one after them, otherwise the item follows after a space.
+    pub fn push_pre_comments(&mut self) {
+        self.consume_comments();
+        let Some(cursor) = self.frag.token.as_ref() else {
+            return;
+        };
+        if cursor.kind() == SyntaxKind::COMMENT
+            && cursor
+                .next_token()
+                .is_some_and(|t| t.kind() == SyntaxKind::WHITESPACE && count_newlines(&t) > 0)
+        {
+            self.push_line_break_if(NEWLINE_DOC, |end| end != Nothing);
+        }
+    }
+
+    /// Pushes the comments after the cursor if nothing but comments follows on its line, e.g.
+    /// `( /* c */`; they stay on the cursor's line. A line comment no longer ends the line itself,
+    /// the caller has to start a new line.
+    pub fn push_comments_ending_line(&mut self) {
+        let Some(token) = self.frag.token.take() else {
+            return;
+        };
+        if rest_of_line_is_comments(&token, None) {
+            self.frag.token = Some(self.scan_comments(token, None, ScanStop::OwnLine));
+            self.push_line_break_if(EMPTY_DOC, |end| end == Break);
+        } else {
+            self.frag.token = Some(token);
+        }
+    }
+
+    /// Moves the cursor out of the builder; the trivia after it is processed by another builder
+    pub fn take_cursor(&mut self) -> Option<SyntaxToken> {
+        self.frag.token.take()
+    }
+
+    /// A space or a line break, whichever gives the better layout
+    pub fn push_soft_line_break(&mut self) {
+        self.push_line_break_if(NEWLINE_OR_SPACE_DOC, |_| true);
     }
 
     pub fn has_own_line_comment(&mut self) -> bool {
@@ -667,7 +778,7 @@ impl<'a> Builder<'a> {
     fn push_continuation(&mut self, frag: Frag) {
         // Comments on the same line as the left side stay there
         let token = self.frag.token.take().unwrap();
-        self.frag.token = Some(self.scan_comments(token, None, true));
+        self.frag.token = Some(self.scan_comments(token, None, ScanStop::OwnLine));
         if !self.has_own_line_comment() {
             self.flush_trivia(false);
             self.join(frag);

@@ -1,8 +1,7 @@
 fn main() {
     f(
         // before a
-        a,
-        b, // after b
+        a, b, // after b
         // dangling
     );
     f(/* x */);

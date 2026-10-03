@@ -22,6 +22,34 @@ pub(crate) fn list_comma_separated(
 }
 
 /// `open` is the opening delimiter; the comments following it are part of the list
+/// Items filled on lines, as many on each line as fit: `a, b, c,` / `d, e,`; with a line break after `open`,
+/// indented, and a trailing comma. Comments are placed like rustfmt does: a comment before the comma or
+/// ending the line belongs to the item and ends the line, a comment followed by an item on the same line
+/// stays in front of it, and an own-line comment gets its own line. Comments ending the line of `open`
+/// stay there, as in vertical lists.
+pub(crate) fn list_fill_separated(fmt: &Formatter, frags: &[Frag], open: Option<SyntaxToken>) -> Frag {
+    let mut head = Builder::with_token(fmt, open);
+    head.push_comments_ending_line();
+    let mut builder = Builder::with_token(fmt, head.take_cursor());
+    let mut had_post_comment = false;
+    for (i, frag) in frags.iter().enumerate() {
+        if i > 0 {
+            if had_post_comment || builder.has_own_line_comment() {
+                builder.push_newline();
+            } else {
+                builder.push_soft_line_break();
+            }
+        }
+        builder.push_pre_comments();
+        builder.push(frag.clone());
+        had_post_comment = builder.push_delimiter_with_post_comments(SyntaxKind::COMMA);
+    }
+    builder.flush_trivia(false);
+    builder.push_newline();
+    head.push(fmt.indented_line(builder.to_frag()));
+    head.to_frag()
+}
+
 pub(crate) fn list_nl_separated(
     fmt: &Formatter,
     frags: &[Frag],

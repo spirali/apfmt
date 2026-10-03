@@ -19,6 +19,8 @@ pub(crate) enum DocNode {
     Align(DocId),
     /// Only layouts of the inner doc that fit on a single line
     Flat(DocId),
+    /// Only layouts of the inner doc that span more than one line
+    MultiLine(DocId),
 }
 
 pub(crate) struct DocArena {
@@ -97,6 +99,12 @@ impl DocArena {
             }
             DocNode::Flat(d) => {
                 println!("Flat(");
+                self.dump_helper(*d, indent + 1);
+                make_ident();
+                println!(")");
+            }
+            DocNode::MultiLine(d) => {
+                println!("MultiLine(");
                 self.dump_helper(*d, indent + 1);
                 make_ident();
                 println!(")");

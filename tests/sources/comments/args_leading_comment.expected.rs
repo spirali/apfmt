@@ -1,13 +1,11 @@
 fn main() {
     f(
         /* block */
-        a,
-        b,
+        a, b,
     );
     f(
         // line
-        a,
-        b,
+        a, b,
     );
     f(/* same line */ a, b);
     f(/* same line */ a, b);
