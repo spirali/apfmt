@@ -4,8 +4,8 @@ use crate::list::{list_fill_separated, list_comma_separated, list_nl_separated, 
 use ra_ap_syntax::ast::{
     ArgList, AssocTypeArg, BinExpr, BlockExpr, CallExpr, ElseBranch, Expr, Fn as AstFn, GenericArg,
     GenericArgList, HasArgList, HasGenericArgs, HasModuleItem, HasName, HasTypeBounds, IdentPat,
-    IfExpr, Item, LetExpr, LetStmt, Literal, Name, NameRef, ParamList, ParenExpr,
-    ParenthesizedArgList, Pat, Path, PathExpr, PathSegment, PrefixExpr, RefType, RetType, Stmt,
+    IfExpr, Item, LetExpr, LetStmt, Literal, Name, NameRef, Param, ParamList, ParenExpr,
+    ParenthesizedArgList, Pat, Path, PathExpr, PathSegment, PrefixExpr, RefType, RetType, SelfParam, Stmt,
     StmtList, TuplePat, TupleStructPat, Type, TypeAnchor,
 };
 use ra_ap_syntax::{
@@ -664,14 +664,66 @@ fn format_block_expr_with_tail(fmt: &Formatter, body: BlockExpr, tail: Option<Fr
     format_stmt_list(fmt, body.stmt_list().unwrap(), tail)
 }
 
+/// `self`, `&self`, `&'a mut self`, `mut self` or `self: Type`
+fn format_self_param(fmt: &Formatter, param: SelfParam) -> Frag {
+    let mut builder = Builder::new(fmt);
+    if let Some(token) = param.amp_token() {
+        builder.push_token(token, Tight);
+    }
+    if let Some(lifetime) = param.lifetime() {
+        builder.push_token(lifetime.lifetime_ident_token().unwrap(), Word);
+    }
+    if let Some(token) = param.mut_token() {
+        builder.push_token(token, Word);
+    }
+    builder.push_token(param.name().unwrap().self_token().unwrap(), Word);
+    if let Some(ty) = param.ty() {
+        builder.push_token(param.colon_token().unwrap(), Comma);
+        builder.push(format_type(fmt, ty));
+    }
+    builder.to_frag()
+}
+
+/// `pat: Type`
+fn format_param(fmt: &Formatter, param: Param) -> Frag {
+    let (Some(pat), Some(ty), None) = (param.pat(), param.ty(), param.dotdotdot_token()) else {
+        panic!("{param:?}");
+    };
+    let mut builder = Builder::new(fmt);
+    builder.push(format_pat(fmt, pat));
+    builder.push_token(param.colon_token().unwrap(), Comma);
+    builder.push(format_type(fmt, ty));
+    builder.to_frag()
+}
+
+/// `(a: A, b: B)` on a single line, or one parameter per line with a trailing comma
 fn format_param_list(fmt: &Formatter, param_list: ParamList) -> Frag {
-    // Parameters are not supported yet
-    format_parenthesized(
-        fmt,
-        param_list.l_paren_token().unwrap(),
-        Frag::empty(),
-        param_list.r_paren_token().unwrap(),
-    )
+    let mut builder = Builder::new(fmt);
+    let l_paren = param_list.l_paren_token().unwrap();
+    let params = param_list
+        .self_param()
+        .map(|p| format_self_param(fmt, p))
+        .into_iter()
+        .chain(param_list.params().map(|p| format_param(fmt, p)))
+        .collect::<Vec<Frag>>();
+    if params.is_empty() {
+        builder.push_token(l_paren, Open);
+    } else {
+        // The comments following `(` belong to the list, so each layout places them itself
+        builder.push(fmt.token_no_follows(l_paren.clone(), Open));
+        let own_line_comment =
+            Builder::with_token(fmt, Some(l_paren.clone())).has_own_line_comment();
+        let vertical = list_nl_separated(fmt, &params, Some(l_paren.clone()));
+        // An own-line comment after `(` keeps the list vertical
+        builder.push(if own_line_comment {
+            vertical
+        } else {
+            let flat = list_comma_separated(fmt, &params, Some(l_paren));
+            fmt.alt_frag(fmt.flat(flat), vertical)
+        });
+    }
+    builder.push_token(param_list.r_paren_token().unwrap(), Close);
+    builder.to_frag()
 }
 
 fn format_fn(fmt: &Formatter, item_fn: AstFn) -> Frag {
@@ -679,6 +731,9 @@ fn format_fn(fmt: &Formatter, item_fn: AstFn) -> Frag {
     builder.push_token(item_fn.fn_token().unwrap(), Word);
     builder.push(format_name(fmt, item_fn.name().unwrap()));
     builder.push(format_param_list(fmt, item_fn.param_list().unwrap()));
+    if let Some(ret_type) = item_fn.ret_type() {
+        builder.push(format_ret_type(fmt, ret_type));
+    }
     builder.push(format_block_expr(fmt, item_fn.body().unwrap()));
     builder.to_frag()
 }
