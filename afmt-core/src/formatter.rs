@@ -7,7 +7,7 @@ use crate::resolver::Resolver;
 use ra_ap_syntax::{ast, PreorderWithTokens, RustLanguage, SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken, WalkEvent, AstNode, SourceFile, Direction};
 
 use ra_ap_syntax::ast::{ArgList, BlockExpr, CallExpr, Comment, Expr, HasArgList, HasModuleItem, HasName, Item, Literal, Name, Path, PathExpr, PathSegment, Stmt, StmtList, Fn as AstFn, ParamList};
-use crate::formatter::Edge::{Break, BraceClose, BraceOpen, Close, Comma, Nothing, Open, Operator, Tight, Word};
+use crate::formatter::Edge::{Break, BraceClose, BraceOpen, Close, Comma, Keyword, Nothing, Open, Operator, Tight, Word};
 use smallvec::{SmallVec, smallvec};
 use crate::comments::{multiline_comment_doc, normalize_block_comment};
 
@@ -37,6 +37,11 @@ impl<'a> Formatter<'a> {
         Frag::new_simple(self.make_node(DocNode::Token(token.clone())), edge, Some(token))
     }
 
+    /// Keyword that is always followed by a space, e.g. `let (a, b)`
+    pub fn keyword(&self, token: SyntaxToken) -> Frag {
+        Frag::new(self.make_node(DocNode::Token(token.clone())), Word, Keyword, Some(token))
+    }
+
     pub fn text(&self, text: String, edge: Edge) -> Frag {
         Frag::new_simple(self.make_node(DocNode::Text(text)), edge, None)
     }
@@ -53,6 +58,24 @@ impl<'a> Formatter<'a> {
 
     pub fn nest(&self, frag: Frag) -> Frag {
         self.map_branches(frag, |b| Branch { doc_id: self.make_node(DocNode::Nest(b.doc_id)), ..b })
+    }
+
+    /// Puts `sep` (usually a line break) in front of every branch. The fragment then starts
+    /// with `Nothing`, so no space is computed in front of it.
+    pub fn prefix_break(&self, sep: DocId, frag: Frag) -> Frag {
+        self.map_branches(frag, |b| Branch { start: Nothing, doc_id: self.concat(sep, b.doc_id), ..b })
+    }
+
+    /// The fragment starts on a new line with the current indentation
+    pub fn on_next_line(&self, frag: Frag) -> Frag {
+        self.prefix_break(NEWLINE_DOC, frag)
+    }
+
+    /// The fragment starts on a new line, indented one level deeper. The newline is inside
+    /// the nest, otherwise the resolver measures the first nested line (and aligns multi-line
+    /// comments) with the outer indent.
+    pub fn indented_line(&self, frag: Frag) -> Frag {
+        self.nest(self.on_next_line(frag))
     }
 
     /// Restricts the fragment to layouts on a single line
@@ -300,6 +323,7 @@ fn compute_space(left: Edge, right: Edge) -> DocId {
         (BraceOpen, _) | (_, BraceClose) => SPACE_DOC, // { x }
         (Open, _) | (_, Close)      => EMPTY_DOC,   // (x)
         (Keyword, _)                => SPACE_DOC,    // let (a, b)  let &x
+        (Operator, Tight)           => SPACE_DOC,    // a == !b
         (Tight, _) | (_, Tight)     => EMPTY_DOC,   // a.b  a::b  &x
         (_, BraceOpen)              => SPACE_DOC,    // f() {
         (Operator, _) | (_, Operator) => SPACE_DOC,  // a + b
@@ -311,6 +335,7 @@ fn compute_space(left: Edge, right: Edge) -> DocId {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct Builder<'a> {
     fmt: &'a Formatter<'a>,
     frag: Frag,
@@ -324,7 +349,7 @@ impl<'a> Builder<'a> {
         }
     }
 
-    pub fn new_with(fmt: &'a Formatter, token: Option<SyntaxToken>) -> Self {
+    pub fn with_token(fmt: &'a Formatter, token: Option<SyntaxToken>) -> Self {
         let mut frag = Frag::empty();
         frag.token = token;
         Builder {
@@ -332,12 +357,6 @@ impl<'a> Builder<'a> {
             frag
         }
     }
-
-    /*pub fn new_with(fmt: &'a Formatter, frag: Frag) -> Self {
-        Builder {
-            fmt, frag, empty_lines: 0,
-        }
-    }*/
 
     #[inline]
     pub fn finish_node(mut self, node: &SyntaxNode) -> Frag {
@@ -577,6 +596,14 @@ impl<'a> Builder<'a> {
         false
     }
 
+    pub fn push_token(&mut self, token: SyntaxToken, edge: Edge) {
+        self.push(self.fmt.token(token, edge));
+    }
+
+    pub fn push_keyword(&mut self, token: SyntaxToken) {
+        self.push(self.fmt.keyword(token));
+    }
+
     pub fn push(&mut self, frag: Frag) {
         if frag.is_empty() {
             return
@@ -603,19 +630,12 @@ impl<'a> Builder<'a> {
             return;
         }
         let fmt = self.fmt;
-        let mut nested = Builder::new_with(fmt, self.frag.token.take());
+        let mut nested = Builder::with_token(fmt, self.frag.token.take());
         nested.flush_trivia(false);
         nested.push(frag);
-        // The newline has to be inside the nest, otherwise the resolver measures the first
-        // nested line (and aligns multi-line comments) with the outer indent
-        let nested = fmt.map_branches(nested.to_frag(), |b| Branch {
-            doc_id: fmt.concat(NEWLINE_DOC, b.doc_id),
-            start: Nothing,
-            ..b
-        });
         // A line comment on the left side is ended by the nested newline
         self.push_line_break_if(EMPTY_DOC, |end| end == Break);
-        self.join(fmt.nest(nested));
+        self.join(fmt.indented_line(nested.to_frag()));
     }
 
     /// Concatenates `frag` without processing the trivia in between

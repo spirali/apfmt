@@ -5,7 +5,7 @@ use crate::formatter::Edge::{Break, Nothing};
 
 /// `open` is the opening delimiter; the comments following it are part of the list
 pub(crate) fn list_comma_separated(fmt: &Formatter, frags: &[Frag], open: Option<SyntaxToken>) -> Frag {
-    let mut builder = Builder::new_with(fmt, open);
+    let mut builder = Builder::with_token(fmt, open);
     builder.flush_trivia(false);
     for (i, frag) in frags.iter().enumerate() {
         builder.push(frag.clone());
@@ -21,7 +21,7 @@ pub(crate) fn list_comma_separated(fmt: &Formatter, frags: &[Frag], open: Option
 
 /// `open` is the opening delimiter; the comments following it are part of the list
 pub(crate) fn list_nl_separated(fmt: &Formatter, frags: &[Frag], open: Option<SyntaxToken>) -> Frag {
-    let mut builder = Builder::new_with(fmt, open);
+    let mut builder = Builder::with_token(fmt, open);
     builder.flush_leading_comments();
     for frag in frags.iter() {
         builder.push(frag.clone());
