@@ -1,12 +1,13 @@
 use super::formatter::Edge::{BraceClose, BraceOpen, Close, Comma, Open, Operator, Tight, Word};
 use crate::formatter::{Builder, Formatter, Frag};
-use crate::list::{list_fill_separated, list_comma_separated, list_nl_separated, list_operator_separated};
+use crate::list::{list_comma_separated, list_fill_separated, list_items, list_items_cast, list_nl_separated, list_operator_separated, ListItem};
 use ra_ap_syntax::ast::{
-    ArgList, AssocTypeArg, BinExpr, BlockExpr, CallExpr, ElseBranch, Expr, Fn as AstFn, GenericArg,
-    GenericArgList, HasArgList, HasGenericArgs, HasModuleItem, HasName, HasTypeBounds, IdentPat,
-    IfExpr, Item, LetExpr, LetStmt, Literal, Name, NameRef, Param, ParamList, ParenExpr,
-    ParenthesizedArgList, Pat, Path, PathExpr, PathSegment, PrefixExpr, RefType, RetType, SelfParam, Stmt,
-    StmtList, TuplePat, TupleStructPat, Type, TypeAnchor,
+    ArgList, AssocTypeArg, BinExpr, BlockExpr, CallExpr, ElseBranch, Expr, FieldList, Fn as AstFn,
+    GenericArg, GenericArgList, HasArgList, HasGenericArgs, HasGenericParams, HasModuleItem,
+    HasName, HasTypeBounds, HasVisibility, IdentPat, IfExpr, Item, LetExpr, LetStmt, Literal, Name,
+    NameRef, Param, ParamList, ParenExpr, ParenthesizedArgList, Pat, Path, PathExpr, PathSegment,
+    PrefixExpr, RecordField, RecordFieldList, RefType, RetType, SelfParam, Stmt, StmtList, Struct,
+    TupleField, TupleFieldList, TuplePat, TupleStructPat, Type, TypeAnchor, TypeArg, Visibility,
 };
 use ra_ap_syntax::{
     AstNode, Direction, PreorderWithTokens, RustLanguage, SourceFile, SyntaxElement, SyntaxKind,
@@ -89,10 +90,7 @@ fn format_generic_arg_list(fmt: &Formatter, args: GenericArgList) -> Frag {
     if let Some(token) = args.coloncolon_token() {
         builder.push_token(token, Tight);
     }
-    let items = args
-        .generic_args()
-        .map(|a| format_generic_arg(fmt, a))
-        .collect::<Vec<Frag>>();
+    let items = list_items_cast(args.syntax(), |a| format_generic_arg(fmt, a));
     let inner = list_comma_separated(fmt, &items, None);
     builder.push(format_parenthesized(
         fmt,
@@ -137,10 +135,9 @@ fn format_parenthesized_arg_list(fmt: &Formatter, args: ParenthesizedArgList) ->
     if let Some(token) = args.coloncolon_token() {
         builder.push_token(token, Tight);
     }
-    let items = args
-        .type_args()
-        .map(|a| format_type(fmt, a.ty().unwrap()))
-        .collect::<Vec<Frag>>();
+    let items = list_items_cast::<TypeArg>(args.syntax(), |a| {
+        format_type(fmt, a.ty().unwrap())
+    });
     let inner = list_comma_separated(fmt, &items, None);
     builder.push(format_parenthesized(
         fmt,
@@ -192,21 +189,18 @@ fn is_simple_expr(expr: &Expr) -> bool {
 /// Whether a broken argument list is filled on lines instead of one argument per line: all arguments
 /// are simple and at most `short_array_element_width_threshold` wide, as in rustfmt. This is an explicit
 /// exception to the Style Guide.
-fn is_fillable_arg_list(fmt: &Formatter, arg_list: &ArgList, args: &[Frag]) -> bool {
+fn is_fillable_arg_list(fmt: &Formatter, arg_list: &ArgList, args: &[ListItem]) -> bool {
     let threshold = fmt.config().short_array_element_width_threshold as usize;
     threshold > 0
         && arg_list.args().all(|a| is_simple_expr(&a))
-        && args.iter().all(|a| fmt.simple_length_frag(a).is_some_and(|w| w <= threshold))
+        && args.iter().all(|a| fmt.simple_length_frag(&a.frag).is_some_and(|w| w <= threshold))
 }
 
 fn format_arg_list(fmt: &Formatter, arg_list: ArgList) -> Frag {
     let mut builder = Builder::new(fmt);
     let l_paren = arg_list.l_paren_token().unwrap();
 
-    let args = arg_list
-        .args()
-        .map(|a| format_expr(fmt, a.clone()))
-        .collect::<Vec<Frag>>();
+    let args = list_items_cast(arg_list.syntax(), |e| format_expr(fmt, e));
     if args.is_empty() {
         builder.push_token(l_paren, Open);
     } else {
@@ -217,7 +211,7 @@ fn format_arg_list(fmt: &Formatter, arg_list: ArgList) -> Frag {
         let mut variants = if is_fillable_arg_list(fmt, &arg_list, &args) {
             list_fill_separated(fmt, &args, Some(l_paren.clone()))
         } else {
-            list_nl_separated(fmt, &args, Some(l_paren.clone()))
+            list_nl_separated(fmt, &args, Some(l_paren.clone()), false)
         };
         // An own-line comment after `(` keeps the list vertical
         if !own_line_comment {
@@ -240,7 +234,7 @@ fn format_arg_list(fmt: &Formatter, arg_list: ArgList) -> Frag {
         {
             let mut overflow = Builder::with_token(fmt, Some(l_paren));
             overflow.flush_trivia(false);
-            overflow.push(args[0].clone());
+            overflow.push(args[0].frag.clone());
             overflow.skip_delimiter(SyntaxKind::COMMA);
             overflow.flush_trivia(false);
             // Only an argument that is broken overflows; on a single line, it is the flat layout,
@@ -492,15 +486,14 @@ fn format_ident_pat(fmt: &Formatter, pat: IdentPat) -> Frag {
 }
 
 fn format_tuple_pat(fmt: &Formatter, pat: TuplePat) -> Frag {
-    let fields = pat
-        .fields()
-        .map(|p| format_pat(fmt, p))
-        .collect::<Vec<Frag>>();
-    let inner = if fields.len() == 1 {
-        // `(a,)` is a tuple, `(a)` is just a parenthesized pattern
+    let fields = list_items_cast(pat.syntax(), |p| format_pat(fmt, p));
+    let inner = if let [field] = fields.as_slice() {
+        // `(a,)` is a tuple, `(a)` is just a parenthesized pattern; the parser guarantees the comma
         let mut builder = Builder::new(fmt);
-        builder.push(fields[0].clone());
-        builder.push_delimiter(SyntaxKind::COMMA);
+        builder.push(field.frag.clone());
+        if let Some(comma) = field.comma.clone() {
+            builder.push_token(comma, Comma);
+        }
         builder.to_frag()
     } else {
         list_comma_separated(fmt, &fields, None)
@@ -516,10 +509,7 @@ fn format_tuple_pat(fmt: &Formatter, pat: TuplePat) -> Frag {
 fn format_tuple_struct_pat(fmt: &Formatter, pat: TupleStructPat) -> Frag {
     let mut builder = Builder::new(fmt);
     builder.push(format_path(fmt, pat.path().unwrap()));
-    let fields = pat
-        .fields()
-        .map(|p| format_pat(fmt, p))
-        .collect::<Vec<Frag>>();
+    let fields = list_items_cast(pat.syntax(), |p| format_pat(fmt, p));
     let inner = list_comma_separated(fmt, &fields, None);
     builder.push(format_parenthesized(
         fmt,
@@ -700,12 +690,10 @@ fn format_param(fmt: &Formatter, param: Param) -> Frag {
 fn format_param_list(fmt: &Formatter, param_list: ParamList) -> Frag {
     let mut builder = Builder::new(fmt);
     let l_paren = param_list.l_paren_token().unwrap();
-    let params = param_list
-        .self_param()
-        .map(|p| format_self_param(fmt, p))
-        .into_iter()
-        .chain(param_list.params().map(|p| format_param(fmt, p)))
-        .collect::<Vec<Frag>>();
+    let params = list_items(param_list.syntax(), |n| match SelfParam::cast(n.clone()) {
+        Some(p) => Some(format_self_param(fmt, p)),
+        None => Param::cast(n).map(|p| format_param(fmt, p)),
+    });
     if params.is_empty() {
         builder.push_token(l_paren, Open);
     } else {
@@ -713,7 +701,7 @@ fn format_param_list(fmt: &Formatter, param_list: ParamList) -> Frag {
         builder.push(fmt.token_no_follows(l_paren.clone(), Open));
         let own_line_comment =
             Builder::with_token(fmt, Some(l_paren.clone())).has_own_line_comment();
-        let vertical = list_nl_separated(fmt, &params, Some(l_paren.clone()));
+        let vertical = list_nl_separated(fmt, &params, Some(l_paren.clone()), false);
         // An own-line comment after `(` keeps the list vertical
         builder.push(if own_line_comment {
             vertical
@@ -738,10 +726,126 @@ fn format_fn(fmt: &Formatter, item_fn: AstFn) -> Frag {
     builder.to_frag()
 }
 
+/// `pub`, `pub(crate)`, `pub(super)` or `pub(in path)`
+fn format_visibility(fmt: &Formatter, visibility: Visibility) -> Frag {
+    let mut builder = Builder::new(fmt);
+    builder.push_token(visibility.pub_token().unwrap(), Word);
+    if let Some(inner) = visibility.visibility_inner() {
+        let mut path = Builder::new(fmt);
+        if let Some(token) = inner.in_token() {
+            path.push_keyword(token);
+        }
+        path.push(format_path(fmt, inner.path().unwrap()));
+        builder.push(format_parenthesized(
+            fmt,
+            inner.l_paren_token().unwrap(),
+            path.to_frag(),
+            inner.r_paren_token().unwrap(),
+        ));
+    }
+    builder.to_frag()
+}
+
+/// `pub name: Type`
+fn format_record_field(fmt: &Formatter, field: RecordField) -> Frag {
+    let mut builder = Builder::new(fmt);
+    if let Some(visibility) = field.visibility() {
+        builder.push(format_visibility(fmt, visibility));
+    }
+    builder.push(format_name(fmt, field.name().unwrap()));
+    builder.push_token(field.colon_token().unwrap(), Comma);
+    builder.push(format_type(fmt, field.ty().unwrap()));
+    builder.to_frag()
+}
+
+/// `pub Type`
+fn format_tuple_field(fmt: &Formatter, field: TupleField) -> Frag {
+    let mut builder = Builder::new(fmt);
+    if let Some(visibility) = field.visibility() {
+        builder.push(format_visibility(fmt, visibility));
+    }
+    builder.push(format_type(fmt, field.ty().unwrap()));
+    builder.to_frag()
+}
+
+/// `{ a: A, b: B }` of a struct definition: always one field per line with a trailing comma, blank lines
+/// between fields are kept; `{}` without fields
+fn format_record_field_list(fmt: &Formatter, list: RecordFieldList) -> Frag {
+    let l_curly = list.l_curly_token().unwrap();
+    let fields = list_items_cast(list.syntax(), |f| {
+        format_record_field(fmt, f)
+    });
+    let mut builder = Builder::new(fmt);
+    builder.push(fmt.token_no_follows(l_curly.clone(), BraceOpen));
+    if fields.is_empty() {
+        // Only comments: indented on their own lines, like in an empty block
+        let mut comments = Builder::with_token(fmt, Some(l_curly));
+        comments.flush_trivia(false);
+        if !comments.is_empty() {
+            comments.push_newline();
+            builder.push(fmt.indented_line(comments.to_frag()));
+        }
+    } else {
+        builder.push(list_nl_separated(fmt, &fields, Some(l_curly), true));
+    }
+    builder.push_token(list.r_curly_token().unwrap(), BraceClose);
+    builder.to_frag()
+}
+
+/// `(A, B)` of a tuple struct: on a single line if the fields fit within `fn_call_width`,
+/// otherwise one field per line with a trailing comma
+fn format_tuple_field_list(fmt: &Formatter, list: TupleFieldList) -> Frag {
+    let l_paren = list.l_paren_token().unwrap();
+    let fields = list_items_cast(list.syntax(), |f| format_tuple_field(fmt, f));
+    let mut builder = Builder::new(fmt);
+    if fields.is_empty() {
+        builder.push_token(l_paren, Open);
+    } else {
+        // The comments following `(` belong to the list, so each layout places them itself
+        builder.push(fmt.token_no_follows(l_paren.clone(), Open));
+        let own_line_comment =
+            Builder::with_token(fmt, Some(l_paren.clone())).has_own_line_comment();
+        let vertical = list_nl_separated(fmt, &fields, Some(l_paren.clone()), false);
+        // An own-line comment after `(` keeps the list vertical
+        builder.push(if own_line_comment {
+            vertical
+        } else {
+            let flat = list_comma_separated(fmt, &fields, Some(l_paren));
+            fmt.alt_opt(vertical, fmt.flat_within(flat, fmt.config().fn_call_width))
+        });
+    }
+    builder.push_token(list.r_paren_token().unwrap(), Close);
+    builder.to_frag()
+}
+
+/// `struct Name;`, `struct Name { a: A }` or `struct Name(A);`
+fn format_struct(fmt: &Formatter, item: Struct) -> Frag {
+    assert!(
+        item.generic_param_list().is_none() && item.where_clause().is_none(),
+        "generic structs are not supported yet: {item:?}"
+    );
+    let mut builder = Builder::new(fmt);
+    if let Some(visibility) = item.visibility() {
+        builder.push(format_visibility(fmt, visibility));
+    }
+    builder.push_token(item.struct_token().unwrap(), Word);
+    builder.push(format_name(fmt, item.name().unwrap()));
+    match item.field_list() {
+        Some(FieldList::RecordFieldList(list)) => builder.push(format_record_field_list(fmt, list)),
+        Some(FieldList::TupleFieldList(list)) => builder.push(format_tuple_field_list(fmt, list)),
+        None => {}
+    }
+    if item.semicolon_token().is_some() {
+        builder.push_delimiter(SyntaxKind::SEMICOLON);
+    }
+    builder.to_frag()
+}
+
 fn format_item(fmt: &Formatter, item: Item) -> Frag {
     let mut builder = Builder::new(fmt);
     match item {
         Item::Fn(item) => builder.push(format_fn(fmt, item)),
+        Item::Struct(item) => builder.push(format_struct(fmt, item)),
         x => {
             panic!("{x:?}");
         }

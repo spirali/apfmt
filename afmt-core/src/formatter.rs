@@ -477,7 +477,7 @@ impl<'a> Builder<'a> {
     }
 
     /// Ends the line; blank lines from the source are kept
-    fn ensure_newline(&mut self) {
+    pub fn ensure_newline(&mut self) {
         self.consume_comments();
         // The comment belongs to the following code, so no line break after it
         let leading_comment = self

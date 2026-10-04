@@ -7,6 +7,7 @@ mod formatter;
 mod list;
 mod measure;
 mod resolver;
+mod utils;
 
 pub use crate::config::Config;
 use crate::format::format_source_file;

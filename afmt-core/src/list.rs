@@ -1,19 +1,67 @@
+use crate::formatter::Edge::Comma;
 use crate::formatter::{Builder, Formatter, Frag};
-use ra_ap_syntax::{SyntaxKind, SyntaxToken};
+use crate::utils::with_is_last;
+use ra_ap_syntax::{AstNode, SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken};
 
-/// `open` is the opening delimiter; the comments following it are part of the list
+/// An item of a comma-separated list with the source comma following it
+#[derive(Clone)]
+pub(crate) struct ListItem {
+    pub frag: Frag,
+    /// `None` for the last item without a trailing comma
+    pub comma: Option<SyntaxToken>,
+}
+
+/// The items of the comma-separated list `node` (an argument list, a parameter list, ...) with their
+/// commas. `format` formats a child node, or returns `None` for children that are not items.
+pub(crate) fn list_items(
+    node: &SyntaxNode,
+    mut format: impl FnMut(SyntaxNode) -> Option<Frag>,
+) -> Vec<ListItem> {
+    let mut items: Vec<ListItem> = Vec::new();
+    for element in node.children_with_tokens() {
+        match element {
+            SyntaxElement::Node(child) => {
+                if let Some(frag) = format(child) {
+                    items.push(ListItem { frag, comma: None });
+                }
+            }
+            SyntaxElement::Token(token) if token.kind() == SyntaxKind::COMMA => {
+                // A comma always follows an item and is never doubled, otherwise the parser reports an error
+                let last = items.last_mut().filter(|item| item.comma.is_none());
+                debug_assert!(last.is_some(), "unexpected comma in {node:?}");
+                if let Some(item) = last {
+                    item.comma = Some(token);
+                }
+            }
+            SyntaxElement::Token(_) => {}
+        }
+    }
+    items
+}
+
+
+pub(crate) fn list_items_cast<T: AstNode>(
+    node: &SyntaxNode,
+    mut format: impl FnMut(T) -> Frag,
+) -> Vec<ListItem> {
+    list_items(node, |node| T::cast(node).map(&mut format))
+}
+
 pub(crate) fn list_comma_separated(
     fmt: &Formatter,
-    frags: &[Frag],
+    items: &[ListItem],
     open: Option<SyntaxToken>,
 ) -> Frag {
     let mut builder = Builder::with_token(fmt, open);
     builder.flush_trivia(false);
-    for (i, frag) in frags.iter().enumerate() {
-        builder.push(frag.clone());
-        // No trailing comma, but the source one and its comments still have to be consumed
-        let emit = i + 1 < frags.len();
-        builder.consume_delimiter(SyntaxKind::COMMA, emit);
+    for (item, is_last) in with_is_last(items) {
+        builder.push(item.frag.clone());
+        match &item.comma {
+            // The source separator, so comments in front of it stay there: `a /* c */, b`
+            Some(comma) if !is_last => builder.push_token(comma.clone(), Comma),
+            // No trailing comma, but the source one and its comments still have to be consumed
+            _ => builder.skip_delimiter(SyntaxKind::COMMA),
+        }
     }
     builder.flush_trivia(false);
     // A line comment ends the line inside the list, so `Flat` rejects such a layout
@@ -21,28 +69,27 @@ pub(crate) fn list_comma_separated(
     builder.to_frag()
 }
 
-/// `open` is the opening delimiter; the comments following it are part of the list
 /// Items filled on lines, as many on each line as fit: `a, b, c,` / `d, e,`; with a line break after `open`,
 /// indented, and a trailing comma. Comments are placed like rustfmt does: a comment before the comma or
 /// ending the line belongs to the item and ends the line, a comment followed by an item on the same line
 /// stays in front of it, and an own-line comment gets its own line. Comments ending the line of `open`
 /// stay there, as in vertical lists.
-pub(crate) fn list_fill_separated(fmt: &Formatter, frags: &[Frag], open: Option<SyntaxToken>) -> Frag {
+pub(crate) fn list_fill_separated(fmt: &Formatter, items: &[ListItem], open: Option<SyntaxToken>) -> Frag {
     let mut head = Builder::with_token(fmt, open);
     head.push_comments_ending_line();
     let mut builder = Builder::with_token(fmt, head.take_cursor());
-    let mut had_post_comment = false;
-    for (i, frag) in frags.iter().enumerate() {
-        if i > 0 {
-            if had_post_comment || builder.has_own_line_comment() {
-                builder.push_newline();
-            } else {
-                builder.push_soft_line_break();
-            }
-        }
+    for (item, is_last) in with_is_last(items) {
         builder.push_pre_comments();
-        builder.push(frag.clone());
-        had_post_comment = builder.push_delimiter_with_post_comments(SyntaxKind::COMMA);
+        builder.push(item.frag.clone());
+        let had_post_comment = builder.push_delimiter_with_post_comments(SyntaxKind::COMMA);
+        if is_last {
+            break;
+        }
+        if had_post_comment || builder.has_own_line_comment() {
+            builder.push_newline();
+        } else {
+            builder.push_soft_line_break();
+        }
     }
     builder.flush_trivia(false);
     builder.push_newline();
@@ -50,18 +97,27 @@ pub(crate) fn list_fill_separated(fmt: &Formatter, frags: &[Frag], open: Option<
     head.to_frag()
 }
 
+/// One item per line with a trailing comma, indented; `open` is the opening delimiter and the comments
+/// following it are part of the list. With `keep_blank_lines`, blank lines between items are kept
+/// (up to `blank_lines_upper_bound`), e.g. between struct fields.
 pub(crate) fn list_nl_separated(
     fmt: &Formatter,
-    frags: &[Frag],
+    items: &[ListItem],
     open: Option<SyntaxToken>,
+    keep_blank_lines: bool,
 ) -> Frag {
     let mut builder = Builder::with_token(fmt, open);
     builder.flush_leading_comments();
-    for frag in frags.iter() {
-        builder.push(frag.clone());
+    for (item, is_last) in with_is_last(items) {
+        builder.push(item.frag.clone());
         builder.push_delimiter(SyntaxKind::COMMA);
-        builder.flush_trivia(false);
-        builder.push_newline();
+        // Blank lines in front of the closing delimiter are dropped
+        if keep_blank_lines && !is_last {
+            builder.ensure_newline();
+        } else {
+            builder.flush_trivia(false);
+            builder.push_newline();
+        }
     }
     fmt.nest(builder.to_frag())
 }
