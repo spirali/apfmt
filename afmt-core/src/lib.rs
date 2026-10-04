@@ -4,8 +4,7 @@ mod doc;
 mod error;
 mod format;
 mod formatter;
-mod list;
-mod measure;
+mod layout;
 mod resolver;
 mod utils;
 
