@@ -5,9 +5,7 @@ fn b() {
     // Comment
 }
 
-fn c() {
-    /* Comment */
-}
+fn c() { /* Comment */ }
 
 fn e() {}
 

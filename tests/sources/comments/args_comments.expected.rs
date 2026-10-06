@@ -5,7 +5,7 @@ fn main() {
         // dangling
     );
     f(/* x */);
-    f(// x
+    f( // x
     );
     g(h(
         1, // one

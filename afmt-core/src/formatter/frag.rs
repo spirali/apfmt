@@ -19,6 +19,9 @@ pub enum Edge {
     Operator,   // + == => : ->
     Comment,    // start of a comment
     Break,
+    /// Start of a fragment that begins with a mandatory line break (`Formatter::on_next_line`): no
+    /// space in front of it, and a line comment in front of it needs no line break of its own
+    LineStart,
 }
 
 /// One alternative of a fragment together with its edges
@@ -71,6 +74,7 @@ impl Default for Frag {
 pub(super) fn compute_space(left: Edge, right: Edge) -> DocId {
     use Edge::*;
     match (left, right) {
+        (_, LineStart) => EMPTY_DOC,
         (Break, _) | (_, Break) => NEWLINE_DOC,
         (Nothing, _) | (_, Nothing) => EMPTY_DOC,
         (BraceOpen, BraceClose) => EMPTY_DOC,          // {}

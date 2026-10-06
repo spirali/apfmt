@@ -16,9 +16,7 @@ struct TupleOwnLine(
 struct E {
     // only a comment
 }
-struct F {
-    /* c */
-}
+struct F { /* c */ }
 struct G {
     // one
 

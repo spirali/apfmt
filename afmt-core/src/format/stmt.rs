@@ -4,10 +4,11 @@ use super::expr::{format_expr, format_if_expr};
 use super::item::format_item;
 use super::pat::format_pat;
 use super::ty::format_type;
-use crate::formatter::Edge::{BraceClose, BraceOpen, Comma, Operator, Word};
+use crate::formatter::Edge::{Comma, Operator, Word};
 use crate::formatter::{Builder, Formatter, Frag};
+use crate::layout::list::Delimiters;
 use ra_ap_syntax::ast::{BlockExpr, Expr, LetStmt, Stmt, StmtList};
-use ra_ap_syntax::SyntaxKind;
+use ra_ap_syntax::{AstNode, SyntaxKind};
 
 fn format_let_stmt(fmt: &Formatter, stmt: LetStmt) -> Frag {
     let mut builder = Builder::new(fmt);
@@ -53,6 +54,11 @@ fn format_stmt(fmt: &Formatter, stmt: Stmt) -> Frag {
 
 /// `tail` is the already formatted tail expression, when it is shared with another layout
 fn format_stmt_list(fmt: &Formatter, stmt_list: StmtList, tail: Option<Frag>) -> Frag {
+    let delims = Delimiters::braces_of(stmt_list.syntax());
+    if stmt_list.statements().next().is_none() && stmt_list.tail_expr().is_none() {
+        // Only comments or nothing, as in any empty container
+        return delims.empty(fmt);
+    }
     let l_curly = stmt_list.l_curly_token().unwrap();
     // Tokens following `{` belong to the body, so they are nested with it; blank lines right after
     // `{` are dropped
@@ -68,17 +74,8 @@ fn format_stmt_list(fmt: &Formatter, stmt_list: StmtList, tail: Option<Frag>) ->
 
     // Blank lines before `}` are dropped
     builder.flush_trivia(false);
-    let body_frag = if !builder.is_empty() {
-        builder.push_newline();
-        fmt.body_after_opener(line_comments, builder.into_frag())
-    } else {
-        Frag::empty()
-    };
-    let mut builder = Builder::new(fmt);
-    builder.push(fmt.token_without_cursor(l_curly, BraceOpen));
-    builder.push(body_frag);
-    builder.push_token(stmt_list.r_curly_token().unwrap(), BraceClose);
-    builder.into_frag()
+    builder.push_newline();
+    delims.wrap(fmt, fmt.body_after_opener(line_comments, builder.into_frag()))
 }
 
 pub(super) fn format_block_expr(fmt: &Formatter, body: BlockExpr) -> Frag {

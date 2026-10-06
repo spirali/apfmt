@@ -2,6 +2,7 @@
 
 use crate::formatter::Edge::{BraceClose, BraceOpen, Close, Comma, Open, Word};
 use crate::formatter::{Builder, Edge, Formatter, Frag};
+use crate::comments::{own_line_comment_follows, trivia_from};
 use crate::utils::with_is_last;
 use ra_ap_syntax::{AstNode, SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken};
 
@@ -103,7 +104,7 @@ fn fill_list(fmt: &Formatter, items: &[ListItem], open: Option<SyntaxToken>) -> 
         if is_last {
             break;
         }
-        if had_post_comment || builder.has_own_line_comment() {
+        if had_post_comment || builder.cursor().is_some_and(own_line_comment_follows) {
             builder.push_newline();
         } else {
             builder.push_soft_line_break();
@@ -240,28 +241,35 @@ impl Delimiters {
         builder.into_frag()
     }
 
-    /// The list without items; it may still contain comments
-    fn empty(&self, fmt: &Formatter) -> Frag {
-        match self.kind {
-            DelimiterKind::Parens | DelimiterKind::Angles => self.enclose(fmt, Frag::empty()),
-            DelimiterKind::Braces => {
-                // Only comments: indented on their own lines, like in an empty block
-                let mut comments = Builder::with_cursor(fmt, Some(self.open.clone()));
-                comments.flush_trivia(false);
-                let inner = if comments.is_empty() {
-                    Frag::empty()
-                } else {
-                    comments.push_newline();
-                    fmt.indented_line(comments.into_frag())
-                };
-                self.wrap(fmt, inner)
-            }
+    /// The container without items or statements: `()`, `{}`, or only comments,
+    pub fn empty(&self, fmt: &Formatter) -> Frag {
+        // The container is empty, so only trivia is between the delimiters
+        let inside = || trivia_from(self.open.next_token());
+        if !inside().any(|t| t.kind() == SyntaxKind::COMMENT) {
+            return self.wrap(fmt, Frag::empty());
         }
+        if !inside().any(|t| t.text().contains('\n')) {
+            let mut comments = Builder::with_cursor(fmt, Some(self.open.clone()));
+            comments.flush_trivia(false);
+            let comments = comments.into_frag();
+            let mut own_line = Builder::new(fmt);
+            own_line.push(comments.clone());
+            own_line.push_newline();
+            // On their own line only if they do not fit on the delimiters' line
+            let inline = fmt.flat(self.wrap(fmt, comments));
+            let own_line = self.wrap(fmt, fmt.body_after_opener(false, own_line.into_frag()));
+            return fmt.alt_frag(inline, own_line);
+        }
+        let mut body = Builder::with_cursor(fmt, Some(self.open.clone()));
+        let line_comments = body.push_comments_ending_line();
+        body.flush_trivia(false);
+        body.push_newline();
+        self.wrap(fmt, fmt.body_after_opener(line_comments, body.into_frag()))
     }
 
     /// An own-line comment after the opening delimiter allows only broken layouts
-    fn has_own_line_comment(&self, fmt: &Formatter) -> bool {
-        Builder::with_cursor(fmt, Some(self.open.clone())).has_own_line_comment()
+    fn has_own_line_comment(&self) -> bool {
+        own_line_comment_follows(&self.open)
     }
 }
 
@@ -362,7 +370,7 @@ pub(crate) fn flat_layout(
     limit: FlatLimit,
     trailing: TrailingSeparator,
 ) -> Option<Frag> {
-    if delims.has_own_line_comment(fmt) {
+    if delims.has_own_line_comment() {
         return None;
     }
     let flat = flat_list(fmt, items, Some(delims.open.clone()), trailing);
@@ -410,7 +418,7 @@ pub(crate) fn delimited_list(
             flat_layout(fmt, delims, items, limit, layout.trailing),
         );
     }
-    if layout.hug && !delims.has_own_line_comment(fmt) {
+    if layout.hug && !delims.has_own_line_comment() {
         let [item] = items else {
             panic!("only a single item can overflow");
         };

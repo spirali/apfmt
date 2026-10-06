@@ -9,7 +9,7 @@ use crate::comments::{multiline_comment_lines, normalize_block_comment};
 use crate::config::Config;
 use crate::doc::DocNode::Newline;
 use crate::doc::{DocArena, DocId, DocNode, EMPTY_DOC, NEWLINE_DOC, NEWLINE_OR_SPACE_DOC};
-use crate::formatter::Edge::{Keyword, Nothing, Word};
+use crate::formatter::Edge::{Keyword, LineStart, Nothing, Word};
 use crate::resolver::Resolver;
 pub(crate) use builder::Builder;
 use frag::{Branch, Branches};
@@ -84,11 +84,11 @@ impl<'a> Formatter<'a> {
         })
     }
 
-    /// Puts `sep` (usually a line break) in front of every branch. The fragment then starts
-    /// with `Nothing`, so no space is computed in front of it.
-    fn prefix_break(&self, sep: DocId, frag: Frag) -> Frag {
+    /// Puts `sep` (a line break, or a space or a line break) in front of every branch; the fragment
+    /// then starts with `start` (`LineStart` or `Nothing`), so no space is computed in front of it
+    fn prefix_break(&self, sep: DocId, start: Edge, frag: Frag) -> Frag {
         self.map_branches(frag, |b| Branch {
-            start: Nothing,
+            start,
             doc_id: self.concat(sep, b.doc_id),
             ..b
         })
@@ -96,12 +96,12 @@ impl<'a> Formatter<'a> {
 
     /// The fragment starts on a new line with the current indentation
     pub fn on_next_line(&self, frag: Frag) -> Frag {
-        self.prefix_break(NEWLINE_DOC, frag)
+        self.prefix_break(NEWLINE_DOC, LineStart, frag)
     }
 
     /// The fragment continues the current line after a space, or starts a new line
     pub fn on_same_or_next_line(&self, frag: Frag) -> Frag {
-        self.prefix_break(NEWLINE_OR_SPACE_DOC, frag)
+        self.prefix_break(NEWLINE_OR_SPACE_DOC, Nothing, frag)
     }
 
     /// The fragment starts on a new line, indented one level deeper. The newline is inside

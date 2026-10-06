@@ -1,8 +1,9 @@
 use super::Formatter;
+use crate::comments::own_line_comment_follows;
 use super::frag::{Branch, Branches, Edge, Frag, compute_space};
 use super::trivia::ScanStop;
 use crate::doc::{DocId, EMPTY_DOC, NEWLINE_DOC, NEWLINE_OR_SPACE_DOC};
-use crate::formatter::Edge::{BraceClose, BraceOpen, Break, Close, Nothing};
+use crate::formatter::Edge::{BraceClose, BraceOpen, Break, Close, LineStart, Nothing};
 use ra_ap_syntax::SyntaxToken;
 
 /// Start edges of fragments that continue the construct on their left: everything except closing
@@ -107,7 +108,12 @@ impl<'a> Builder<'a> {
         // Comments on the same line as the left side stay there
         let cursor = self.frag.cursor.take().unwrap();
         self.frag.cursor = Some(self.scan_comments(cursor, None, ScanStop::OwnLine));
-        if !self.has_own_line_comment() {
+        // After an own-line comment, or a line comment ending the left side, the continuation goes on
+        // an indented line (taxonomy: ContinuationComment), unless it starts its own line anyway
+        let own_line_comment = self.frag.cursor.as_ref().is_some_and(own_line_comment_follows);
+        let line_comment = self.frag.branches.iter().any(|b| b.end == Break)
+            && !frag.branches.iter().all(|b| b.start == LineStart);
+        if !own_line_comment && !line_comment {
             self.flush_trivia(false);
             self.join(frag);
             return;

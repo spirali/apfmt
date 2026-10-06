@@ -156,9 +156,11 @@ fn is_hanging_expr(expr: &Expr) -> bool {
     }
 }
 
-/// `keyword head {`, or `keyword head` + `{` on the next line when the head is broken with a hanging
-/// indent (`hanging`, see `is_hanging_expr`), so `{` is not mistaken for a part of the head. The head of
-/// a control-flow expression: `if cond`, `while cond`, `match expr`, `for pat in expr`.
+/// `keyword head {` on one line if it fits; otherwise the control line is broken and `{` goes on its
+/// own line (Style Guide), e.g. below a head broken with a hanging indent (`hanging`, see
+/// `is_hanging_expr`), so `{` is not mistaken for a part of the head. A broken head that is not hanging
+/// ends with `) {`. The head of a control-flow expression: `if cond`, `while cond`, `match expr`,
+/// `for pat in expr`.
 fn format_head_with_block(
     fmt: &Formatter,
     keyword: SyntaxToken,
@@ -177,10 +179,13 @@ fn format_head_with_block(
     });
     same_line.push(block.clone());
 
-    let mut next_line = builder.clone();
+    let mut next_line = Builder::new(fmt);
     next_line.push(head);
     next_line.push(fmt.on_next_line(block));
-    fmt.alt_frag(same_line.into_frag(), next_line.into_frag())
+    // `{` on its own line breaks the control line, so only when it does not fit otherwise: it costs a
+    // split, which outweighs any number of lines (e.g. moving a comment from `{`'s line into the block)
+    builder.push(fmt.keep_together(next_line.into_frag()));
+    fmt.alt_frag(same_line.into_frag(), builder.into_frag())
 }
 
 /// The expression of a block that can be written as `{ expr }`: no statements and no comments
