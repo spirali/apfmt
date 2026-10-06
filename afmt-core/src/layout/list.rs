@@ -70,7 +70,7 @@ fn flat_list(
     trailing: TrailingSeparator,
 ) -> Frag {
     let mut builder = Builder::with_cursor(fmt, open);
-    builder.flush_trivia(false);
+    builder.flush_trivia();
     for (item, is_last) in with_is_last(items) {
         builder.push(item.frag.clone());
         let comma = !is_last || trailing == TrailingSeparator::Required;
@@ -78,12 +78,12 @@ fn flat_list(
             // The source separator, so comments in front of it stay there: `a /* c */, b`
             Some(source) if comma => builder.push_token(source.clone(), Comma),
             // A required trailing comma missing in the source
-            None if comma => builder.push_delimiter(SyntaxKind::COMMA),
+            None if comma => builder.push_separator(SyntaxKind::COMMA),
             // No trailing comma, but the source one and its comments still have to be consumed
-            _ => builder.skip_delimiter(SyntaxKind::COMMA),
+            _ => builder.skip_separator(SyntaxKind::COMMA),
         }
     }
-    builder.flush_trivia(false);
+    builder.flush_trivia();
     // A line comment ends the line inside the list, so `Flat` rejects such a layout
     builder.end_line_after_line_comment();
     builder.into_frag()
@@ -110,7 +110,7 @@ fn fill_list(fmt: &Formatter, items: &[ListItem], open: Option<SyntaxToken>) -> 
             builder.push_soft_line_break();
         }
     }
-    builder.flush_trivia(false);
+    builder.flush_trivia();
     builder.push_newline();
     fmt.body_after_opener(line_comments, builder.into_frag())
 }
@@ -132,15 +132,15 @@ fn vertical_list(
         builder.push(item.frag.clone());
         if is_last && trailing == TrailingSeparator::Never {
             // The token after the list follows the last item on its line: `T: Clone;`
-            builder.skip_delimiter(SyntaxKind::COMMA);
+            builder.skip_separator(SyntaxKind::COMMA);
             break;
         }
-        builder.push_delimiter(SyntaxKind::COMMA);
+        builder.push_separator(SyntaxKind::COMMA);
         // Blank lines in front of the closing delimiter are dropped
         if keep_blank_lines && !is_last {
-            builder.ensure_newline();
+            builder.flush_trivia_and_end_line();
         } else {
-            builder.flush_trivia(false);
+            builder.flush_trivia();
             builder.push_newline();
         }
     }
@@ -220,7 +220,7 @@ impl Delimiters {
 
     /// `inner` between the delimiters; `inner` places the comments following the opening delimiter, as
     /// the list layouts do (they start with the opening delimiter as their cursor)
-    pub fn wrap(&self, fmt: &Formatter, inner: Frag) -> Frag {
+    pub fn wrap_body(&self, fmt: &Formatter, inner: Frag) -> Frag {
         let (open_edge, _) = self.edges();
         self.surround(fmt, fmt.token_without_cursor(self.open.clone(), open_edge), inner)
     }
@@ -242,29 +242,29 @@ impl Delimiters {
     }
 
     /// The container without items or statements: `()`, `{}`, or only comments,
-    pub fn empty(&self, fmt: &Formatter) -> Frag {
+    pub fn format_empty(&self, fmt: &Formatter) -> Frag {
         // The container is empty, so only trivia is between the delimiters
         let inside = || trivia_from(self.open.next_token());
         if !inside().any(|t| t.kind() == SyntaxKind::COMMENT) {
-            return self.wrap(fmt, Frag::empty());
+            return self.wrap_body(fmt, Frag::empty());
         }
         if !inside().any(|t| t.text().contains('\n')) {
             let mut comments = Builder::with_cursor(fmt, Some(self.open.clone()));
-            comments.flush_trivia(false);
+            comments.flush_trivia();
             let comments = comments.into_frag();
             let mut own_line = Builder::new(fmt);
             own_line.push(comments.clone());
             own_line.push_newline();
             // On their own line only if they do not fit on the delimiters' line
-            let inline = fmt.flat(self.wrap(fmt, comments));
-            let own_line = self.wrap(fmt, fmt.body_after_opener(false, own_line.into_frag()));
+            let inline = fmt.flat(self.wrap_body(fmt, comments));
+            let own_line = self.wrap_body(fmt, fmt.body_after_opener(false, own_line.into_frag()));
             return fmt.alt_frag(inline, own_line);
         }
         let mut body = Builder::with_cursor(fmt, Some(self.open.clone()));
         let line_comments = body.push_comments_ending_line();
-        body.flush_trivia(false);
+        body.flush_trivia();
         body.push_newline();
-        self.wrap(fmt, fmt.body_after_opener(line_comments, body.into_frag()))
+        self.wrap_body(fmt, fmt.body_after_opener(line_comments, body.into_frag()))
     }
 
     /// An own-line comment after the opening delimiter allows only broken layouts
@@ -362,7 +362,7 @@ enum BrokenList {
 }
 
 /// The items on a single line, without the delimiters, if `limit` allows it and no own-line comment
-/// follows the opening delimiter; wrap it with `Delimiters::wrap`
+/// follows the opening delimiter; wrap it with `Delimiters::wrap_body`
 pub(crate) fn flat_layout(
     fmt: &Formatter,
     delims: &Delimiters,
@@ -403,7 +403,7 @@ pub(crate) fn delimited_list(
     layout: ListLayout,
 ) -> Frag {
     if items.is_empty() {
-        return delims.empty(fmt);
+        return delims.format_empty(fmt);
     }
     let open = Some(delims.open.clone());
     let mut layouts = match layout.broken {
@@ -423,12 +423,12 @@ pub(crate) fn delimited_list(
             panic!("only a single item can overflow");
         };
         let mut overflow = Builder::with_cursor(fmt, open);
-        overflow.flush_trivia(false);
+        overflow.flush_trivia();
         overflow.push(item.frag.clone());
-        overflow.skip_delimiter(SyntaxKind::COMMA);
-        overflow.flush_trivia(false);
+        overflow.skip_separator(SyntaxKind::COMMA);
+        overflow.flush_trivia();
         // Only an item that is broken overflows; on a single line, it is the flat layout
         layouts = fmt.alt_frag(layouts, fmt.multi_line(overflow.into_frag()));
     }
-    delims.wrap(fmt, layouts)
+    delims.wrap_body(fmt, layouts)
 }

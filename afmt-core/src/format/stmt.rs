@@ -26,7 +26,7 @@ fn format_let_stmt(fmt: &Formatter, stmt: LetStmt) -> Frag {
         builder.push_token(let_else.else_token().unwrap(), Word);
         builder.push(format_block_expr(fmt, let_else.block_expr().unwrap()));
     }
-    builder.push_delimiter(SyntaxKind::SEMICOLON);
+    builder.push_separator(SyntaxKind::SEMICOLON);
     builder.into_frag()
 }
 
@@ -43,7 +43,7 @@ fn format_stmt(fmt: &Formatter, stmt: Stmt) -> Frag {
             builder.push(inner);
             // Block-like expressions (`if`, ...) may stand without `;`
             if expr.semicolon_token().is_some() {
-                builder.push_delimiter(SyntaxKind::SEMICOLON);
+                builder.push_separator(SyntaxKind::SEMICOLON);
             }
             builder.into_frag()
         }
@@ -57,14 +57,14 @@ fn format_stmt_list(fmt: &Formatter, stmt_list: StmtList, tail: Option<Frag>) ->
     let delims = Delimiters::braces_of(stmt_list.syntax());
     if stmt_list.statements().next().is_none() && stmt_list.tail_expr().is_none() {
         // Only comments or nothing, as in any empty container
-        return delims.empty(fmt);
+        return delims.format_empty(fmt);
     }
     let l_curly = stmt_list.l_curly_token().unwrap();
     // Tokens following `{` belong to the body, so they are nested with it; blank lines right after
     // `{` are dropped
     let mut builder = Builder::with_cursor(fmt, Some(l_curly.clone()));
     let line_comments = builder.push_comments_ending_line();
-    builder.consume_comments();
+    builder.push_comments();
     for child in stmt_list.statements() {
         builder.push_on_new_line(format_stmt(fmt, child));
     }
@@ -73,9 +73,9 @@ fn format_stmt_list(fmt: &Formatter, stmt_list: StmtList, tail: Option<Frag>) ->
     }
 
     // Blank lines before `}` are dropped
-    builder.flush_trivia(false);
+    builder.flush_trivia();
     builder.push_newline();
-    delims.wrap(fmt, fmt.body_after_opener(line_comments, builder.into_frag()))
+    delims.wrap_body(fmt, fmt.body_after_opener(line_comments, builder.into_frag()))
 }
 
 pub(super) fn format_block_expr(fmt: &Formatter, body: BlockExpr) -> Frag {

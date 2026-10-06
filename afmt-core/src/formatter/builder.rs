@@ -1,7 +1,7 @@
 use super::Formatter;
 use crate::comments::own_line_comment_follows;
 use super::frag::{Branch, Branches, Edge, Frag, compute_space};
-use super::trivia::ScanStop;
+use super::trivia::TriviaStop;
 use crate::doc::{DocId, EMPTY_DOC, NEWLINE_DOC, NEWLINE_OR_SPACE_DOC};
 use crate::formatter::Edge::{BraceClose, BraceOpen, Break, Close, LineStart, Nothing};
 use ra_ap_syntax::SyntaxToken;
@@ -70,7 +70,7 @@ impl<'a> Builder<'a> {
     /// Blank lines from the source in front of it are kept.
     pub fn push_on_new_line(&mut self, frag: Frag) {
         if !self.is_empty() {
-            self.ensure_newline();
+            self.flush_trivia_and_end_line();
         }
         self.push(frag);
     }
@@ -100,27 +100,26 @@ impl<'a> Builder<'a> {
             self.push_continuation(frag);
             return;
         }
-        self.flush_trivia(false);
+        self.flush_trivia();
         self.join(frag);
     }
 
     fn push_continuation(&mut self, frag: Frag) {
         // Comments on the same line as the left side stay there
-        let cursor = self.frag.cursor.take().unwrap();
-        self.frag.cursor = Some(self.scan_comments(cursor, None, ScanStop::OwnLine));
+        self.push_trivia(None, TriviaStop::OwnLine);
         // After an own-line comment, or a line comment ending the left side, the continuation goes on
         // an indented line (taxonomy: ContinuationComment), unless it starts its own line anyway
         let own_line_comment = self.frag.cursor.as_ref().is_some_and(own_line_comment_follows);
         let line_comment = self.frag.branches.iter().any(|b| b.end == Break)
             && !frag.branches.iter().all(|b| b.start == LineStart);
         if !own_line_comment && !line_comment {
-            self.flush_trivia(false);
+            self.flush_trivia();
             self.join(frag);
             return;
         }
         let fmt = self.fmt;
         let mut nested = Builder::with_cursor(fmt, self.frag.cursor.take());
-        nested.flush_trivia(false);
+        nested.flush_trivia();
         nested.push(frag);
         // A line comment on the left side is ended by the nested newline
         self.push_line_break_if(EMPTY_DOC, |end| end == Break);

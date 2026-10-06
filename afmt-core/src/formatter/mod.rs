@@ -156,7 +156,7 @@ impl<'a> Formatter<'a> {
 
     /// Single-line layout of `frag`, if its width is at most `max_width`
     pub fn flat_within(&self, frag: Frag, max_width: u32) -> Option<Frag> {
-        self.simple_length_frag(&frag)
+        self.flat_width(&frag)
             .is_some_and(|size| size as u32 <= max_width)
             .then(|| self.flat(frag))
     }
@@ -256,31 +256,32 @@ impl<'a> Formatter<'a> {
         })
     }
 
-    fn simple_length_doc(&self, doc_id: DocId) -> Option<usize> {
+    /// Width of the doc on a single line, the narrowest of its alternatives; `None` if it cannot be on
+    /// a single line
+    fn flat_width_doc(&self, doc_id: DocId) -> Option<usize> {
         match self.doc_arena.borrow().get_node(doc_id) {
             DocNode::Token(token) => Some(unicode_width::UnicodeWidthStr::width(token.text())),
             DocNode::Text(t) => Some(unicode_width::UnicodeWidthStr::width(t.as_str())),
             Newline | DocNode::Nest(_) | DocNode::Align(_) => None,
-            DocNode::Flat(d) => self.simple_length_doc(*d),
+            DocNode::Flat(d) => self.flat_width_doc(*d),
             DocNode::MultiLine(_) => None,
-            DocNode::KeepTogether(d) => self.simple_length_doc(*d),
+            DocNode::KeepTogether(d) => self.flat_width_doc(*d),
             DocNode::Concat(a, b) => self
-                .simple_length_doc(*a)
-                .and_then(|size1| self.simple_length_doc(*b).map(|size2| size1 + size2)),
+                .flat_width_doc(*a)
+                .and_then(|size1| self.flat_width_doc(*b).map(|size2| size1 + size2)),
             // Width of the narrowest single-line branch
-            DocNode::Alt(a, b) => match (self.simple_length_doc(*a), self.simple_length_doc(*b)) {
+            DocNode::Alt(a, b) => match (self.flat_width_doc(*a), self.flat_width_doc(*b)) {
                 (Some(size1), Some(size2)) => Some(size1.min(size2)),
                 (size1, size2) => size1.or(size2),
             },
         }
     }
 
-    /// Width of the fragment on a single line; `None` if it cannot be on a single line
-    pub fn simple_length_frag(&self, frag: &Frag) -> Option<usize> {
+    /// Width of the fragment on a single line, the widest of its branches (each with its narrowest
+    /// alternative); `None` if a branch cannot be on a single line
+    pub fn flat_width(&self, frag: &Frag) -> Option<usize> {
         frag.branches
             .iter()
-            .map(|b| self.simple_length_doc(b.doc_id))
-            .max()
-            .unwrap_or_default()
+            .try_fold(0, |width, b| Some(width.max(self.flat_width_doc(b.doc_id)?)))
     }
 }

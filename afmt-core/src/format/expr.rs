@@ -60,7 +60,7 @@ fn is_fillable_list(
     threshold > 0
         && exprs.all(|e| is_simple_expr(&e))
         && items.iter().all(|i| {
-            fmt.simple_length_frag(&i.frag)
+            fmt.flat_width(&i.frag)
                 .is_some_and(|w| w <= threshold)
         })
 }
@@ -201,8 +201,9 @@ fn single_line_block_expr(block: &BlockExpr) -> Option<Expr> {
     stmt_list.tail_expr()
 }
 
-/// `{ inner }`, where `inner` is the expression from `single_line_block_expr`; the caller restricts it to a single line
-fn format_block_single_line(fmt: &Formatter, block: &BlockExpr, inner: Frag) -> Frag {
+/// `{ inner }`, where `inner` is the expression from `single_line_block_expr`; the caller restricts it
+/// to a single line
+fn format_braced_block(fmt: &Formatter, block: &BlockExpr, inner: Frag) -> Frag {
     Delimiters::braces_of(block.stmt_list().unwrap().syntax()).enclose(fmt, inner)
 }
 
@@ -234,13 +235,13 @@ fn format_if_single_line(
     let mut builder = Builder::new(fmt);
     builder.push_keyword(expr.if_token()?);
     builder.push(condition);
-    builder.push(format_block_single_line(
+    builder.push(format_braced_block(
         fmt,
         &expr.then_branch()?,
         then_expr,
     ));
     builder.push_keyword(expr.else_token()?);
-    builder.push(format_block_single_line(fmt, &else_block, else_expr));
+    builder.push(format_braced_block(fmt, &else_block, else_expr));
     fmt.flat_within(
         builder.into_frag(),
         fmt.config().single_line_if_else_max_width,
@@ -265,7 +266,7 @@ pub(super) fn format_if_expr(fmt: &Formatter, expr: IfExpr, allow_single_line: b
     ));
     if let Some(else_branch) = expr.else_branch() {
         // `else` is not a continuation of the block: own-line comments in front of it keep the indentation of `}`
-        builder.flush_trivia(false);
+        builder.flush_trivia();
         builder.push_keyword(expr.else_token().unwrap());
         builder.push(match else_branch {
             ElseBranch::Block(block) => format_block_expr_with_tail(fmt, block, else_tail),

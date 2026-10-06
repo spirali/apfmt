@@ -140,7 +140,7 @@ fn format_fn(fmt: &Formatter, item_fn: AstFn) -> Frag {
     push_where_clause(fmt, &mut builder, item_fn.where_clause(), body.is_none());
     match body {
         Some(body) => builder.push(format_block_expr(fmt, body)),
-        None => builder.push_delimiter(SyntaxKind::SEMICOLON),
+        None => builder.push_separator(SyntaxKind::SEMICOLON),
     }
     builder.into_frag()
 }
@@ -220,7 +220,7 @@ fn format_struct(fmt: &Formatter, item: Struct) -> Frag {
         None => push_where_clause(fmt, &mut builder, item.where_clause(), true),
     }
     if item.semicolon_token().is_some() {
-        builder.push_delimiter(SyntaxKind::SEMICOLON);
+        builder.push_separator(SyntaxKind::SEMICOLON);
     }
     builder.into_frag()
 }
@@ -248,7 +248,7 @@ struct VariantParts {
     discriminant: Option<Frag>,
 }
 
-fn format_struct_variant_fields(fmt: &Formatter, list: RecordFieldList) -> StructVariantFields {
+fn struct_variant_fields(fmt: &Formatter, list: RecordFieldList) -> StructVariantFields {
     let delims = Delimiters::braces_of(list.syntax());
     let fields = list_items_cast(list.syntax(), |f| format_record_field(fmt, f));
     let single_line = if fields.is_empty() {
@@ -270,10 +270,10 @@ fn format_struct_variant_fields(fmt: &Formatter, list: RecordFieldList) -> Struc
     }
 }
 
-fn format_variant_parts(fmt: &Formatter, variant: Variant) -> VariantParts {
+fn variant_parts(fmt: &Formatter, variant: Variant) -> VariantParts {
     let fields = match variant.field_list() {
         Some(FieldList::RecordFieldList(list)) => {
-            VariantFields::Struct(format_struct_variant_fields(fmt, list))
+            VariantFields::Struct(struct_variant_fields(fmt, list))
         }
         Some(FieldList::TupleFieldList(list)) => {
             VariantFields::Tuple(format_tuple_field_list(fmt, list))
@@ -305,7 +305,7 @@ fn format_variant(fmt: &Formatter, parts: &VariantParts, single_line_structs: bo
         VariantFields::Unit => {}
         VariantFields::Tuple(fields) => builder.push(fields.clone()),
         VariantFields::Struct(s) if single_line_structs => {
-            builder.push(s.delims.wrap(fmt, s.single_line.clone().unwrap()));
+            builder.push(s.delims.wrap_body(fmt, s.single_line.clone().unwrap()));
         }
         VariantFields::Struct(s) => builder.push(delimited_list(
             fmt,
@@ -327,7 +327,7 @@ fn format_enum(fmt: &Formatter, item: Enum) -> Frag {
 
     let list = item.variant_list().unwrap();
     let delims = Delimiters::braces_of(list.syntax());
-    let variants = list_items_cast(list.syntax(), |v| format_variant_parts(fmt, v));
+    let variants = list_items_cast(list.syntax(), |v| variant_parts(fmt, v));
     let body = |single_line_structs: bool| {
         let items = variants
             .iter()

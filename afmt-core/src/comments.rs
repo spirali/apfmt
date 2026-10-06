@@ -80,18 +80,18 @@ pub(crate) fn is_leading_block_comment(token: &SyntaxToken) -> bool {
         && !has_newline(token.next_token())
 }
 
-/// Whether the rest of the line after `token` holds only comments and the delimiter `kind` (if given),
-/// i.e. no code follows on the same line after the delimiter
-pub(crate) fn rest_of_line_is_comments(token: &SyntaxToken, delimiter: Option<SyntaxKind>) -> bool {
-    let mut seen_delimiter = delimiter.is_none();
+/// Whether the rest of the line after `token` holds only comments and the separator `kind` (if given),
+/// i.e. no code follows on the same line after the separator
+pub(crate) fn rest_of_line_is_comments(token: &SyntaxToken, separator: Option<SyntaxKind>) -> bool {
+    let mut seen_separator = separator.is_none();
     let mut element = token.next_token();
     while let Some(t) = element {
         match t.kind() {
-            SyntaxKind::WHITESPACE if seen_delimiter && count_newlines(&t) > 0 => return true,
+            SyntaxKind::WHITESPACE if seen_separator && count_newlines(&t) > 0 => return true,
             SyntaxKind::WHITESPACE | SyntaxKind::COMMENT => {}
-            k if Some(k) == delimiter && !seen_delimiter => seen_delimiter = true,
-            // Without the delimiter, the code is the end of the list, e.g. `)`
-            _ => return !seen_delimiter,
+            k if Some(k) == separator && !seen_separator => seen_separator = true,
+            // Without the separator, the code is the end of the list, e.g. `)`
+            _ => return !seen_separator,
         }
         element = t.next_token();
     }

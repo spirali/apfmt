@@ -28,7 +28,7 @@ pub(crate) fn format_source_file(fmt: &Formatter, node: &SourceFile) -> Frag {
     for child in node.items() {
         builder.push_on_new_line(format_item(fmt, child));
     }
-    builder.flush_trivia(false);
+    builder.flush_trivia();
     assert!(builder.cursor().is_none());
     builder.into_frag()
 }
