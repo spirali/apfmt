@@ -8,16 +8,22 @@ fn count_newlines(token: &SyntaxToken) -> u32 {
     token.text().bytes().filter(|c| *c == b'\n').count() as u32
 }
 
-/// An own-line block comment directly followed by code on the same line, e.g. `/* c */ f();`
+/// A block comment at the start of a line or right after an opening delimiter, directly followed by
+/// code on the same line, e.g. `/* c */ f();` or `{ /* c */ 1 }`: it belongs to that code
 fn is_leading_block_comment(token: &SyntaxToken) -> bool {
     let has_newline = |t: Option<SyntaxToken>| {
         t.is_some_and(|t| t.kind() == SyntaxKind::WHITESPACE && count_newlines(&t) > 0)
     };
     // The start of the source is the start of a line too
     let line_start = token.prev_token().is_none() || has_newline(token.prev_token());
+    let after_opener = std::iter::successors(token.prev_token(), |t| t.prev_token())
+        .find(|t| !t.kind().is_trivia())
+        .is_some_and(|t| {
+            matches!(t.kind(), SyntaxKind::L_CURLY | SyntaxKind::L_PAREN | SyntaxKind::L_BRACK)
+        });
     token.kind() == SyntaxKind::COMMENT
         && token.text().starts_with("/*")
-        && line_start
+        && (line_start || after_opener)
         && !has_newline(token.next_token())
 }
 
@@ -207,26 +213,6 @@ impl<'a> Builder<'a> {
         cursor
     }
 
-    /// Breaks the line after the cursor: the comments on the cursor's line stay there, then a line break,
-    /// then the other comments (own-line ones). A line break after them is kept when the source has one.
-    /// E.g. after the opening delimiter of a vertical list.
-    pub fn break_after_line_comments(&mut self) {
-        if let Some(cursor) = self.frag.cursor.take() {
-            self.frag.cursor = Some(self.scan_comments(cursor, None, ScanStop::OwnLine));
-        }
-        self.push_newline();
-        self.consume_comments();
-        let Some(cursor) = self.frag.cursor.take() else {
-            return;
-        };
-        if cursor
-            .next_token()
-            .is_some_and(|t| t.kind() == SyntaxKind::WHITESPACE && count_newlines(&t) > 0)
-        {
-            self.push_line_break_if(NEWLINE_DOC, |end| end != Nothing);
-        }
-    }
-
     /// Consumes the trivia after the cursor and clears it; blank lines at the end are kept
     /// only with `respect_newlines`
     pub fn flush_trivia(&mut self, respect_newlines: bool) {
@@ -309,19 +295,22 @@ impl<'a> Builder<'a> {
         }
     }
 
-    /// Pushes the comments after the cursor if nothing but comments follows on its line, e.g.
-    /// `( /* c */`; they stay on the cursor's line. A line comment no longer ends the line itself,
-    /// the caller has to start a new line.
-    pub fn push_comments_ending_line(&mut self) {
+    /// Pushes the comments after the cursor if nothing but comments follows on its line, e.g. `( // c`
+    /// or `{ /* c */`; a comment followed by code on the line is left for that code. Returns whether it
+    /// pushed any; the code after them starts on a new line. Used at the start of a block or a broken
+    /// list, placed with `Formatter::body_after_opener` (taxonomy: StayOnOpenerLine).
+    pub fn push_comments_ending_line(&mut self) -> bool {
         let Some(cursor) = self.frag.cursor.take() else {
-            return;
+            return false;
         };
-        if rest_of_line_is_comments(&cursor, None) {
-            self.frag.cursor = Some(self.scan_comments(cursor, None, ScanStop::OwnLine));
-            self.push_line_break_if(EMPTY_DOC, |end| end == Break);
-        } else {
+        if !rest_of_line_is_comments(&cursor, None) {
             self.frag.cursor = Some(cursor);
+            return false;
         }
+        let last = self.scan_comments(cursor.clone(), None, ScanStop::OwnLine);
+        let pushed = last != cursor;
+        self.frag.cursor = Some(last);
+        pushed
     }
 
     pub fn has_own_line_comment(&mut self) -> bool {

@@ -111,6 +111,18 @@ impl<'a> Formatter<'a> {
         self.nest(self.on_next_line(frag))
     }
 
+    /// The body of a block or a broken list after its opening delimiter, indented on the next lines.
+    /// With `line_comments` (the body starts with comments ending the delimiter's line, see
+    /// `Builder::push_comments_ending_line`), they stay on the delimiter's line after a space if it
+    /// fits, otherwise they are the body's first line (taxonomy: StayOnOpenerLine).
+    pub fn body_after_opener(&self, line_comments: bool, body: Frag) -> Frag {
+        self.nest(if line_comments {
+            self.on_same_or_next_line(body)
+        } else {
+            self.on_next_line(body)
+        })
+    }
+
     /// The fragment continues the current line, or starts an indented next line,
     /// e.g. the right-hand side of `=`
     pub fn same_or_indented_line(&self, frag: Frag) -> Frag {

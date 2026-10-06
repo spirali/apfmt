@@ -94,9 +94,8 @@ fn flat_list(
 /// stays in front of it, and an own-line comment gets its own line. Comments ending the line of `open`
 /// stay there, as in vertical lists.
 fn fill_list(fmt: &Formatter, items: &[ListItem], open: Option<SyntaxToken>) -> Frag {
-    let mut head = Builder::with_cursor(fmt, open);
-    head.push_comments_ending_line();
-    let mut builder = Builder::with_cursor(fmt, head.take_cursor());
+    let mut builder = Builder::with_cursor(fmt, open);
+    let line_comments = builder.push_comments_ending_line();
     for (item, is_last) in with_is_last(items) {
         builder.push_leading_comments();
         builder.push(item.frag.clone());
@@ -112,8 +111,7 @@ fn fill_list(fmt: &Formatter, items: &[ListItem], open: Option<SyntaxToken>) -> 
     }
     builder.flush_trivia(false);
     builder.push_newline();
-    head.push(fmt.indented_line(builder.into_frag()));
-    head.into_frag()
+    fmt.body_after_opener(line_comments, builder.into_frag())
 }
 
 /// One item per line with a trailing comma (unless it is `Never`), indented; `open` is the opening
@@ -127,7 +125,8 @@ fn vertical_list(
     trailing: TrailingSeparator,
 ) -> Frag {
     let mut builder = Builder::with_cursor(fmt, open);
-    builder.break_after_line_comments();
+    let line_comments = builder.push_comments_ending_line();
+    builder.push_leading_comments();
     for (item, is_last) in with_is_last(items) {
         builder.push(item.frag.clone());
         if is_last && trailing == TrailingSeparator::Never {
@@ -144,7 +143,7 @@ fn vertical_list(
             builder.push_newline();
         }
     }
-    fmt.nest(builder.into_frag())
+    fmt.body_after_opener(line_comments, builder.into_frag())
 }
 
 /// The delimiters of a list

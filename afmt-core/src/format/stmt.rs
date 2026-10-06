@@ -7,7 +7,7 @@ use super::ty::format_type;
 use crate::formatter::Edge::{BraceClose, BraceOpen, Comma, Operator, Word};
 use crate::formatter::{Builder, Formatter, Frag};
 use ra_ap_syntax::ast::{BlockExpr, Expr, LetStmt, Stmt, StmtList};
-use ra_ap_syntax::{Direction, SyntaxKind};
+use ra_ap_syntax::SyntaxKind;
 
 fn format_let_stmt(fmt: &Formatter, stmt: LetStmt) -> Frag {
     let mut builder = Builder::new(fmt);
@@ -54,19 +54,10 @@ fn format_stmt(fmt: &Formatter, stmt: Stmt) -> Frag {
 /// `tail` is the already formatted tail expression, when it is shared with another layout
 fn format_stmt_list(fmt: &Formatter, stmt_list: StmtList, tail: Option<Frag>) -> Frag {
     let l_curly = stmt_list.l_curly_token().unwrap();
-    let mut followers = l_curly
-        .siblings_with_tokens(Direction::Next)
-        .skip(1)
-        .peekable();
-
-    // Blank lines right after `{` are dropped; only whether the first element starts a new line matters
-    let mut on_new_line = false;
-    while let Some(ws) = followers.next_if(|e| e.kind() == SyntaxKind::WHITESPACE) {
-        on_new_line |= ws.as_token().is_some_and(|t| t.text().contains('\n'));
-    }
-
-    // Tokens following `{` belong to the body, so they are nested with it
+    // Tokens following `{` belong to the body, so they are nested with it; blank lines right after
+    // `{` are dropped
     let mut builder = Builder::with_cursor(fmt, Some(l_curly.clone()));
+    let line_comments = builder.push_comments_ending_line();
     builder.consume_comments();
     for child in stmt_list.statements() {
         builder.push_on_new_line(format_stmt(fmt, child));
@@ -78,18 +69,8 @@ fn format_stmt_list(fmt: &Formatter, stmt_list: StmtList, tail: Option<Frag>) ->
     // Blank lines before `}` are dropped
     builder.flush_trivia(false);
     let body_frag = if !builder.is_empty() {
-        // A comment on the line of `{` stays there if it fits
-        let comment_on_brace_line = !on_new_line
-            && followers
-                .peek()
-                .is_some_and(|e| e.kind() == SyntaxKind::COMMENT);
         builder.push_newline();
-        let body = builder.into_frag();
-        fmt.nest(if comment_on_brace_line {
-            fmt.on_same_or_next_line(body)
-        } else {
-            fmt.on_next_line(body)
-        })
+        fmt.body_after_opener(line_comments, builder.into_frag())
     } else {
         Frag::empty()
     };

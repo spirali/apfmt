@@ -74,11 +74,6 @@ impl<'a> Builder<'a> {
         self.push(frag);
     }
 
-    /// Moves the cursor out of the builder; the trivia after it is processed by another builder
-    pub fn take_cursor(&mut self) -> Option<SyntaxToken> {
-        self.frag.cursor.take()
-    }
-
     /// A space or a line break, whichever gives the better layout
     pub fn push_soft_line_break(&mut self) {
         self.push_line_break_if(NEWLINE_OR_SPACE_DOC, |_| true);

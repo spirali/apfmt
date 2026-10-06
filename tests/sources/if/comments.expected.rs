@@ -26,8 +26,8 @@ fn main() {
         g();
     }
     let a = if x { 1 } /* c */ else { 2 };
-    let a = if x { /* c */
-        1
+    let a = if x {
+        /* c */ 1
     } else {
         2
     };
