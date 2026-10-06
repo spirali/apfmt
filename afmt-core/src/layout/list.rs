@@ -177,7 +177,7 @@ impl Delimiters {
         )
     }
 
-    /// The `<` and `>` of the list `node` (generic arguments)
+    /// The `<` and `>` of the list `node` (generic arguments, `<T as Trait>`)
     pub fn angles_of(node: &SyntaxNode) -> Self {
         Self::of(
             node,
@@ -218,11 +218,24 @@ impl Delimiters {
         }
     }
 
-    /// `inner` between the delimiters; `inner` places the comments following the opening delimiter
+    /// `inner` between the delimiters; `inner` places the comments following the opening delimiter, as
+    /// the list layouts do (they start with the opening delimiter as their cursor)
     pub fn wrap(&self, fmt: &Formatter, inner: Frag) -> Frag {
-        let (open_edge, close_edge) = self.edges();
+        let (open_edge, _) = self.edges();
+        self.surround(fmt, fmt.token_without_cursor(self.open.clone(), open_edge), inner)
+    }
+
+    /// `inner` between the delimiters, e.g. `(a + b)`, `<T as Trait>`, `{ x }` (taxonomy: Enclosed,
+    /// Braced); the comments following the opening delimiter are placed in front of `inner`
+    pub fn enclose(&self, fmt: &Formatter, inner: Frag) -> Frag {
+        let (open_edge, _) = self.edges();
+        self.surround(fmt, fmt.token(self.open.clone(), open_edge), inner)
+    }
+
+    fn surround(&self, fmt: &Formatter, open: Frag, inner: Frag) -> Frag {
+        let (_, close_edge) = self.edges();
         let mut builder = Builder::new(fmt);
-        builder.push(fmt.token_without_cursor(self.open.clone(), open_edge));
+        builder.push(open);
         builder.push(inner);
         builder.push_token(self.close.clone(), close_edge);
         builder.into_frag()
@@ -231,12 +244,7 @@ impl Delimiters {
     /// The list without items; it may still contain comments
     fn empty(&self, fmt: &Formatter) -> Frag {
         match self.kind {
-            DelimiterKind::Parens | DelimiterKind::Angles => {
-                let mut builder = Builder::new(fmt);
-                builder.push_token(self.open.clone(), Open);
-                builder.push_token(self.close.clone(), Close);
-                builder.into_frag()
-            }
+            DelimiterKind::Parens | DelimiterKind::Angles => self.enclose(fmt, Frag::empty()),
             DelimiterKind::Braces => {
                 // Only comments: indented on their own lines, like in an empty block
                 let mut comments = Builder::with_cursor(fmt, Some(self.open.clone()));

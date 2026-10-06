@@ -6,7 +6,7 @@ use super::pat::format_pat;
 use super::path::format_path;
 use super::stmt::format_block_expr;
 use super::ty::{format_ret_type, format_type};
-use crate::format::common::{format_lifetime, format_name, format_parenthesized};
+use crate::format::common::{format_lifetime, format_name};
 use crate::formatter::Edge::{Comma, Operator, Tight, Word};
 use crate::formatter::{Builder, Formatter, Frag};
 use crate::layout::list::{
@@ -155,12 +155,7 @@ fn format_visibility(fmt: &Formatter, visibility: Visibility) -> Frag {
             path.push_keyword(token);
         }
         path.push(format_path(fmt, inner.path().unwrap()));
-        builder.push(format_parenthesized(
-            fmt,
-            inner.l_paren_token().unwrap(),
-            path.into_frag(),
-            inner.r_paren_token().unwrap(),
-        ));
+        builder.push(Delimiters::parens_of(inner.syntax()).enclose(fmt, path.into_frag()));
     }
     builder.into_frag()
 }

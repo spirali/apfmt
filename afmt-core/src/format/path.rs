@@ -2,7 +2,7 @@
 
 use super::expr::format_expr;
 use super::ty::{format_ret_type, format_type};
-use crate::format::common::{format_lifetime, format_parenthesized};
+use crate::format::common::format_lifetime;
 use crate::formatter::Edge::{Operator, Tight, Word};
 use crate::formatter::{Builder, Formatter, Frag};
 use crate::layout::list::{Delimiters, FlatLimit, ListLayout, delimited_list, list_items_cast};
@@ -70,12 +70,7 @@ fn format_type_anchor(fmt: &Formatter, anchor: TypeAnchor) -> Frag {
             .unwrap();
         inner.push(format_type(fmt, trait_ty));
     }
-    format_parenthesized(
-        fmt,
-        anchor.l_angle_token().unwrap(),
-        inner.into_frag(),
-        anchor.r_angle_token().unwrap(),
-    )
+    Delimiters::angles_of(anchor.syntax()).enclose(fmt, inner.into_frag())
 }
 
 /// `<A, B>`, or the turbofish `::<A, B>`

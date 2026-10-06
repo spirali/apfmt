@@ -3,7 +3,6 @@
 use super::pat::format_pat;
 use super::path::format_path;
 use super::stmt::{format_block_expr, format_block_expr_with_tail};
-use crate::format::common::{format_braced, format_parenthesized};
 use crate::formatter::Edge::{Operator, Tight, Word};
 use crate::formatter::{Builder, Formatter, Frag};
 use crate::layout::chain::infix_chain;
@@ -132,12 +131,7 @@ fn format_prefix_expr(fmt: &Formatter, expr: PrefixExpr) -> Frag {
 
 fn format_paren_expr(fmt: &Formatter, expr: ParenExpr) -> Frag {
     let inner = format_expr(fmt, expr.expr().unwrap());
-    format_parenthesized(
-        fmt,
-        expr.l_paren_token().unwrap(),
-        inner,
-        expr.r_paren_token().unwrap(),
-    )
+    Delimiters::parens_of(expr.syntax()).enclose(fmt, inner)
 }
 
 /// `let pat = expr` in a condition
@@ -204,13 +198,7 @@ fn single_line_block_expr(block: &BlockExpr) -> Option<Expr> {
 
 /// `{ inner }`, where `inner` is the expression from `single_line_block_expr`; the caller restricts it to a single line
 fn format_block_single_line(fmt: &Formatter, block: &BlockExpr, inner: Frag) -> Frag {
-    let stmt_list = block.stmt_list().unwrap();
-    format_braced(
-        fmt,
-        stmt_list.l_curly_token().unwrap(),
-        inner,
-        stmt_list.r_curly_token().unwrap(),
-    )
+    Delimiters::braces_of(block.stmt_list().unwrap().syntax()).enclose(fmt, inner)
 }
 
 /// The expressions of the blocks of `if a { b } else { c }` that can be put on a single line:
