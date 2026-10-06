@@ -21,6 +21,10 @@ pub(crate) enum DocNode {
     Flat(DocId),
     /// Only layouts of the inner doc that span more than one line
     MultiLine(DocId),
+    /// The inner doc should stay on one line if possible
+    /// If broken, it increases "splits" in resolver that has a higher priority 
+    /// than number of lines
+    KeepTogether(DocId),
 }
 
 pub(crate) struct DocArena {
@@ -99,6 +103,12 @@ impl DocArena {
             }
             DocNode::Flat(d) => {
                 println!("Flat(");
+                self.dump_helper(*d, indent + 1);
+                make_ident();
+                println!(")");
+            }
+            DocNode::KeepTogether(d) => {
+                println!("KeepTogether(");
                 self.dump_helper(*d, indent + 1);
                 make_ident();
                 println!(")");

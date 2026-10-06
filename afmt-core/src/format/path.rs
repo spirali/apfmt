@@ -2,7 +2,7 @@
 
 use crate::formatter::{Builder, Formatter, Frag};
 use crate::formatter::Edge::{Operator, Tight, Word};
-use crate::layout::list::{flat_list, list_items_cast};
+use crate::layout::list::{Delimiters, FlatLimit, ListLayout, delimited_list, list_items_cast};
 use ra_ap_syntax::AstNode;
 use ra_ap_syntax::ast::{
     AssocTypeArg, GenericArg, GenericArgList, HasGenericArgs, HasTypeBounds, NameRef,
@@ -85,13 +85,10 @@ fn format_generic_arg_list(fmt: &Formatter, args: GenericArgList) -> Frag {
         builder.push_token(token, Tight);
     }
     let items = list_items_cast(args.syntax(), |a| format_generic_arg(fmt, a));
-    let inner = flat_list(fmt, &items, None);
-    builder.push(format_parenthesized(
-        fmt,
-        args.l_angle_token().unwrap(),
-        inner,
-        args.r_angle_token().unwrap(),
-    ));
+    let delims = Delimiters::angles_of(args.syntax());
+    let list = delimited_list(fmt, &delims, &items, ListLayout::tall(FlatLimit::MaxWidth));
+    // "Avoid breaking lines in types where possible" (Style Guide)
+    builder.push(fmt.keep_together(list));
     builder.to_frag()
 }
 
@@ -132,12 +129,9 @@ fn format_parenthesized_arg_list(fmt: &Formatter, args: ParenthesizedArgList) ->
     let items = list_items_cast::<TypeArg, Frag>(args.syntax(), |a| {
         format_type(fmt, a.ty().unwrap())
     });
-    let inner = flat_list(fmt, &items, None);
-    builder.push(format_parenthesized(
-        fmt,
-        args.l_paren_token().unwrap(),
-        inner,
-        args.r_paren_token().unwrap(),
-    ));
+    let delims = Delimiters::parens_of(args.syntax());
+    let list = delimited_list(fmt, &delims, &items, ListLayout::tall(FlatLimit::MaxWidth));
+    // "Avoid breaking lines in types where possible" (Style Guide)
+    builder.push(fmt.keep_together(list));
     builder.to_frag()
 }

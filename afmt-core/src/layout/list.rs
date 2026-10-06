@@ -59,20 +59,25 @@ pub(crate) fn list_items_cast<T: AstNode, S>(
     list_items(node, |node| T::cast(node).map(&mut format))
 }
 
-/// All items on one line, `a, b, c`, without a trailing comma; `open` is the opening delimiter and the
-/// comments following it are part of the list. The caller restricts it to a single line.
-pub(crate) fn flat_list(
+/// All items on one line, `a, b, c`, with a trailing comma only if it is `Required`; `open` is the
+/// opening delimiter and the comments following it are part of the list. The caller restricts it to
+/// a single line.
+fn flat_list(
     fmt: &Formatter,
     items: &[ListItem],
     open: Option<SyntaxToken>,
+    trailing: TrailingSeparator,
 ) -> Frag {
     let mut builder = Builder::with_cursor(fmt, open);
     builder.flush_trivia(false);
     for (item, is_last) in with_is_last(items) {
         builder.push(item.frag.clone());
+        let comma = !is_last || trailing == TrailingSeparator::Required;
         match &item.comma {
             // The source separator, so comments in front of it stay there: `a /* c */, b`
-            Some(comma) if !is_last => builder.push_token(comma.clone(), Comma),
+            Some(source) if comma => builder.push_token(source.clone(), Comma),
+            // A required trailing comma missing in the source
+            None if comma => builder.push_delimiter(SyntaxKind::COMMA),
             // No trailing comma, but the source one and its comments still have to be consumed
             _ => builder.skip_delimiter(SyntaxKind::COMMA),
         }
@@ -148,6 +153,8 @@ pub(crate) struct Delimiters {
 enum DelimiterKind {
     /// `( )`: an empty list is `()` with its comments in between
     Parens,
+    /// `< >`: as `Parens`
+    Angles,
     /// `{ }`: a single-line list has spaces inside, comments of an empty list go on their own
     /// indented lines
     Braces,
@@ -157,6 +164,11 @@ impl Delimiters {
     /// The `(` and `)` of the list `node` (an argument list, a parameter list, ...)
     pub fn parens_of(node: &SyntaxNode) -> Self {
         Self::of(node, SyntaxKind::L_PAREN, SyntaxKind::R_PAREN, DelimiterKind::Parens)
+    }
+
+    /// The `<` and `>` of the list `node` (generic arguments)
+    pub fn angles_of(node: &SyntaxNode) -> Self {
+        Self::of(node, SyntaxKind::L_ANGLE, SyntaxKind::R_ANGLE, DelimiterKind::Angles)
     }
 
     /// The `{` and `}` of the list `node` (a record field list, a variant list, ...)
@@ -180,7 +192,7 @@ impl Delimiters {
 
     fn edges(&self) -> (Edge, Edge) {
         match self.kind {
-            DelimiterKind::Parens => (Open, Close),
+            DelimiterKind::Parens | DelimiterKind::Angles => (Open, Close),
             DelimiterKind::Braces => (BraceOpen, BraceClose),
         }
     }
@@ -198,7 +210,7 @@ impl Delimiters {
     /// The list without items; it may still contain comments
     fn empty(&self, fmt: &Formatter) -> Frag {
         match self.kind {
-            DelimiterKind::Parens => {
+            DelimiterKind::Parens | DelimiterKind::Angles => {
                 let mut builder = Builder::new(fmt);
                 builder.push_token(self.open.clone(), Open);
                 builder.push_token(self.close.clone(), Close);
@@ -226,7 +238,7 @@ impl Delimiters {
 }
 
 /// The layouts a delimited list may take, see `delimited_list`. Start with `tall` or `fixed_vertical`
-/// and refine it with `fill_if` and `hug_if`.
+/// and refine it with `fill_if`, `hug_if` and `trailing_separator`.
 pub(crate) struct ListLayout {
     /// The items on a single line; `None` allows only the broken layout
     flat: Option<FlatLimit>,
@@ -234,6 +246,7 @@ pub(crate) struct ListLayout {
     /// The only item may overflow: it starts on the line of the opening delimiter and ends on the line
     /// of the closing one (`f(if a {` / `...` / `})`); it has to be a combinable expression
     hug: bool,
+    trailing: TrailingSeparator,
 }
 
 impl ListLayout {
@@ -245,6 +258,7 @@ impl ListLayout {
                 keep_blank_lines: false,
             },
             hug: false,
+            trailing: TrailingSeparator::IfVertical,
         }
     }
 
@@ -256,6 +270,7 @@ impl ListLayout {
                 keep_blank_lines: true,
             },
             hug: false,
+            trailing: TrailingSeparator::IfVertical,
         }
     }
 
@@ -272,6 +287,21 @@ impl ListLayout {
         self.hug = hug;
         self
     }
+
+    pub fn trailing_separator(mut self, trailing: TrailingSeparator) -> Self {
+        self.trailing = trailing;
+        self
+    }
+}
+
+/// When a list has a comma after its last item
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TrailingSeparator {
+    /// Only when the list is broken (vertical or filled), never on a single line
+    IfVertical,
+    /// Always, also on a single line, because the comma changes the meaning: the tuple pattern `(a,)`
+    /// is not the parenthesized pattern `(a)`
+    Required,
 }
 
 /// When the items may be put on a single line
@@ -299,18 +329,19 @@ pub(crate) fn flat_layout(
     delims: &Delimiters,
     items: &[ListItem],
     limit: FlatLimit,
+    trailing: TrailingSeparator,
 ) -> Option<Frag> {
     if delims.has_own_line_comment(fmt) {
         return None;
     }
-    let flat = flat_list(fmt, items, Some(delims.open.clone()));
+    let flat = flat_list(fmt, items, Some(delims.open.clone()), trailing);
     match limit {
         FlatLimit::MaxWidth => Some(fmt.flat(flat)),
         FlatLimit::Within(width) => fmt.flat_within(flat, width),
     }
 }
 
-/// A delimited list, `(a, b)` or `{ a, b }`, in the layouts `layout` allows
+/// A delimited list, `(a, b)`, `<A, B>` or `{ a, b }`, in the layouts `layout` allows
 pub(crate) fn delimited_list(
     fmt: &Formatter,
     delims: &Delimiters,
@@ -328,7 +359,7 @@ pub(crate) fn delimited_list(
         BrokenList::Fill => fill_list(fmt, items, open.clone()),
     };
     if let Some(limit) = layout.flat {
-        layouts = fmt.alt_opt(layouts, flat_layout(fmt, delims, items, limit));
+        layouts = fmt.alt_opt(layouts, flat_layout(fmt, delims, items, limit, layout.trailing));
     }
     if layout.hug && !delims.has_own_line_comment(fmt) {
         let [item] = items else {

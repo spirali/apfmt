@@ -3,8 +3,8 @@
 use crate::formatter::{Builder, Formatter, Frag};
 use crate::formatter::Edge::{Comma, Operator, Tight, Word};
 use crate::layout::list::{
-    Delimiters, FlatLimit, ListItem, ListLayout, delimited_list, flat_layout, list_items,
-    list_items_cast,
+    Delimiters, FlatLimit, ListItem, ListLayout, TrailingSeparator, delimited_list, flat_layout,
+    list_items, list_items_cast,
 };
 use ra_ap_syntax::{AstNode, SyntaxKind};
 use ra_ap_syntax::ast::{
@@ -188,7 +188,8 @@ fn format_struct_variant_fields(fmt: &Formatter, list: RecordFieldList) -> Struc
         (!has_comment).then(Frag::empty)
     } else {
         let width = fmt.config().struct_variant_width;
-        flat_layout(fmt, &delims, &fields, FlatLimit::Within(width))
+        let limit = FlatLimit::Within(width);
+        flat_layout(fmt, &delims, &fields, limit, TrailingSeparator::IfVertical)
     };
     StructVariantFields {
         delims,

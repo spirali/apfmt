@@ -8,6 +8,7 @@ use std::rc::Rc;
 struct Measure {
     last: u32,
     badness: u32,
+    splits: u32,
     height: u32,
     is_full: bool,
 }
@@ -26,6 +27,7 @@ impl Measure {
         Measure {
             last,
             badness,
+            splits: 0,
             height: 0,
             is_full: false,
         }
@@ -39,10 +41,10 @@ impl Measure {
     }
 
     fn cost_cmp(&self, other: &Measure) -> Ordering {
-        match self.badness.cmp(&other.badness) {
-            Ordering::Equal => self.height.cmp(&other.height),
-            other => other,
-        }
+        self.badness
+            .cmp(&other.badness)
+            .then(self.splits.cmp(&other.splits))
+            .then(self.height.cmp(&other.height))
     }
 }
 
@@ -231,6 +233,7 @@ impl<'a> Resolver<'a> {
                 measure: Measure {
                     last: ctx.indent,
                     badness: 0,
+                    splits: 0,
                     height: 1,
                     is_full: false,
                 },
@@ -259,6 +262,7 @@ impl<'a> Resolver<'a> {
                     );
                     for layout2 in &mut sub.layouts {
                         layout2.measure.badness += layout1.measure.badness;
+                        layout2.measure.splits += layout1.measure.splits;
                         layout2.measure.height += layout1.measure.height;
                         layout2.content = Rc::new(Content::Concat(
                             layout1.content.clone(),
@@ -270,6 +274,15 @@ impl<'a> Resolver<'a> {
                 out
             }
             DocNode::Flat(doc) => self.resolve(Context { flat: true, ..ctx }, *doc),
+            DocNode::KeepTogether(doc) => {
+                let mut layout_set = self.resolve(ctx, *doc);
+                for layout in &mut layout_set.layouts {
+                    if layout.measure.height > 0 {
+                        layout.measure.splits += 1;
+                    }
+                }
+                layout_set
+            }
             DocNode::MultiLine(doc) => {
                 let mut layout_set = self.resolve(ctx, *doc);
                 layout_set.layouts.retain(|layout| layout.measure.height > 0);

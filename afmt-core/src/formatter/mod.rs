@@ -120,6 +120,15 @@ impl<'a> Formatter<'a> {
         })
     }
 
+    /// The fragment should stay on one line if possible: a layout spanning more lines is used only when
+    /// all single-line layouts overflow (taxonomy: KeepTogether), e.g. a type
+    pub fn keep_together(&self, frag: Frag) -> Frag {
+        self.map_branches(frag, |b| Branch {
+            doc_id: self.make_node(DocNode::KeepTogether(b.doc_id)),
+            ..b
+        })
+    }
+
     /// Restricts the fragment to layouts on a single line
     pub fn flat(&self, frag: Frag) -> Frag {
         self.map_branches(frag, |b| Branch {
@@ -236,6 +245,7 @@ impl<'a> Formatter<'a> {
             Newline | DocNode::Nest(_) | DocNode::Align(_) => None,
             DocNode::Flat(d) => self.simple_length_doc(*d),
             DocNode::MultiLine(_) => None,
+            DocNode::KeepTogether(d) => self.simple_length_doc(*d),
             DocNode::Concat(a, b) => self
                 .simple_length_doc(*a)
                 .and_then(|size1| self.simple_length_doc(*b).map(|size2| size1 + size2)),

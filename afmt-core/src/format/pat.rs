@@ -1,11 +1,13 @@
 //! Patterns
 
 use crate::formatter::{Builder, Formatter, Frag};
-use crate::formatter::Edge::{Comma, Operator, Word};
-use crate::layout::list::{flat_list, list_items_cast};
+use crate::formatter::Edge::{Operator, Word};
+use crate::layout::list::{
+    Delimiters, FlatLimit, ListLayout, TrailingSeparator, delimited_list, list_items_cast,
+};
 use ra_ap_syntax::AstNode;
 use ra_ap_syntax::ast::{HasName, IdentPat, Pat, TuplePat, TupleStructPat};
-use crate::format::common::{format_name, format_parenthesized};
+use crate::format::common::format_name;
 use super::path::format_path;
 
 fn format_ident_pat(fmt: &Formatter, pat: IdentPat) -> Frag {
@@ -26,36 +28,22 @@ fn format_ident_pat(fmt: &Formatter, pat: IdentPat) -> Frag {
 
 fn format_tuple_pat(fmt: &Formatter, pat: TuplePat) -> Frag {
     let fields = list_items_cast(pat.syntax(), |p| format_pat(fmt, p));
-    let inner = if let [field] = fields.as_slice() {
-        // `(a,)` is a tuple, `(a)` is just a parenthesized pattern; the parser guarantees the comma
-        let mut builder = Builder::new(fmt);
-        builder.push(field.frag.clone());
-        if let Some(comma) = field.comma.clone() {
-            builder.push_token(comma, Comma);
-        }
-        builder.to_frag()
+    // `(a,)` is a tuple, `(a)` is just a parenthesized pattern
+    let trailing = if fields.len() == 1 {
+        TrailingSeparator::Required
     } else {
-        flat_list(fmt, &fields, None)
+        TrailingSeparator::IfVertical
     };
-    format_parenthesized(
-        fmt,
-        pat.l_paren_token().unwrap(),
-        inner,
-        pat.r_paren_token().unwrap(),
-    )
+    let layout = ListLayout::tall(FlatLimit::MaxWidth).trailing_separator(trailing);
+    delimited_list(fmt, &Delimiters::parens_of(pat.syntax()), &fields, layout)
 }
 
 fn format_tuple_struct_pat(fmt: &Formatter, pat: TupleStructPat) -> Frag {
     let mut builder = Builder::new(fmt);
     builder.push(format_path(fmt, pat.path().unwrap()));
     let fields = list_items_cast(pat.syntax(), |p| format_pat(fmt, p));
-    let inner = flat_list(fmt, &fields, None);
-    builder.push(format_parenthesized(
-        fmt,
-        pat.l_paren_token().unwrap(),
-        inner,
-        pat.r_paren_token().unwrap(),
-    ));
+    let delims = Delimiters::parens_of(pat.syntax());
+    builder.push(delimited_list(fmt, &delims, &fields, ListLayout::tall(FlatLimit::MaxWidth)));
     builder.to_frag()
 }
 
