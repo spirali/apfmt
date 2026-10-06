@@ -6,4 +6,4 @@ edition = "2024"
 [dependencies]
 ra_ap_syntax = "0.0.350"
 smallvec = "1.16"
-unicode-width = "0.2.2"
+unicode-width = "0.2"

@@ -1,9 +1,9 @@
-use crate::doc::{DocId, EMPTY_DOC, NEWLINE_DOC, NEWLINE_OR_SPACE_DOC};
-use crate::formatter::Edge::{BraceClose, BraceOpen, Break, Close, Nothing};
-use ra_ap_syntax::SyntaxToken;
 use super::Formatter;
 use super::frag::{Branch, Branches, Edge, Frag, compute_space};
 use super::trivia::ScanStop;
+use crate::doc::{DocId, EMPTY_DOC, NEWLINE_DOC, NEWLINE_OR_SPACE_DOC};
+use crate::formatter::Edge::{BraceClose, BraceOpen, Break, Close, Nothing};
+use ra_ap_syntax::SyntaxToken;
 
 /// Start edges of fragments that continue the construct on their left: everything except closing
 /// delimiters and the `{` of a block. Own-line comments in front of them are indented together with them.

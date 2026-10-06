@@ -1,14 +1,14 @@
 //! Patterns
 
-use crate::formatter::{Builder, Formatter, Frag};
+use super::path::format_path;
+use crate::format::common::format_name;
 use crate::formatter::Edge::{Operator, Word};
+use crate::formatter::{Builder, Formatter, Frag};
 use crate::layout::list::{
     Delimiters, FlatLimit, ListLayout, TrailingSeparator, delimited_list, list_items_cast,
 };
 use ra_ap_syntax::AstNode;
 use ra_ap_syntax::ast::{HasName, IdentPat, Pat, TuplePat, TupleStructPat};
-use crate::format::common::format_name;
-use super::path::format_path;
 
 fn format_ident_pat(fmt: &Formatter, pat: IdentPat) -> Frag {
     let mut builder = Builder::new(fmt);
@@ -43,7 +43,12 @@ fn format_tuple_struct_pat(fmt: &Formatter, pat: TupleStructPat) -> Frag {
     builder.push(format_path(fmt, pat.path().unwrap()));
     let fields = list_items_cast(pat.syntax(), |p| format_pat(fmt, p));
     let delims = Delimiters::parens_of(pat.syntax());
-    builder.push(delimited_list(fmt, &delims, &fields, ListLayout::tall(FlatLimit::MaxWidth)));
+    builder.push(delimited_list(
+        fmt,
+        &delims,
+        &fields,
+        ListLayout::tall(FlatLimit::MaxWidth),
+    ));
     builder.to_frag()
 }
 

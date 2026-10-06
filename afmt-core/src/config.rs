@@ -1,3 +1,5 @@
+use ra_ap_syntax::Edition;
+
 pub struct Config {
     pub max_width: u32,
     pub indent_width: u32,
@@ -13,7 +15,9 @@ pub struct Config {
     pub short_array_element_width_threshold: u32,
     /// Puts a single space inside single-line block comments: `/*a*/` -> `/* a */`
     pub normalize_comments: bool,
+    pub edition: Edition,
     pub dump_tree: bool,
+    pub check_result: bool,
 }
 
 impl Default for Config {
@@ -27,7 +31,9 @@ impl Default for Config {
             single_line_if_else_max_width: 50,
             short_array_element_width_threshold: 10,
             normalize_comments: true,
+            edition: Edition::CURRENT,
             dump_tree: false,
+            check_result: false,
         }
     }
 }

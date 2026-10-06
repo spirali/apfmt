@@ -7,15 +7,15 @@ mod trivia;
 
 use crate::comments::{multiline_comment_lines, normalize_block_comment};
 use crate::config::Config;
-use crate::doc::{DocArena, DocId, DocNode, EMPTY_DOC, NEWLINE_DOC, NEWLINE_OR_SPACE_DOC};
 use crate::doc::DocNode::Newline;
+use crate::doc::{DocArena, DocId, DocNode, EMPTY_DOC, NEWLINE_DOC, NEWLINE_OR_SPACE_DOC};
 use crate::formatter::Edge::{Keyword, Nothing, Word};
 use crate::resolver::Resolver;
+pub(crate) use builder::Builder;
 use frag::{Branch, Branches};
+pub(crate) use frag::{Edge, Frag};
 use ra_ap_syntax::SyntaxToken;
 use std::cell::RefCell;
-pub(crate) use builder::Builder;
-pub(crate) use frag::{Edge, Frag};
 
 pub(crate) struct Formatter<'a> {
     doc_arena: RefCell<DocArena>,

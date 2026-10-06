@@ -1,16 +1,16 @@
 //! Paths and generic arguments
 
-use crate::formatter::{Builder, Formatter, Frag};
+use super::expr::format_expr;
+use super::ty::{format_ret_type, format_type};
+use crate::format::common::format_parenthesized;
 use crate::formatter::Edge::{Operator, Tight, Word};
+use crate::formatter::{Builder, Formatter, Frag};
 use crate::layout::list::{Delimiters, FlatLimit, ListLayout, delimited_list, list_items_cast};
 use ra_ap_syntax::AstNode;
 use ra_ap_syntax::ast::{
     AssocTypeArg, GenericArg, GenericArgList, HasGenericArgs, HasTypeBounds, NameRef,
     ParenthesizedArgList, Path, PathSegment, Type, TypeAnchor, TypeArg,
 };
-use crate::format::common::format_parenthesized;
-use super::expr::format_expr;
-use super::ty::{format_ret_type, format_type};
 
 /// `a::b::c`; the path is left-recursive: `(a::b)::c`
 pub(super) fn format_path(fmt: &Formatter, path: Path) -> Frag {
@@ -95,7 +95,10 @@ fn format_generic_arg_list(fmt: &Formatter, args: GenericArgList) -> Frag {
 fn format_generic_arg(fmt: &Formatter, arg: GenericArg) -> Frag {
     match arg {
         GenericArg::TypeArg(arg) => format_type(fmt, arg.ty().unwrap()),
-        GenericArg::LifetimeArg(arg) => fmt.token(arg.lifetime().unwrap().lifetime_ident_token().unwrap(), Word),
+        GenericArg::LifetimeArg(arg) => fmt.token(
+            arg.lifetime().unwrap().lifetime_ident_token().unwrap(),
+            Word,
+        ),
         GenericArg::ConstArg(arg) => format_expr(fmt, arg.expr().unwrap()),
         GenericArg::AssocTypeArg(arg) => format_assoc_type_arg(fmt, arg),
     }
@@ -126,9 +129,8 @@ fn format_parenthesized_arg_list(fmt: &Formatter, args: ParenthesizedArgList) ->
     if let Some(token) = args.coloncolon_token() {
         builder.push_token(token, Tight);
     }
-    let items = list_items_cast::<TypeArg, Frag>(args.syntax(), |a| {
-        format_type(fmt, a.ty().unwrap())
-    });
+    let items =
+        list_items_cast::<TypeArg, Frag>(args.syntax(), |a| format_type(fmt, a.ty().unwrap()));
     let delims = Delimiters::parens_of(args.syntax());
     let list = delimited_list(fmt, &delims, &items, ListLayout::tall(FlatLimit::MaxWidth));
     // "Avoid breaking lines in types where possible" (Style Guide)

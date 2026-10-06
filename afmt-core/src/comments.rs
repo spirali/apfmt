@@ -42,6 +42,8 @@ pub(crate) fn multiline_comment_lines(token: &SyntaxToken) -> Option<Vec<&str>> 
     }) {
         return None;
     }
-    let rest = rest.split('\n').map(|line| if is_blank(line) { "" } else { &line[col..] });
+    let rest = rest
+        .split('\n')
+        .map(|line| if is_blank(line) { "" } else { &line[col..] });
     Some(std::iter::once(first).chain(rest).collect())
 }

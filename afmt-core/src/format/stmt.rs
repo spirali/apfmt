@@ -1,13 +1,13 @@
 //! Statements and blocks
 
-use crate::formatter::{Builder, Formatter, Frag};
-use crate::formatter::Edge::{BraceClose, BraceOpen, Comma, Operator, Word};
-use ra_ap_syntax::{Direction, SyntaxKind};
-use ra_ap_syntax::ast::{BlockExpr, Expr, LetStmt, Stmt, StmtList};
 use super::expr::{format_expr, format_if_expr};
 use super::item::format_item;
 use super::pat::format_pat;
 use super::ty::format_type;
+use crate::formatter::Edge::{BraceClose, BraceOpen, Comma, Operator, Word};
+use crate::formatter::{Builder, Formatter, Frag};
+use ra_ap_syntax::ast::{BlockExpr, Expr, LetStmt, Stmt, StmtList};
+use ra_ap_syntax::{Direction, SyntaxKind};
 
 fn format_let_stmt(fmt: &Formatter, stmt: LetStmt) -> Frag {
     let mut builder = Builder::new(fmt);
@@ -46,9 +46,7 @@ fn format_stmt(fmt: &Formatter, stmt: Stmt) -> Frag {
             }
             builder.to_frag()
         }
-        Stmt::Item(item) => {
-            format_item(fmt, item)
-        }
+        Stmt::Item(item) => format_item(fmt, item),
         Stmt::LetStmt(stmt) => format_let_stmt(fmt, stmt),
     }
 }
@@ -87,7 +85,11 @@ fn format_stmt_list(fmt: &Formatter, stmt_list: StmtList, tail: Option<Frag>) ->
                 .is_some_and(|e| e.kind() == SyntaxKind::COMMENT);
         builder.push_newline();
         let body = builder.to_frag();
-        fmt.nest(if comment_on_brace_line { fmt.on_same_or_next_line(body) } else { fmt.on_next_line(body) })
+        fmt.nest(if comment_on_brace_line {
+            fmt.on_same_or_next_line(body)
+        } else {
+            fmt.on_next_line(body)
+        })
     } else {
         Frag::empty()
     };
@@ -103,6 +105,10 @@ pub(super) fn format_block_expr(fmt: &Formatter, body: BlockExpr) -> Frag {
 }
 
 /// See `format_stmt_list` for `tail`
-pub(super) fn format_block_expr_with_tail(fmt: &Formatter, body: BlockExpr, tail: Option<Frag>) -> Frag {
+pub(super) fn format_block_expr_with_tail(
+    fmt: &Formatter,
+    body: BlockExpr,
+    tail: Option<Frag>,
+) -> Frag {
     format_stmt_list(fmt, body.stmt_list().unwrap(), tail)
 }

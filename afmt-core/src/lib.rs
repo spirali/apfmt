@@ -1,3 +1,4 @@
+mod check;
 mod comments;
 mod config;
 mod doc;
@@ -8,9 +9,11 @@ mod layout;
 mod resolver;
 mod utils;
 
+use crate::check::check_result;
 pub use crate::config::Config;
 use crate::format::format_source_file;
 use crate::formatter::Formatter;
+pub use error::{Error, Result};
 use ra_ap_syntax::{AstNode, SyntaxError, WalkEvent};
 use ra_ap_syntax::{Edition, NodeOrToken, SourceFile};
 
@@ -51,13 +54,13 @@ fn print_tree(source_file: &SourceFile) {
     }
 }
 
-pub fn format_source_code(config: &Config, code: &str) -> Result<String, Vec<SyntaxError>> {
-    let parse = SourceFile::parse(&code, Edition::CURRENT);
+pub fn format_source_code(config: &Config, code: &str) -> Result<String> {
+    let parse = SourceFile::parse(&code, config.edition);
     let file: SourceFile = parse.tree();
 
     let errors = parse.errors();
     if !errors.is_empty() {
-        return Err(parse.errors());
+        return Err(Error::SyntaxErrors(parse.errors()));
     }
 
     if config.dump_tree {
@@ -65,8 +68,22 @@ pub fn format_source_code(config: &Config, code: &str) -> Result<String, Vec<Syn
     }
 
     let mut fmt = Formatter::new(config);
-    let frag = format_source_file(&mut fmt, file);
+    let frag = format_source_file(&mut fmt, &file);
     let out = fmt.into_resolver(frag).render(code.len() * 2);
+
+    if config.check_result {
+        let out_parse = SourceFile::parse(&out, config.edition);
+        let errors = out_parse.errors();
+        if !errors.is_empty() {
+            return Err(Error::GenericError(
+                format!("Could not reparse the result: {:?}", errors),
+            ));
+        }
+        if let Err(error) = check_result(&file, &out_parse.tree(), code, &out) {
+            return Err(Error::GenericError(error));
+        }
+    }
+
     Ok(out)
 }
 
@@ -80,7 +97,7 @@ mod tests {
         let config = Config::default();
         assert_eq!(
             format_source_code(&config, code).unwrap(),
-            "fn /* a */ f() {\n    g(/**/ 1, /* b */ /** c*/ 2);\n}"
+            "fn /* a */ f() {\n    g(/**/ 1 /* b */, /** c*/ 2);\n}"
         );
         let config = Config {
             normalize_comments: false,
@@ -88,7 +105,7 @@ mod tests {
         };
         assert_eq!(
             format_source_code(&config, code).unwrap(),
-            "fn /*a*/ f() {\n    g(/**/ 1, /*  b  */ /** c*/ 2);\n}"
+            "fn /*a*/ f() {\n    g(/**/ 1 /*  b  */, /** c*/ 2);\n}"
         );
     }
 }

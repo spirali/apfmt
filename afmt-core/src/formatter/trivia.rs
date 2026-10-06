@@ -1,8 +1,8 @@
+use super::Builder;
+use super::frag::{Edge, Frag};
 use crate::doc::{COMMA_DOC, DocId, EMPTY_DOC, EMPTYLINE_DOC, NEWLINE_DOC, SEMICOLON_DOC};
 use crate::formatter::Edge::{Break, Comma, Nothing, Word};
 use ra_ap_syntax::{SyntaxKind, SyntaxToken};
-use super::Builder;
-use super::frag::{Edge, Frag};
 
 fn count_newlines(token: &SyntaxToken) -> u32 {
     token.text().bytes().filter(|c| *c == b'\n').count() as u32

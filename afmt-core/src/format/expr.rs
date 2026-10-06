@@ -1,20 +1,20 @@
 //! Expressions
 
-use crate::formatter::{Builder, Formatter, Frag};
+use super::pat::format_pat;
+use super::path::format_path;
+use super::stmt::{format_block_expr, format_block_expr_with_tail};
+use crate::format::common::{format_braced, format_parenthesized};
 use crate::formatter::Edge::{Operator, Tight, Word};
+use crate::formatter::{Builder, Formatter, Frag};
 use crate::layout::chain::infix_chain;
 use crate::layout::list::{
     Delimiters, FlatLimit, ListItem, ListLayout, delimited_list, list_items_cast,
 };
-use ra_ap_syntax::{AstNode, SyntaxKind, SyntaxToken};
 use ra_ap_syntax::ast::{
     ArgList, BinExpr, BlockExpr, CallExpr, ElseBranch, Expr, HasArgList, IfExpr, LetExpr, Literal,
     ParenExpr, PathExpr, PrefixExpr,
 };
-use crate::format::common::{format_braced, format_parenthesized};
-use super::pat::format_pat;
-use super::path::format_path;
-use super::stmt::{format_block_expr, format_block_expr_with_tail};
+use ra_ap_syntax::{AstNode, SyntaxKind, SyntaxToken};
 
 fn format_path_expr(fmt: &Formatter, path_expr: PathExpr) -> Frag {
     format_path(fmt, path_expr.path().unwrap())
@@ -39,7 +39,9 @@ fn is_simple_expr(expr: &Expr) -> bool {
         Expr::Literal(_) => true,
         Expr::PathExpr(expr) => expr.path().is_some_and(|path| {
             path.qualifier().is_none()
-                && path.segment().is_some_and(|s| s.type_anchor().is_none() && s.coloncolon_token().is_none())
+                && path
+                    .segment()
+                    .is_some_and(|s| s.type_anchor().is_none() && s.coloncolon_token().is_none())
         }),
         Expr::PrefixExpr(expr) => expr.expr().is_some_and(|e| is_simple_expr(&e)),
         _ => false,
@@ -50,11 +52,18 @@ fn is_simple_expr(expr: &Expr) -> bool {
 /// of one item per line: all items are simple and at most `short_array_element_width_threshold` wide,
 /// as in rustfmt. This is an explicit exception to the Style Guide. For call arguments now, arrays
 /// and `vec![]` later.
-fn is_fillable_list(fmt: &Formatter, mut exprs: impl Iterator<Item = Expr>, items: &[ListItem]) -> bool {
+fn is_fillable_list(
+    fmt: &Formatter,
+    mut exprs: impl Iterator<Item = Expr>,
+    items: &[ListItem],
+) -> bool {
     let threshold = fmt.config().short_array_element_width_threshold as usize;
     threshold > 0
         && exprs.all(|e| is_simple_expr(&e))
-        && items.iter().all(|i| fmt.simple_length_frag(&i.frag).is_some_and(|w| w <= threshold))
+        && items.iter().all(|i| {
+            fmt.simple_length_frag(&i.frag)
+                .is_some_and(|w| w <= threshold)
+        })
 }
 
 fn format_arg_list(fmt: &Formatter, arg_list: ArgList) -> Frag {
@@ -71,7 +80,12 @@ fn format_arg_list(fmt: &Formatter, arg_list: ArgList) -> Frag {
     let layout = ListLayout::tall(flat)
         .fill_if(is_fillable_list(fmt, arg_list.args(), &args))
         .hug_if(hug);
-    delimited_list(fmt, &Delimiters::parens_of(arg_list.syntax()), &args, layout)
+    delimited_list(
+        fmt,
+        &Delimiters::parens_of(arg_list.syntax()),
+        &args,
+        layout,
+    )
 }
 
 fn format_call_expr(fmt: &Formatter, call: CallExpr) -> Frag {
@@ -162,7 +176,11 @@ fn format_head_with_block(
     builder.push_keyword(keyword);
 
     let mut same_line = builder.clone();
-    same_line.push(if hanging { fmt.flat(head.clone()) } else { head.clone() });
+    same_line.push(if hanging {
+        fmt.flat(head.clone())
+    } else {
+        head.clone()
+    });
     same_line.push(block.clone());
 
     let mut next_line = builder.clone();
@@ -201,20 +219,33 @@ fn single_line_if_exprs(expr: &IfExpr) -> Option<(Expr, Expr)> {
     let Some(ElseBranch::Block(else_block)) = expr.else_branch() else {
         return None;
     };
-    Some((single_line_block_expr(&expr.then_branch()?)?, single_line_block_expr(&else_block)?))
+    Some((
+        single_line_block_expr(&expr.then_branch()?)?,
+        single_line_block_expr(&else_block)?,
+    ))
 }
 
 /// `if a { b } else { c }` on a single line; `then_expr` and `else_expr` are the formatted
 /// expressions from `single_line_if_exprs`. It is allowed only in an expression context
 /// (not for a standalone statement).
-fn format_if_single_line(fmt: &Formatter, expr: &IfExpr, condition: Frag, then_expr: Frag, else_expr: Frag) -> Option<Frag> {
+fn format_if_single_line(
+    fmt: &Formatter,
+    expr: &IfExpr,
+    condition: Frag,
+    then_expr: Frag,
+    else_expr: Frag,
+) -> Option<Frag> {
     let Some(ElseBranch::Block(else_block)) = expr.else_branch() else {
         unreachable!("checked by `single_line_if_exprs`");
     };
     let mut builder = Builder::new(fmt);
     builder.push_keyword(expr.if_token()?);
     builder.push(condition);
-    builder.push(format_block_single_line(fmt, &expr.then_branch()?, then_expr));
+    builder.push(format_block_single_line(
+        fmt,
+        &expr.then_branch()?,
+        then_expr,
+    ));
     builder.push_keyword(expr.else_token()?);
     builder.push(format_block_single_line(fmt, &else_block, else_expr));
     fmt.flat_within(

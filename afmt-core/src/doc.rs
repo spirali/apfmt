@@ -22,7 +22,7 @@ pub(crate) enum DocNode {
     /// Only layouts of the inner doc that span more than one line
     MultiLine(DocId),
     /// The inner doc should stay on one line if possible
-    /// If broken, it increases "splits" in resolver that has a higher priority 
+    /// If broken, it increases "splits" in resolver that has a higher priority
     /// than number of lines
     KeepTogether(DocId),
 }

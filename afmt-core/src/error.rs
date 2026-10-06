@@ -1,14 +1,9 @@
-/*use thiserror::Error;
+use ra_ap_syntax::SyntaxError;
 
-#[derive(Error, Debug)]
-pub enum FmtError {
-    #[error("Line exceeded")]
-    LineExceeded,
-    #[error("Line exceeded")]
-    LineExceededUnrecoverable,
-    #[error("{0}")]
-    InvalidTree(String),
+#[derive(Debug)]
+pub enum Error {
+    SyntaxErrors(Vec<SyntaxError>),
+    GenericError(String),
 }
 
-pub type FmtResult<T> = Result<T, FmtError>;
-*/
+pub type Result<T> = std::result::Result<T, Error>;

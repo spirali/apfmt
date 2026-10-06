@@ -1,7 +1,7 @@
-use ra_ap_syntax::ast::Name;
-use ra_ap_syntax::SyntaxToken;
-use crate::formatter::{Builder, Formatter, Frag};
 use crate::formatter::Edge::{BraceClose, BraceOpen, Close, Open, Word};
+use crate::formatter::{Builder, Formatter, Frag};
+use ra_ap_syntax::SyntaxToken;
+use ra_ap_syntax::ast::Name;
 
 pub(super) fn format_name(fmt: &Formatter, name: Name) -> Frag {
     fmt.token(name.ident_token().unwrap(), Word)
@@ -22,7 +22,12 @@ pub(super) fn format_parenthesized(
 }
 
 /// `{ inner }` of a block or a struct literal
-pub(super) fn format_braced(fmt: &Formatter, open: SyntaxToken, inner: Frag, close: SyntaxToken) -> Frag {
+pub(super) fn format_braced(
+    fmt: &Formatter,
+    open: SyntaxToken,
+    inner: Frag,
+    close: SyntaxToken,
+) -> Frag {
     let mut builder = Builder::new(fmt);
     builder.push_token(open, BraceOpen);
     builder.push(inner);

@@ -100,8 +100,7 @@ def run_rustfmt(code: str, args) -> str:
 
 
 def run_afmt(code: str, args) -> str:
-    # like rustfmt, afmt reads from stdin when no file is given
-    return run_cmd([str(args.afmt)], stdin=code, timeout=args.timeout)
+    return run_cmd([str(args.afmt), "--result-check"], stdin=code, timeout=args.timeout)
 
 
 def make_diff(expected: str, actual: str, a_name: str, b_name: str) -> list[str]:

@@ -1,23 +1,23 @@
 //! Items: functions, structs, enums
 
-use crate::formatter::{Builder, Formatter, Frag};
-use crate::formatter::Edge::{Comma, Operator, Tight, Word};
-use crate::layout::list::{
-    Delimiters, FlatLimit, ListItem, ListLayout, TrailingSeparator, delimited_list, flat_layout,
-    list_items, list_items_cast,
-};
-use ra_ap_syntax::{AstNode, SyntaxKind};
-use ra_ap_syntax::ast::{
-    Enum, FieldList, Fn as AstFn, HasGenericParams, HasName, HasVisibility, Item, Param, ParamList,
-    RecordField, RecordFieldList, SelfParam, Struct, TupleField, TupleFieldList, Variant,
-    Visibility,
-};
-use crate::format::common::{format_name, format_parenthesized};
 use super::expr::format_expr;
 use super::pat::format_pat;
 use super::path::format_path;
 use super::stmt::format_block_expr;
 use super::ty::{format_ret_type, format_type};
+use crate::format::common::{format_name, format_parenthesized};
+use crate::formatter::Edge::{Comma, Operator, Tight, Word};
+use crate::formatter::{Builder, Formatter, Frag};
+use crate::layout::list::{
+    Delimiters, FlatLimit, ListItem, ListLayout, TrailingSeparator, delimited_list, flat_layout,
+    list_items, list_items_cast,
+};
+use ra_ap_syntax::ast::{
+    Enum, FieldList, Fn as AstFn, HasGenericParams, HasName, HasVisibility, Item, Param, ParamList,
+    RecordField, RecordFieldList, SelfParam, Struct, TupleField, TupleFieldList, Variant,
+    Visibility,
+};
+use ra_ap_syntax::{AstNode, SyntaxKind};
 
 /// `self`, `&self`, `&'a mut self`, `mut self` or `self: Type`
 fn format_self_param(fmt: &Formatter, param: SelfParam) -> Frag {
@@ -127,7 +127,12 @@ fn format_record_field_list(fmt: &Formatter, list: RecordFieldList) -> Frag {
 fn format_tuple_field_list(fmt: &Formatter, list: TupleFieldList) -> Frag {
     let fields = list_items_cast(list.syntax(), |f| format_tuple_field(fmt, f));
     let delims = Delimiters::parens_of(list.syntax());
-    delimited_list(fmt, &delims, &fields, ListLayout::tall(FlatLimit::Within(fmt.config().fn_call_width)))
+    delimited_list(
+        fmt,
+        &delims,
+        &fields,
+        ListLayout::tall(FlatLimit::Within(fmt.config().fn_call_width)),
+    )
 }
 
 /// `struct Name;`, `struct Name { a: A }` or `struct Name(A);`
@@ -211,7 +216,10 @@ fn format_variant_parts(fmt: &Formatter, variant: Variant) -> VariantParts {
     let discriminant = variant.eq_token().map(|eq_token| {
         let mut builder = Builder::new(fmt);
         builder.push_token(eq_token, Operator);
-        builder.push(format_expr(fmt, variant.const_arg().unwrap().expr().unwrap()));
+        builder.push(format_expr(
+            fmt,
+            variant.const_arg().unwrap().expr().unwrap(),
+        ));
         builder.to_frag()
     });
     VariantParts {
@@ -232,9 +240,12 @@ fn format_variant(fmt: &Formatter, parts: &VariantParts, single_line_structs: bo
         VariantFields::Struct(s) if single_line_structs => {
             builder.push(s.delims.wrap(fmt, s.single_line.clone().unwrap()));
         }
-        VariantFields::Struct(s) => {
-            builder.push(delimited_list(fmt, &s.delims, &s.fields, ListLayout::fixed_vertical()))
-        }
+        VariantFields::Struct(s) => builder.push(delimited_list(
+            fmt,
+            &s.delims,
+            &s.fields,
+            ListLayout::fixed_vertical(),
+        )),
     }
     if let Some(discriminant) = &parts.discriminant {
         builder.push(discriminant.clone());
@@ -256,8 +267,7 @@ fn format_enum(fmt: &Formatter, item: Enum) -> Frag {
 
     let list = item.variant_list().unwrap();
     let delims = Delimiters::braces_of(list.syntax());
-    let variants =
-        list_items_cast(list.syntax(), |v| format_variant_parts(fmt, v));
+    let variants = list_items_cast(list.syntax(), |v| format_variant_parts(fmt, v));
     let body = |single_line_structs: bool| {
         let items = variants
             .iter()
@@ -271,11 +281,15 @@ fn format_enum(fmt: &Formatter, item: Enum) -> Frag {
             _ => None,
         })
     };
-    let all_small = struct_fields().next().is_some()
-        && struct_fields().all(|s| s.single_line.is_some());
+    let all_small =
+        struct_fields().next().is_some() && struct_fields().all(|s| s.single_line.is_some());
     // The vertical struct variants stay as a fallback when a single-line one exceeds `max_width`
     let vertical = body(false);
-    builder.push(if all_small { fmt.alt_frag(body(true), vertical) } else { vertical });
+    builder.push(if all_small {
+        fmt.alt_frag(body(true), vertical)
+    } else {
+        vertical
+    });
     builder.to_frag()
 }
 

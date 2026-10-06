@@ -1,7 +1,7 @@
 //! Delimited, comma-separated lists
 
-use crate::formatter::{Builder, Edge, Formatter, Frag};
 use crate::formatter::Edge::{BraceClose, BraceOpen, Close, Comma, Open};
+use crate::formatter::{Builder, Edge, Formatter, Frag};
 use crate::utils::with_is_last;
 use ra_ap_syntax::{AstNode, SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken};
 
@@ -163,17 +163,32 @@ enum DelimiterKind {
 impl Delimiters {
     /// The `(` and `)` of the list `node` (an argument list, a parameter list, ...)
     pub fn parens_of(node: &SyntaxNode) -> Self {
-        Self::of(node, SyntaxKind::L_PAREN, SyntaxKind::R_PAREN, DelimiterKind::Parens)
+        Self::of(
+            node,
+            SyntaxKind::L_PAREN,
+            SyntaxKind::R_PAREN,
+            DelimiterKind::Parens,
+        )
     }
 
     /// The `<` and `>` of the list `node` (generic arguments)
     pub fn angles_of(node: &SyntaxNode) -> Self {
-        Self::of(node, SyntaxKind::L_ANGLE, SyntaxKind::R_ANGLE, DelimiterKind::Angles)
+        Self::of(
+            node,
+            SyntaxKind::L_ANGLE,
+            SyntaxKind::R_ANGLE,
+            DelimiterKind::Angles,
+        )
     }
 
     /// The `{` and `}` of the list `node` (a record field list, a variant list, ...)
     pub fn braces_of(node: &SyntaxNode) -> Self {
-        Self::of(node, SyntaxKind::L_CURLY, SyntaxKind::R_CURLY, DelimiterKind::Braces)
+        Self::of(
+            node,
+            SyntaxKind::L_CURLY,
+            SyntaxKind::R_CURLY,
+            DelimiterKind::Braces,
+        )
     }
 
     /// The first `open` and the last `close` token among the children of `node`
@@ -359,7 +374,10 @@ pub(crate) fn delimited_list(
         BrokenList::Fill => fill_list(fmt, items, open.clone()),
     };
     if let Some(limit) = layout.flat {
-        layouts = fmt.alt_opt(layouts, flat_layout(fmt, delims, items, limit, layout.trailing));
+        layouts = fmt.alt_opt(
+            layouts,
+            flat_layout(fmt, delims, items, limit, layout.trailing),
+        );
     }
     if layout.hug && !delims.has_own_line_comment(fmt) {
         let [item] = items else {

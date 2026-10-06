@@ -285,7 +285,9 @@ impl<'a> Resolver<'a> {
             }
             DocNode::MultiLine(doc) => {
                 let mut layout_set = self.resolve(ctx, *doc);
-                layout_set.layouts.retain(|layout| layout.measure.height > 0);
+                layout_set
+                    .layouts
+                    .retain(|layout| layout.measure.height > 0);
                 layout_set
             }
             DocNode::Alt(doc1, doc2) => {

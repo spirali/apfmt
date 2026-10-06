@@ -1,9 +1,9 @@
 //! Types
 
-use crate::formatter::{Builder, Formatter, Frag};
-use crate::formatter::Edge::{Operator, Tight, Word};
-use ra_ap_syntax::ast::{RefType, RetType, Type};
 use super::path::format_path;
+use crate::formatter::Edge::{Operator, Tight, Word};
+use crate::formatter::{Builder, Formatter, Frag};
+use ra_ap_syntax::ast::{RefType, RetType, Type};
 
 /// `-> T`
 pub(super) fn format_ret_type(fmt: &Formatter, ret_type: RetType) -> Frag {
