@@ -1,6 +1,5 @@
 use ra_ap_syntax::{
-    AstNode, Direction, Edition, NodeOrToken, SourceFile, SyntaxKind, SyntaxToken, TextSize,
-    WalkEvent,
+    AstNode, Direction, NodeOrToken, SourceFile, SyntaxKind, SyntaxToken, TextSize, WalkEvent,
 };
 
 #[derive(PartialEq, Eq, Debug)]
@@ -16,8 +15,8 @@ pub(crate) fn check_result(
     input_text: &str,
     output_text: &str,
 ) -> Result<(), String> {
-    let input_steps = steps(&input);
-    let output_steps = steps(&output);
+    let input_steps = steps(input);
+    let output_steps = steps(output);
     let mismatch = input_steps
         .iter()
         .zip(&output_steps)
@@ -30,8 +29,8 @@ pub(crate) fn check_result(
         ));
     }
 
-    let input_comments = comments(&input);
-    let output_comments = comments(&output);
+    let input_comments = comments(input);
+    let output_comments = comments(output);
     if input_comments != output_comments {
         let missing: Vec<_> = input_comments
             .iter()
@@ -57,15 +56,23 @@ fn steps(file: &SourceFile) -> Vec<(Step, TextSize)> {
                 out.push((Step::Enter(node.kind()), node.text_range().start()))
             }
             WalkEvent::Leave(NodeOrToken::Node(node)) => {
+                // `extern` is `extern "C"`: the formatter writes the ABI out
+                if node.kind() == SyntaxKind::ABI
+                    && !node
+                        .children_with_tokens()
+                        .any(|c| c.kind() == SyntaxKind::STRING)
+                {
+                    let step = Step::Token(SyntaxKind::STRING, "\"C\"".to_string());
+                    out.push((step, node.text_range().end()));
+                }
                 out.push((Step::Leave(node.kind()), node.text_range().end()))
             }
             WalkEvent::Enter(NodeOrToken::Token(token))
                 if !token.kind().is_trivia() && !is_trailing_comma(&token) =>
             {
-                out.push((
-                    Step::Token(token.kind(), token.text().to_string()),
-                    token.text_range().start(),
-                ))
+                // A shebang includes its line break, which is layout
+                let text = token.text().trim_end().to_string();
+                out.push((Step::Token(token.kind(), text), token.text_range().start()))
             }
             _ => {}
         }
@@ -79,7 +86,8 @@ fn is_trailing_comma(token: &SyntaxToken) -> bool {
             .siblings_with_tokens(Direction::Next)
             .skip(1)
             .find(|e| !e.kind().is_trivia())
-            .is_some_and(|e| {
+            // Also a comma ending its node: the last item of a `where` clause
+            .is_none_or(|e| {
                 matches!(
                     e.kind(),
                     SyntaxKind::R_PAREN
@@ -160,5 +168,27 @@ mod tests {
     fn truncated_output_fails() {
         let error = check_result_test("fn f() {}\nfn g() {}", "fn f() {}").unwrap_err();
         assert!(error.contains("Enter(FN) at input 2:1"), "{error}");
+    }
+
+    #[test]
+    fn where_clause_trailing_comma_passes() {
+        let input = "fn f<T>() where T: Clone {}";
+        let output = "fn f<T>()\nwhere\n    T: Clone,\n{}";
+        assert_eq!(check_result_test(input, output), Ok(()));
+    }
+
+    #[test]
+    fn explicit_c_abi_passes() {
+        assert_eq!(
+            check_result_test("extern fn f() {}", "extern \"C\" fn f() {}"),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn changed_abi_fails() {
+        let error =
+            check_result_test("extern fn f() {}", "extern \"system\" fn f() {}").unwrap_err();
+        assert!(error.contains("STRING"), "{error}");
     }
 }

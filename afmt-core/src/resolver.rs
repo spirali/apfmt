@@ -1,5 +1,5 @@
 use crate::config::Config;
-use crate::doc::{DocArena, DocId, DocNode, EMPTY_DOC};
+use crate::doc::{DocArena, DocId, DocNode};
 use smallvec::{SmallVec, smallvec};
 use std::cmp::Ordering;
 use std::rc::Rc;
@@ -10,7 +10,6 @@ struct Measure {
     badness: u32,
     splits: u32,
     height: u32,
-    is_full: bool,
 }
 
 impl Measure {
@@ -29,7 +28,6 @@ impl Measure {
             badness,
             splits: 0,
             height: 0,
-            is_full: false,
         }
     }
 
@@ -45,20 +43,6 @@ impl Measure {
             .cmp(&other.badness)
             .then(self.splits.cmp(&other.splits))
             .then(self.height.cmp(&other.height))
-    }
-}
-
-enum AltChoice {
-    Left,
-    Right,
-}
-
-impl AltChoice {
-    pub fn apply<T>(&self, left: T, right: T) -> T {
-        match self {
-            AltChoice::Left => left,
-            AltChoice::Right => right,
-        }
     }
 }
 
@@ -114,19 +98,18 @@ impl LayoutSet {
             .min_by(|a, b| a.measure.cost_cmp(&b.measure))
     }
 
-    pub fn dump(&self) {
+    /*pub fn dump(&self) {
         println!("LayoutSet [{}]:", self.layouts.len());
         for (idx, layout) in self.layouts.iter().enumerate() {
             println!(
-                ">> idx={} last={} baddess={} height={} is_full={}",
+                ">> idx={} last={} baddess={} height={}",
                 idx,
                 layout.measure.last,
                 layout.measure.badness,
                 layout.measure.height,
-                layout.measure.is_full
             );
         }
-    }
+    }*/
 }
 
 pub(crate) struct Renderer<'a> {
@@ -164,8 +147,8 @@ impl<'a> Renderer<'a> {
                 self.indent = old;
             }
             Content::Concat(c1, c2) => {
-                self.render(&c1);
-                self.render(&c2);
+                self.render(c1);
+                self.render(c2);
             }
         }
     }
@@ -235,7 +218,6 @@ impl<'a> Resolver<'a> {
                     badness: 0,
                     splits: 0,
                     height: 1,
-                    is_full: false,
                 },
                 content: self.new_line.clone(),
             }),

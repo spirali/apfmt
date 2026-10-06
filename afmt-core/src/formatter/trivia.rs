@@ -13,9 +13,11 @@ fn is_leading_block_comment(token: &SyntaxToken) -> bool {
     let has_newline = |t: Option<SyntaxToken>| {
         t.is_some_and(|t| t.kind() == SyntaxKind::WHITESPACE && count_newlines(&t) > 0)
     };
+    // The start of the source is the start of a line too
+    let line_start = token.prev_token().is_none() || has_newline(token.prev_token());
     token.kind() == SyntaxKind::COMMENT
         && token.text().starts_with("/*")
-        && has_newline(token.prev_token())
+        && line_start
         && !has_newline(token.next_token())
 }
 
@@ -82,10 +84,10 @@ impl<'a> Builder<'a> {
         }
     }
 
-    fn push_emptyline(&mut self) {
+    /*fn push_emptyline(&mut self) {
         self.push_line_break_if(EMPTYLINE_DOC, |_| true);
         //self.frag.empty_lines = 0;
-    }
+    }*/
 
     fn flush_empty_lines(&mut self, newlines: u32) {
         if newlines == 0 {
@@ -121,6 +123,32 @@ impl<'a> Builder<'a> {
     /// Pushes the comments following `token`; the source `delimiter`, if found among them, is consumed
     /// without printing. `stop` says where the scan ends at the latest.
     /// Returns the last consumed token.
+    /// Pushes the comment `token`; a line comment ends the line (`Break`)
+    fn push_comment(&mut self, token: &SyntaxToken) {
+        let end = if token.text().starts_with("//") {
+            Break
+        } else {
+            Word
+        };
+        let doc_id = self.fmt.comment_doc(token);
+        self.push(Frag::new(doc_id, Edge::Comment, end, None));
+    }
+
+    /// Pushes the comments starting at `token` (inclusive) up to the first code token, for trivia that no
+    /// cursor precedes, e.g. at the start of the source; after the content already in the builder, they
+    /// start on a new line. The last comment becomes the cursor.
+    pub fn push_comments_from(&mut self, token: Option<SyntaxToken>) {
+        let first_comment = std::iter::successors(token, |t| t.next_token())
+            .take_while(|t| t.kind().is_trivia())
+            .find(|t| t.kind() == SyntaxKind::COMMENT);
+        if let Some(comment) = first_comment {
+            self.push_line_break_if(NEWLINE_DOC, |end| end != Nothing);
+            self.push_comment(&comment);
+            self.frag.cursor = Some(comment);
+            self.consume_comments();
+        }
+    }
+
     pub(super) fn scan_comments(
         &mut self,
         token: SyntaxToken,
@@ -160,13 +188,7 @@ impl<'a> Builder<'a> {
                     if own_line {
                         self.push_line_break_if(NEWLINE_DOC, |end| end != Nothing);
                     }
-                    let end = if token.text().starts_with("//") {
-                        Break
-                    } else {
-                        Word
-                    };
-                    let doc_id = self.fmt.comment_doc(&token);
-                    self.push(Frag::new(doc_id, Edge::Comment, end, None));
+                    self.push_comment(&token);
                     cursor = token.clone();
                 }
                 x if Some(x) == delimiter => {

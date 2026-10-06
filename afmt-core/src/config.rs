@@ -16,7 +16,8 @@ pub struct Config {
     /// Puts a single space inside single-line block comments: `/*a*/` -> `/* a */`
     pub normalize_comments: bool,
     pub edition: Edition,
-    pub dump_tree: bool,
+    pub dump_parse_tree: bool,
+    pub dump_doc_tree: bool,
     pub check_result: bool,
 }
 
@@ -32,7 +33,8 @@ impl Default for Config {
             short_array_element_width_threshold: 10,
             normalize_comments: true,
             edition: Edition::CURRENT,
-            dump_tree: false,
+            dump_parse_tree: false,
+            dump_doc_tree: false,
             check_result: false,
         }
     }

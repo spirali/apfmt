@@ -1,5 +1,5 @@
 use std::io::Read;
-use std::io::{Write};
+use std::io::Write;
 use std::path::PathBuf;
 
 use afmt_core::Config;
@@ -11,9 +11,13 @@ struct Cli {
     /// Path to the file to parse; reads from stdin if not provided
     file: Option<PathBuf>,
 
-    /// Dump parse tree
+    /// Dump the output from the parser
     #[clap(long)]
-    dump_tree: bool,
+    dump_parse_tree: bool,
+
+    /// Dump doc tree
+    #[clap(long)]
+    dump_doc_tree: bool,
 
     /// Check that only the layout changed: the output must parse to the same syntax tree (apart from
     /// whitespace, comments and trailing commas) and keep all comments; exits with code 1 otherwise
@@ -47,7 +51,8 @@ fn main() {
         }
     };
     let cfg = Config {
-        dump_tree: cli.dump_tree,
+        dump_parse_tree: cli.dump_parse_tree,
+        dump_doc_tree: cli.dump_doc_tree,
         check_result: cli.result_check,
         ..Config::default()
     };

@@ -88,7 +88,7 @@ pub(super) fn compute_space(left: Edge, right: Edge) -> DocId {
         (Word, Open) => EMPTY_DOC,                     // foo(
         (Close, Open) => EMPTY_DOC,                    // )(
         (Word, Word) => SPACE_DOC,                     // fn foo
-        (Close, Word) | (Word, Close) => SPACE_DOC,
+        (Close, Word) => SPACE_DOC,
         _ => SPACE_DOC,
     }
 }

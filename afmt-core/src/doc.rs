@@ -1,4 +1,4 @@
-use ra_ap_syntax::{SyntaxNode, SyntaxToken, TextRange};
+use ra_ap_syntax::SyntaxToken;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct DocId(u32);
@@ -44,7 +44,7 @@ impl DocArena {
         DocArena {
             nodes: vec![
                 DocNode::Newline,
-                DocNode::Text(String::new().into()),
+                DocNode::Text(String::new()),
                 DocNode::Text(" ".into()),
                 DocNode::Alt(NEWLINE_DOC, SPACE_DOC),
                 DocNode::Concat(NEWLINE_DOC, NEWLINE_DOC),

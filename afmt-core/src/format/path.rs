@@ -2,7 +2,7 @@
 
 use super::expr::format_expr;
 use super::ty::{format_ret_type, format_type};
-use crate::format::common::format_parenthesized;
+use crate::format::common::{format_lifetime, format_parenthesized};
 use crate::formatter::Edge::{Operator, Tight, Word};
 use crate::formatter::{Builder, Formatter, Frag};
 use crate::layout::list::{Delimiters, FlatLimit, ListLayout, delimited_list, list_items_cast};
@@ -20,7 +20,7 @@ pub(super) fn format_path(fmt: &Formatter, path: Path) -> Frag {
         builder.push_token(path.coloncolon_token().unwrap(), Tight);
     }
     builder.push(format_path_segment(fmt, path.segment().unwrap()));
-    builder.to_frag()
+    builder.into_frag()
 }
 
 /// `name`, `name<args>`, `name::<args>`, `Fn(args) -> ret` or `<T as Trait>`; with a leading `::` in `::std`
@@ -47,7 +47,7 @@ fn format_path_segment(fmt: &Formatter, segment: PathSegment) -> Frag {
     if let Some(x) = segment.return_type_syntax() {
         panic!("{x:?}");
     }
-    builder.to_frag()
+    builder.into_frag()
 }
 
 /// An identifier or one of `self`, `super`, `crate`, `Self`
@@ -73,7 +73,7 @@ fn format_type_anchor(fmt: &Formatter, anchor: TypeAnchor) -> Frag {
     format_parenthesized(
         fmt,
         anchor.l_angle_token().unwrap(),
-        inner.to_frag(),
+        inner.into_frag(),
         anchor.r_angle_token().unwrap(),
     )
 }
@@ -89,16 +89,13 @@ fn format_generic_arg_list(fmt: &Formatter, args: GenericArgList) -> Frag {
     let list = delimited_list(fmt, &delims, &items, ListLayout::tall(FlatLimit::MaxWidth));
     // "Avoid breaking lines in types where possible" (Style Guide)
     builder.push(fmt.keep_together(list));
-    builder.to_frag()
+    builder.into_frag()
 }
 
 fn format_generic_arg(fmt: &Formatter, arg: GenericArg) -> Frag {
     match arg {
         GenericArg::TypeArg(arg) => format_type(fmt, arg.ty().unwrap()),
-        GenericArg::LifetimeArg(arg) => fmt.token(
-            arg.lifetime().unwrap().lifetime_ident_token().unwrap(),
-            Word,
-        ),
+        GenericArg::LifetimeArg(arg) => format_lifetime(fmt, arg.lifetime().unwrap()),
         GenericArg::ConstArg(arg) => format_expr(fmt, arg.expr().unwrap()),
         GenericArg::AssocTypeArg(arg) => format_assoc_type_arg(fmt, arg),
     }
@@ -120,7 +117,7 @@ fn format_assoc_type_arg(fmt: &Formatter, arg: AssocTypeArg) -> Frag {
         (None, Some(arg)) => builder.push(format_expr(fmt, arg.expr().unwrap())),
         (None, None) => panic!("{arg:?}"),
     }
-    builder.to_frag()
+    builder.into_frag()
 }
 
 /// `(A, B)` in `Fn(A, B) -> C`
@@ -135,5 +132,5 @@ fn format_parenthesized_arg_list(fmt: &Formatter, args: ParenthesizedArgList) ->
     let list = delimited_list(fmt, &delims, &items, ListLayout::tall(FlatLimit::MaxWidth));
     // "Avoid breaking lines in types where possible" (Style Guide)
     builder.push(fmt.keep_together(list));
-    builder.to_frag()
+    builder.into_frag()
 }

@@ -1,6 +1,6 @@
 //! Delimited, comma-separated lists
 
-use crate::formatter::Edge::{BraceClose, BraceOpen, Close, Comma, Open};
+use crate::formatter::Edge::{BraceClose, BraceOpen, Close, Comma, Open, Word};
 use crate::formatter::{Builder, Edge, Formatter, Frag};
 use crate::utils::with_is_last;
 use ra_ap_syntax::{AstNode, SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken};
@@ -85,7 +85,7 @@ fn flat_list(
     builder.flush_trivia(false);
     // A line comment ends the line inside the list, so `Flat` rejects such a layout
     builder.end_line_after_line_comment();
-    builder.to_frag()
+    builder.into_frag()
 }
 
 /// Items filled on lines, as many on each line as fit: `a, b, c,` / `d, e,`; with a line break after `open`,
@@ -112,23 +112,29 @@ fn fill_list(fmt: &Formatter, items: &[ListItem], open: Option<SyntaxToken>) -> 
     }
     builder.flush_trivia(false);
     builder.push_newline();
-    head.push(fmt.indented_line(builder.to_frag()));
-    head.to_frag()
+    head.push(fmt.indented_line(builder.into_frag()));
+    head.into_frag()
 }
 
-/// One item per line with a trailing comma, indented; `open` is the opening delimiter and the comments
-/// following it are part of the list. With `keep_blank_lines`, blank lines between items are kept
+/// One item per line with a trailing comma (unless it is `Never`), indented; `open` is the opening
+/// delimiter and the comments following it are part of the list. With `keep_blank_lines`, blank lines between items are kept
 /// (up to `blank_lines_upper_bound`), e.g. between struct fields.
 fn vertical_list(
     fmt: &Formatter,
     items: &[ListItem],
     open: Option<SyntaxToken>,
     keep_blank_lines: bool,
+    trailing: TrailingSeparator,
 ) -> Frag {
     let mut builder = Builder::with_cursor(fmt, open);
     builder.break_after_line_comments();
     for (item, is_last) in with_is_last(items) {
         builder.push(item.frag.clone());
+        if is_last && trailing == TrailingSeparator::Never {
+            // The token after the list follows the last item on its line: `T: Clone;`
+            builder.skip_delimiter(SyntaxKind::COMMA);
+            break;
+        }
         builder.push_delimiter(SyntaxKind::COMMA);
         // Blank lines in front of the closing delimiter are dropped
         if keep_blank_lines && !is_last {
@@ -138,7 +144,7 @@ fn vertical_list(
             builder.push_newline();
         }
     }
-    fmt.nest(builder.to_frag())
+    fmt.nest(builder.into_frag())
 }
 
 /// The delimiters of a list
@@ -219,7 +225,7 @@ impl Delimiters {
         builder.push(fmt.token_without_cursor(self.open.clone(), open_edge));
         builder.push(inner);
         builder.push_token(self.close.clone(), close_edge);
-        builder.to_frag()
+        builder.into_frag()
     }
 
     /// The list without items; it may still contain comments
@@ -229,7 +235,7 @@ impl Delimiters {
                 let mut builder = Builder::new(fmt);
                 builder.push_token(self.open.clone(), Open);
                 builder.push_token(self.close.clone(), Close);
-                builder.to_frag()
+                builder.into_frag()
             }
             DelimiterKind::Braces => {
                 // Only comments: indented on their own lines, like in an empty block
@@ -239,7 +245,7 @@ impl Delimiters {
                     Frag::empty()
                 } else {
                     comments.push_newline();
-                    fmt.indented_line(comments.to_frag())
+                    fmt.indented_line(comments.into_frag())
                 };
                 self.wrap(fmt, inner)
             }
@@ -317,6 +323,9 @@ pub(crate) enum TrailingSeparator {
     /// Always, also on a single line, because the comma changes the meaning: the tuple pattern `(a,)`
     /// is not the parenthesized pattern `(a)`
     Required,
+    /// Never; in a vertical layout, the token after the list follows the last item on its line, e.g.
+    /// the `;` after a `where` clause: `    T: Clone;`
+    Never,
 }
 
 /// When the items may be put on a single line
@@ -356,6 +365,21 @@ pub(crate) fn flat_layout(
     }
 }
 
+/// Items following a keyword, always one per line and indented: `where` / `    T: Clone,` (taxonomy:
+/// WhereClause). The list ends with a line break, so the next token starts a new line (`{`), unless
+/// `trailing` is `Never`: then it follows the last item, which has no comma (`    T: Clone;`).
+pub(crate) fn keyword_list(
+    fmt: &Formatter,
+    keyword: SyntaxToken,
+    items: &[ListItem],
+    trailing: TrailingSeparator,
+) -> Frag {
+    let mut builder = Builder::new(fmt);
+    builder.push(fmt.token_without_cursor(keyword.clone(), Word));
+    builder.push(vertical_list(fmt, items, Some(keyword), false, trailing));
+    builder.into_frag()
+}
+
 /// A delimited list, `(a, b)`, `<A, B>` or `{ a, b }`, in the layouts `layout` allows
 pub(crate) fn delimited_list(
     fmt: &Formatter,
@@ -369,7 +393,7 @@ pub(crate) fn delimited_list(
     let open = Some(delims.open.clone());
     let mut layouts = match layout.broken {
         BrokenList::Vertical { keep_blank_lines } => {
-            vertical_list(fmt, items, open.clone(), keep_blank_lines)
+            vertical_list(fmt, items, open.clone(), keep_blank_lines, layout.trailing)
         }
         BrokenList::Fill => fill_list(fmt, items, open.clone()),
     };
@@ -389,7 +413,7 @@ pub(crate) fn delimited_list(
         overflow.skip_delimiter(SyntaxKind::COMMA);
         overflow.flush_trivia(false);
         // Only an item that is broken overflows; on a single line, it is the flat layout
-        layouts = fmt.alt_frag(layouts, fmt.multi_line(overflow.to_frag()));
+        layouts = fmt.alt_frag(layouts, fmt.multi_line(overflow.into_frag()));
     }
     delims.wrap(fmt, layouts)
 }

@@ -92,7 +92,7 @@ fn format_call_expr(fmt: &Formatter, call: CallExpr) -> Frag {
     let mut builder = Builder::new(fmt);
     builder.push(format_expr(fmt, call.expr().unwrap()));
     builder.push(format_arg_list(fmt, call.arg_list().unwrap()));
-    builder.to_frag()
+    builder.into_frag()
 }
 
 fn format_literal(fmt: &Formatter, literal: Literal) -> Frag {
@@ -127,7 +127,7 @@ fn format_prefix_expr(fmt: &Formatter, expr: PrefixExpr) -> Frag {
     let mut builder = Builder::new(fmt);
     builder.push_token(expr.op_token().unwrap(), Tight);
     builder.push(format_expr(fmt, expr.expr().unwrap()));
-    builder.to_frag()
+    builder.into_frag()
 }
 
 fn format_paren_expr(fmt: &Formatter, expr: ParenExpr) -> Frag {
@@ -147,7 +147,7 @@ fn format_let_expr(fmt: &Formatter, expr: LetExpr) -> Frag {
     builder.push(format_pat(fmt, expr.pat().unwrap()));
     builder.push_token(expr.eq_token().unwrap(), Operator);
     builder.push(format_expr(fmt, expr.expr().unwrap()));
-    builder.to_frag()
+    builder.into_frag()
 }
 
 /// Whether a multi-line layout of the expression ends with an indented continuation line, e.g. a broken
@@ -186,7 +186,7 @@ fn format_head_with_block(
     let mut next_line = builder.clone();
     next_line.push(head);
     next_line.push(fmt.on_next_line(block));
-    fmt.alt_frag(same_line.to_frag(), next_line.to_frag())
+    fmt.alt_frag(same_line.into_frag(), next_line.into_frag())
 }
 
 /// The expression of a block that can be written as `{ expr }`: no statements and no comments
@@ -249,7 +249,7 @@ fn format_if_single_line(
     builder.push_keyword(expr.else_token()?);
     builder.push(format_block_single_line(fmt, &else_block, else_expr));
     fmt.flat_within(
-        builder.to_frag(),
+        builder.into_frag(),
         fmt.config().single_line_if_else_max_width,
     )
 }
@@ -279,7 +279,7 @@ pub(super) fn format_if_expr(fmt: &Formatter, expr: IfExpr, allow_single_line: b
             ElseBranch::IfExpr(expr) => format_if_expr(fmt, expr, false),
         });
     }
-    let frag = builder.to_frag();
+    let frag = builder.into_frag();
     fmt.alt_opt(
         frag,
         block_exprs.and_then(|(then_expr, else_expr)| {

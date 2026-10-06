@@ -14,8 +14,8 @@ pub use crate::config::Config;
 use crate::format::format_source_file;
 use crate::formatter::Formatter;
 pub use error::{Error, Result};
-use ra_ap_syntax::{AstNode, SyntaxError, WalkEvent};
-use ra_ap_syntax::{Edition, NodeOrToken, SourceFile};
+use ra_ap_syntax::{AstNode, WalkEvent};
+use ra_ap_syntax::{NodeOrToken, SourceFile};
 
 fn print_tree(source_file: &SourceFile) {
     let mut depth = 0;
@@ -55,7 +55,7 @@ fn print_tree(source_file: &SourceFile) {
 }
 
 pub fn format_source_code(config: &Config, code: &str) -> Result<String> {
-    let parse = SourceFile::parse(&code, config.edition);
+    let parse = SourceFile::parse(code, config.edition);
     let file: SourceFile = parse.tree();
 
     let errors = parse.errors();
@@ -63,21 +63,27 @@ pub fn format_source_code(config: &Config, code: &str) -> Result<String> {
         return Err(Error::SyntaxErrors(parse.errors()));
     }
 
-    if config.dump_tree {
+    if config.dump_parse_tree {
         print_tree(&file);
     }
 
-    let mut fmt = Formatter::new(config);
-    let frag = format_source_file(&mut fmt, &file);
+    let fmt = Formatter::new(config);
+    let frag = format_source_file(&fmt, &file);
+
+    if config.dump_doc_tree {
+        fmt.dump(&frag);
+    }
+
     let out = fmt.into_resolver(frag).render(code.len() * 2);
 
     if config.check_result {
         let out_parse = SourceFile::parse(&out, config.edition);
         let errors = out_parse.errors();
         if !errors.is_empty() {
-            return Err(Error::GenericError(
-                format!("Could not reparse the result: {:?}", errors),
-            ));
+            return Err(Error::GenericError(format!(
+                "Could not reparse the result: {:?}",
+                errors
+            )));
         }
         if let Err(error) = check_result(&file, &out_parse.tree(), code, &out) {
             return Err(Error::GenericError(error));

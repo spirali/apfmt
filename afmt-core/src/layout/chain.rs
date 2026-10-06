@@ -15,7 +15,7 @@ pub(crate) fn infix_chain(fmt: &Formatter, first: Frag, rest: &[(Frag, Frag)]) -
         let mut line = Builder::new(fmt);
         line.push(op.clone());
         line.push(operand.clone());
-        vertical.push(fmt.indented_line(line.to_frag()));
+        vertical.push(fmt.indented_line(line.into_frag()));
     }
-    fmt.alt_frag(fmt.flat(flat.to_frag()), vertical.to_frag())
+    fmt.alt_frag(fmt.flat(flat.into_frag()), vertical.into_frag())
 }

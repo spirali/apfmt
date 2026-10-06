@@ -26,7 +26,7 @@ fn format_let_stmt(fmt: &Formatter, stmt: LetStmt) -> Frag {
         builder.push(format_block_expr(fmt, let_else.block_expr().unwrap()));
     }
     builder.push_delimiter(SyntaxKind::SEMICOLON);
-    builder.to_frag()
+    builder.into_frag()
 }
 
 fn format_stmt(fmt: &Formatter, stmt: Stmt) -> Frag {
@@ -44,7 +44,7 @@ fn format_stmt(fmt: &Formatter, stmt: Stmt) -> Frag {
             if expr.semicolon_token().is_some() {
                 builder.push_delimiter(SyntaxKind::SEMICOLON);
             }
-            builder.to_frag()
+            builder.into_frag()
         }
         Stmt::Item(item) => format_item(fmt, item),
         Stmt::LetStmt(stmt) => format_let_stmt(fmt, stmt),
@@ -84,7 +84,7 @@ fn format_stmt_list(fmt: &Formatter, stmt_list: StmtList, tail: Option<Frag>) ->
                 .peek()
                 .is_some_and(|e| e.kind() == SyntaxKind::COMMENT);
         builder.push_newline();
-        let body = builder.to_frag();
+        let body = builder.into_frag();
         fmt.nest(if comment_on_brace_line {
             fmt.on_same_or_next_line(body)
         } else {
@@ -97,7 +97,7 @@ fn format_stmt_list(fmt: &Formatter, stmt_list: StmtList, tail: Option<Frag>) ->
     builder.push(fmt.token_without_cursor(l_curly, BraceOpen));
     builder.push(body_frag);
     builder.push_token(stmt_list.r_curly_token().unwrap(), BraceClose);
-    builder.to_frag()
+    builder.into_frag()
 }
 
 pub(super) fn format_block_expr(fmt: &Formatter, body: BlockExpr) -> Frag {

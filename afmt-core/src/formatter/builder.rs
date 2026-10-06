@@ -32,7 +32,7 @@ impl<'a> Builder<'a> {
     }
 
     #[inline]
-    pub fn to_frag(self) -> Frag {
+    pub fn into_frag(self) -> Frag {
         self.frag
     }
 
@@ -123,7 +123,7 @@ impl<'a> Builder<'a> {
         nested.push(frag);
         // A line comment on the left side is ended by the nested newline
         self.push_line_break_if(EMPTY_DOC, |end| end == Break);
-        self.join(fmt.indented_line(nested.to_frag()));
+        self.join(fmt.indented_line(nested.into_frag()));
     }
 
     /// Concatenates `frag` without processing the trivia in between

@@ -47,6 +47,11 @@ impl<'a> Formatter<'a> {
         )
     }
 
+    /// Text that is not in the source (e.g. an inserted `"C"`), without a cursor
+    pub fn text(&self, text: &str, edge: Edge) -> Frag {
+        Frag::new_simple(self.make_node(DocNode::Text(text.to_string())), edge, None)
+    }
+
     /// Just the token, without a cursor: the caller places the trivia (comments) that follow it
     pub fn token_without_cursor(&self, token: SyntaxToken, edge: Edge) -> Frag {
         Frag::new_simple(self.make_node(DocNode::Token(token)), edge, None)
@@ -203,6 +208,7 @@ impl<'a> Formatter<'a> {
             .reduce(|a, b| self.alt_doc(a, b))
             .unwrap()
     }
+
 
     pub fn dump(&self, frag: &Frag) {
         let root = self.frag_to_doc(frag);

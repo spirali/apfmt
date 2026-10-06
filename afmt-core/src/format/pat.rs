@@ -23,7 +23,7 @@ fn format_ident_pat(fmt: &Formatter, pat: IdentPat) -> Frag {
         builder.push_token(token, Operator);
         builder.push(format_pat(fmt, pat.pat().unwrap()));
     }
-    builder.to_frag()
+    builder.into_frag()
 }
 
 fn format_tuple_pat(fmt: &Formatter, pat: TuplePat) -> Frag {
@@ -49,7 +49,7 @@ fn format_tuple_struct_pat(fmt: &Formatter, pat: TupleStructPat) -> Frag {
         &fields,
         ListLayout::tall(FlatLimit::MaxWidth),
     ));
-    builder.to_frag()
+    builder.into_frag()
 }
 
 pub(super) fn format_pat(fmt: &Formatter, pat: Pat) -> Frag {
