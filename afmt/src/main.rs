@@ -19,6 +19,10 @@ struct Cli {
     #[clap(long)]
     dump_doc_tree: bool,
 
+    /// Print the doc graph in the Graphviz DOT format instead of the formatted code
+    #[clap(long)]
+    doc_graph_to_dot: bool,
+
     /// Check that only the layout changed: the output must parse to the same syntax tree (apart from
     /// whitespace, comments and trailing commas) and keep all comments; exits with code 1 otherwise
     #[clap(long)]
@@ -56,7 +60,12 @@ fn main() {
         check_result: cli.result_check,
         ..Config::default()
     };
-    let out = match afmt_core::format_source_code(&cfg, &code) {
+    let result = if cli.doc_graph_to_dot {
+        afmt_core::doc_graph_to_dot(&cfg, &code)
+    } else {
+        afmt_core::format_source_code(&cfg, &code)
+    };
+    let out = match result {
         Ok(out) => out,
         Err(e) => {
             process_error(e);

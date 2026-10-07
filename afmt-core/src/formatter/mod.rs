@@ -227,6 +227,12 @@ impl<'a> Formatter<'a> {
         self.doc_arena.borrow().dump(root);
     }
 
+    /// The doc graph of the fragment in the Graphviz DOT format
+    pub fn doc_graph_to_dot(&self, frag: &Frag) -> String {
+        let root = self.frag_to_doc(frag);
+        self.doc_arena.borrow().to_dot(root)
+    }
+
     pub fn into_resolver(self, root: Frag) -> Resolver<'a> {
         let root = self.frag_to_doc(&root);
         Resolver::new(self.doc_arena.into_inner(), self.config, root)

@@ -1,3 +1,6 @@
+use std::collections::HashSet;
+use std::fmt::Write;
+
 use ra_ap_syntax::SyntaxToken;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -67,6 +70,64 @@ impl DocArena {
 
     pub fn get_node(&self, doc: DocId) -> &DocNode {
         &self.nodes[doc.0 as usize]
+    }
+
+    /// The doc graph reachable from `root` in the Graphviz DOT format; shared nodes are written once
+    pub fn to_dot(&self, root: DocId) -> String {
+        let mut out = String::from(
+            "digraph doc {\n    ordering=out;\n    node [style=filled, fontname=\"monospace\"];\n",
+        );
+        let mut visited = HashSet::new();
+        let mut stack = vec![root];
+        while let Some(doc) = stack.pop() {
+            if !visited.insert(doc) {
+                continue;
+            }
+            let node = self.get_node(doc);
+            let (label, shape, color) = match node {
+                DocNode::Token(token) => (format!("'{}'", token.text()), "box", "lightblue"),
+                DocNode::Text(text) => (format!("'{}'", text), "box", "lightyellow"),
+                DocNode::Newline => ("Newline".into(), "rect", "gray"),
+                DocNode::Concat(..) => ("Concat".into(), "ellipse", "white"),
+                DocNode::Alt(..) => ("Alt".into(), "diamond", "orange"),
+                DocNode::Nest(_) => ("Nest".into(), "trapezium", "palegreen"),
+                DocNode::Align(_) => ("Align".into(), "parallelogram", "aquamarine"),
+                DocNode::Flat(_) => ("Flat".into(), "hexagon", "pink"),
+                DocNode::MultiLine(_) => ("MultiLine".into(), "octagon", "plum"),
+                DocNode::KeepTogether(_) => ("KeepTogether".into(), "doubleoctagon", "khaki"),
+            };
+            let label = label
+                .replace('\\', "\\\\")
+                .replace('"', "\\\"")
+                .replace('\n', "\\l");
+            writeln!(
+                out,
+                "    n{0} [label=\"#{0}\\n{1}\", shape={2}, fillcolor={3}];",
+                doc.0, label, shape, color
+            )
+            .unwrap();
+            let children: Vec<(DocId, &str)> = match node {
+                DocNode::Token(_) | DocNode::Text(_) | DocNode::Newline => vec![],
+                DocNode::Concat(d1, d2) => vec![(*d1, "1"), (*d2, "2")],
+                DocNode::Alt(d1, d2) => vec![(*d1, ""), (*d2, "")],
+                DocNode::Nest(d)
+                | DocNode::Align(d)
+                | DocNode::Flat(d)
+                | DocNode::MultiLine(d)
+                | DocNode::KeepTogether(d) => vec![(*d, "")],
+            };
+            for (child, edge_label) in &children {
+                write!(out, "    n{} -> n{}", doc.0, child.0).unwrap();
+                if !edge_label.is_empty() {
+                    write!(out, " [label=\"{}\"]", edge_label).unwrap();
+                }
+                out.push_str(";\n");
+            }
+            // Reversed, so the first child is written first
+            stack.extend(children.iter().rev().map(|(child, _)| *child));
+        }
+        out.push_str("}\n");
+        out
     }
 
     fn dump_helper(&self, doc: DocId, indent: usize) {

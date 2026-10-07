@@ -54,18 +54,29 @@ fn print_tree(source_file: &SourceFile) {
     }
 }
 
-pub fn format_source_code(config: &Config, code: &str) -> Result<String> {
+fn parse_source_code(config: &Config, code: &str) -> Result<SourceFile> {
     let parse = SourceFile::parse(code, config.edition);
-    let file: SourceFile = parse.tree();
-
     let errors = parse.errors();
     if !errors.is_empty() {
-        return Err(Error::SyntaxErrors(parse.errors()));
+        return Err(Error::SyntaxErrors(errors));
     }
-
+    let file = parse.tree();
     if config.dump_parse_tree {
         print_tree(&file);
     }
+    Ok(file)
+}
+
+/// The doc graph built for the source code in the Graphviz DOT format, instead of the formatted code
+pub fn doc_graph_to_dot(config: &Config, code: &str) -> Result<String> {
+    let file = parse_source_code(config, code)?;
+    let fmt = Formatter::new(config);
+    let frag = format_source_file(&fmt, &file);
+    Ok(fmt.doc_graph_to_dot(&frag))
+}
+
+pub fn format_source_code(config: &Config, code: &str) -> Result<String> {
+    let file = parse_source_code(config, code)?;
 
     let fmt = Formatter::new(config);
     let frag = format_source_file(&fmt, &file);
