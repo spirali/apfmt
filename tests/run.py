@@ -6,19 +6,29 @@
 """
 Test harness for afmt.
 
-For every .rs file in tests/sources:
+`test`: for every .rs file in tests/sources:
   1. format it with `rustfmt` (reference output); if `<name>.expected.rs` exists
      next to it, that file is used as the reference instead (for cases where
      afmt intentionally differs from rustfmt)
   2. format it with `afmt` and compare with the reference
   3. format the afmt output again with `afmt` and check idempotency
 
+`compare`: show afmt and rustfmt output side by side for selected tests.
+  The comparison is always against rustfmt; `<name>.expected.rs` files are ignored.
+  Lines are aligned and differing lines are highlighted (with --raw, outputs are shown
+  unaligned, line N next to line N, and changed lines are still highlighted).
+
 Usage:
-  uv run tests/run.py                  # run all tests
-  uv run tests/run.py basic            # only tests whose path contains "basic"
-  uv run tests/run.py 'basic/*main*'   # glob filters are supported too
-  uv run tests/run.py --list           # list tests
-  uv run tests/run.py -v basic         # for failures also print input, afmt and reference output
+  uv run tests/run.py test                  # run all tests
+  uv run tests/run.py test basic            # only tests whose path contains "basic"
+  uv run tests/run.py test 'basic/*main*'   # glob filters are supported too
+  uv run tests/run.py test --list           # list tests
+  uv run tests/run.py test -v basic         # for failures also print input, afmt and reference output
+
+  uv run tests/run.py compare calls         # side by side for tests whose path contains "calls"
+  uv run tests/run.py compare --list calls  # list selected tests
+  uv run tests/run.py compare -a calls      # also show tests where outputs are equal
+  uv run tests/run.py compare -r calls      # raw outputs, no alignment lines inserted
 """
 
 import argparse
@@ -40,6 +50,7 @@ from rich.progress import (
     TimeElapsedColumn,
 )
 from rich.syntax import Syntax
+from rich.table import Table
 from rich.text import Text
 
 EXPECTED_SUFFIX = ".expected.rs"
@@ -256,51 +267,107 @@ def build_afmt(release: bool) -> None:
         sys.exit(2)
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="afmt test harness")
-    parser.add_argument(
-        "filters",
-        nargs="*",
-        help="run only tests whose path (relative to tests/sources) contains "
-        "the given substring or matches the given glob",
-    )
-    parser.add_argument("--list", action="store_true", help="list selected tests and exit")
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-        help="for failed tests print input, afmt output and reference output before the diff",
-    )
-    parser.add_argument("--afmt", type=Path, help=f"afmt binary (default: {DEFAULT_AFMT})")
-    parser.add_argument("--rustfmt", default="rustfmt", help="rustfmt binary")
-    parser.add_argument("--edition", default="2024", help="edition passed to rustfmt")
-    parser.add_argument("--no-build", action="store_true", help="do not run cargo build")
-    parser.add_argument("--release", action="store_true", help="build and use release afmt")
-    parser.add_argument("-j", "--jobs", type=int, default=None, help="parallel jobs")
-    parser.add_argument("--timeout", type=float, default=10.0, help="per-command timeout (s)")
-    parser.add_argument(
-        "--max-diff-lines", type=int, default=200, help="truncate diffs (0 = unlimited)"
-    )
-    args = parser.parse_args()
+DIFF_STYLE = "on #3a1d1d"
+DIFF_STYLE_RIGHT = "on #1d3a1d"
+EMPTY_STYLE = "on grey15"
 
-    sources = collect_sources(args.filters)
-    if args.list:
-        names = [s.relative_to(SOURCES_DIR).as_posix() for s in sources]
-        width = max((len(n) for n in names), default=0)
-        for name, s in zip(names, sources):
-            if expected_path_for(s).exists():
-                reference = Text("expected.rs", style="bold cyan")
+
+def highlight_lines(code: str) -> list[Text]:
+    syntax = Syntax("", "rust", theme="ansi_dark")
+    lines = syntax.highlight(code).split("\n", allow_blank=True)
+    # a trailing newline produces one extra empty line
+    if code.endswith("\n") and lines:
+        lines = lines[:-1]
+    return lines
+
+
+def side_by_side(title: str, left: str, right: str, raw: bool) -> Table:
+    left_lines = left.splitlines()
+    right_lines = right.splitlines()
+    left_hl = highlight_lines(left)
+    right_hl = highlight_lines(right)
+
+    table = Table(
+        title=title,
+        title_justify="left",
+        title_style="bold",
+        show_lines=False,
+        expand=True,
+        pad_edge=False,
+        padding=(0, 1),
+    )
+    table.add_column("", justify="right", style="dim", no_wrap=True)
+    table.add_column("afmt", ratio=1, overflow="fold")
+    table.add_column("", justify="right", style="dim", no_wrap=True)
+    table.add_column("rustfmt", ratio=1, overflow="fold")
+
+    def cell(lines: list[Text], idx: int, style: str | None) -> Text:
+        text = lines[idx].copy()
+        if style:
+            text.stylize(style)
+        return text
+
+    matcher = difflib.SequenceMatcher(a=left_lines, b=right_lines, autojunk=False)
+    if raw:
+        # no alignment: row N shows line N of both outputs, changed lines are highlighted
+        left_changed: set[int] = set()
+        right_changed: set[int] = set()
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+            if tag != "equal":
+                left_changed.update(range(i1, i2))
+                right_changed.update(range(j1, j2))
+        for k in range(max(len(left_hl), len(right_hl))):
+            row = []
+            for lines, changed, style in (
+                (left_hl, left_changed, DIFF_STYLE),
+                (right_hl, right_changed, DIFF_STYLE_RIGHT),
+            ):
+                if k < len(lines):
+                    row += [str(k + 1), cell(lines, k, style if k in changed else None)]
+                else:
+                    row += ["", Text("")]
+            table.add_row(*row)
+        return table
+
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            for i, j in zip(range(i1, i2), range(j1, j2)):
+                table.add_row(str(i + 1), cell(left_hl, i, None), str(j + 1), cell(right_hl, j, None))
+            continue
+        n = max(i2 - i1, j2 - j1)
+        for k in range(n):
+            i, j = i1 + k, j1 + k
+            if i < i2:
+                lno, lcell = str(i + 1), cell(left_hl, i, DIFF_STYLE)
             else:
-                reference = Text("rustfmt", style="dark_orange")
-            console.print(Text(f"{name:<{width}}  ") + reference, soft_wrap=True)
-        return
-    if not sources:
-        console.print("[yellow]No tests selected[/yellow]")
-        sys.exit(1)
+                lno, lcell = "", Text("", style=EMPTY_STYLE, end="")
+            if j < j2:
+                rno, rcell = str(j + 1), cell(right_hl, j, DIFF_STYLE_RIGHT)
+            else:
+                rno, rcell = "", Text("", style=EMPTY_STYLE, end="")
+            table.add_row(lno, lcell, rno, rcell)
+    return table
 
+
+def list_sources(sources: list[Path], show_reference: bool) -> None:
+    names = [s.relative_to(SOURCES_DIR).as_posix() for s in sources]
+    if not show_reference:
+        for name in names:
+            console.print(name, highlight=False)
+        return
+    width = max((len(n) for n in names), default=0)
+    for name, s in zip(names, sources):
+        if expected_path_for(s).exists():
+            reference = Text("expected.rs", style="bold cyan")
+        else:
+            reference = Text("rustfmt", style="dark_orange")
+        console.print(Text(f"{name:<{width}}  ") + reference, soft_wrap=True)
+
+
+def prepare_tools(args) -> None:
+    """Builds afmt (unless disabled) and checks that both formatters exist."""
     if args.afmt is None:
-        args.afmt = ROOT_DIR / "target" / (
-        "release" if args.release else "debug") / "afmt"
+        args.afmt = ROOT_DIR / "target" / ("release" if args.release else "debug") / "afmt"
         if not args.no_build:
             build_afmt(args.release)
     if not args.afmt.exists():
@@ -310,6 +377,8 @@ def main() -> None:
         console.print(f"[bold red]rustfmt not found:[/bold red] {args.rustfmt}")
         sys.exit(2)
 
+
+def cmd_test(args, sources: list[Path]) -> None:
     clean_current_dir()
     results: list[Result] = []
 
@@ -351,7 +420,7 @@ def main() -> None:
         if not args.verbose:
             names = " ".join(r.name for r in failures)
             console.print(
-                f"[dim]Hint: run `uv run tests/run.py -v {names}` to also see the input, "
+                f"[dim]Hint: run `uv run tests/run.py test -v {names}` to also see the input, "
                 "afmt output and reference output[/dim]",
                 highlight=False,
                 soft_wrap=True,
@@ -359,6 +428,104 @@ def main() -> None:
         sys.exit(1)
 
     console.print(f"[bold green]All {passed} tests passed[/bold green]")
+
+
+def cmd_compare(args, sources: list[Path]) -> None:
+    same = 0
+    for source in sources:
+        name = source.relative_to(SOURCES_DIR).as_posix()
+        code = source.read_text()
+        errors = []
+        try:
+            afmt_out = run_afmt(code, args)
+        except CommandError as e:
+            afmt_out = ""
+            errors.append(f"afmt error: {e}")
+        try:
+            rustfmt_out = run_rustfmt(code, args)
+        except CommandError as e:
+            rustfmt_out = ""
+            errors.append(f"rustfmt error: {e}")
+
+        if not errors and afmt_out == rustfmt_out:
+            same += 1
+            if not args.all:
+                continue
+            title = f"{name} [green](identical)[/green]"
+        else:
+            title = f"{name} [red](differs)[/red]"
+        console.print(side_by_side(title, afmt_out, rustfmt_out, args.raw))
+        for err in errors:
+            console.print(Text(err, style="bold red"))
+        console.print()
+
+    if same and not args.all:
+        console.print(f"[dim]{same} of {len(sources)} selected tests identical (use -a to show)[/dim]")
+
+
+def main() -> None:
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--list", action="store_true", help="list selected tests and exit")
+    common.add_argument("--afmt", type=Path, help=f"afmt binary (default: {DEFAULT_AFMT})")
+    common.add_argument("--rustfmt", default="rustfmt", help="rustfmt binary")
+    common.add_argument("--edition", default="2024", help="edition passed to rustfmt")
+    common.add_argument("--no-build", action="store_true", help="do not run cargo build")
+    common.add_argument("--release", action="store_true", help="build and use release afmt")
+    common.add_argument("--timeout", type=float, default=10.0, help="per-command timeout (s)")
+    filters_help = (
+        "tests whose path (relative to tests/sources) contains "
+        "the given substring or matches the given glob"
+    )
+
+    parser = argparse.ArgumentParser(description="afmt test harness")
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    test = commands.add_parser(
+        "test", parents=[common], help="compare afmt with the reference and check idempotency"
+    )
+    test.add_argument("filters", nargs="*", help=f"run only {filters_help}")
+    test.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="for failed tests print input, afmt output and reference output before the diff",
+    )
+    test.add_argument("-j", "--jobs", type=int, default=None, help="parallel jobs")
+    test.add_argument(
+        "--max-diff-lines", type=int, default=200, help="truncate diffs (0 = unlimited)"
+    )
+
+    compare = commands.add_parser(
+        "compare", parents=[common], help="side-by-side afmt vs rustfmt output"
+    )
+    compare.add_argument("filters", nargs="+", help=filters_help)
+    compare.add_argument(
+        "-a", "--all", action="store_true", help="also show tests where outputs are equal"
+    )
+    compare.add_argument(
+        "-r",
+        "--raw",
+        action="store_true",
+        help="show outputs as they are, without inserting alignment lines "
+        "(changed lines are still highlighted)",
+    )
+
+    args = parser.parse_args()
+
+    sources = collect_sources(args.filters)
+    if args.list:
+        # compare always uses rustfmt, so only `test` shows the reference
+        list_sources(sources, show_reference=args.command == "test")
+        return
+    if not sources:
+        console.print("[yellow]No tests selected[/yellow]")
+        sys.exit(1)
+
+    prepare_tools(args)
+    if args.command == "test":
+        cmd_test(args, sources)
+    else:
+        cmd_compare(args, sources)
 
 
 if __name__ == "__main__":
