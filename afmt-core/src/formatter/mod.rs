@@ -196,6 +196,15 @@ impl<'a> Formatter<'a> {
         })
     }
 
+    /// `first` followed by `second`, which breaks whenever `first` does: either `first` is on a single
+    /// line, or both span more lines, e.g. broken generics of a function followed by its parameters
+    /// one per line. `second` must have a layout spanning more lines.
+    pub fn concat_breaking_together(&self, first: Frag, second: Frag) -> Frag {
+        let flat = Builder::concat(self, [self.flat(first.clone()), second.clone()]);
+        let broken = Builder::concat(self, [self.multi_line(first), self.multi_line(second)]);
+        self.alt_frag(flat, broken)
+    }
+
     /// The fragment should stay on one line if possible: a layout spanning more lines is used only when
     /// all single-line layouts overflow, e.g. a type
     pub fn keep_together(&self, frag: Frag) -> Frag {

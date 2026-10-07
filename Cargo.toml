@@ -1,3 +1,10 @@
 [workspace]
 resolver = "3"
 members = ["afmt","afmt-core"]
+
+[profile.release]
+# Optimize across crates (`afmt`, `afmt-core`, `ra_ap_syntax`) as one unit
+lto = "fat"
+codegen-units = 1
+# afmt never catches panics, so unwinding buys nothing; the panic message is still printed
+panic = "abort"

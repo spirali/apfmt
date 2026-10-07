@@ -29,14 +29,33 @@ Usage:
   uv run tests/run.py compare --list calls  # list selected tests
   uv run tests/run.py compare -a calls      # also show tests where outputs are equal
   uv run tests/run.py compare -A calls      # align outputs by inserting blank lines
+
+`bench`: measure how long the release build of afmt takes to format selected tests
+  (tests in tests/sources/benchmarks when no filter is given). Every file is formatted
+  --warmup times without measuring, then --runs times; the report shows the mean,
+  standard deviation, min, median and max of the wall time and the mean CPU time
+  (user + sys) per file and for all files together. With --compare, rustfmt formats
+  the same files the same number of times and the report compares the two.
+
+  uv run tests/run.py bench                 # benchmark tests/sources/benchmarks
+  uv run tests/run.py bench -n 20 calls     # 20 runs over tests whose path contains "calls"
+  uv run tests/run.py bench -c              # also measure rustfmt and compare
+  uv run tests/run.py bench -o bench.json   # also store the results as JSON
 """
 
 import argparse
+import datetime
 import difflib
 import fnmatch
+import json
+import math
+import platform
+import resource
+import statistics
 import shutil
 import subprocess
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -372,8 +391,8 @@ def list_sources(sources: list[Path], show_reference: bool) -> None:
         console.print(Text(f"{name:<{width}}  ") + reference, soft_wrap=True)
 
 
-def prepare_tools(args) -> None:
-    """Builds afmt (unless disabled) and checks that both formatters exist."""
+def prepare_tools(args, need_rustfmt: bool = True) -> None:
+    """Builds afmt (unless disabled) and checks that the formatters exist."""
     if args.afmt is None:
         args.afmt = ROOT_DIR / "target" / ("release" if args.release else "debug") / "afmt"
         if not args.no_build:
@@ -381,7 +400,7 @@ def prepare_tools(args) -> None:
     if not args.afmt.exists():
         console.print(f"[bold red]afmt binary not found:[/bold red] {args.afmt}")
         sys.exit(2)
-    if shutil.which(args.rustfmt) is None:
+    if need_rustfmt and shutil.which(args.rustfmt) is None:
         console.print(f"[bold red]rustfmt not found:[/bold red] {args.rustfmt}")
         sys.exit(2)
 
@@ -471,6 +490,308 @@ def cmd_compare(args, sources: list[Path]) -> None:
         console.print(f"[dim]{same} of {len(sources)} selected tests identical (use -a to show)[/dim]")
 
 
+BENCH_DEFAULT_FILTERS = ["benchmarks/"]
+
+
+@dataclass
+class Samples:
+    """Times of the runs of one tool over one file, in seconds."""
+
+    wall: list[float] = field(default_factory=list)
+    cpu: list[float] = field(default_factory=list)
+
+    def add(self, other: "Samples") -> "Samples":
+        """The run-by-run sum of two series of the same length."""
+        return Samples(
+            [a + b for a, b in zip(self.wall, other.wall)],
+            [a + b for a, b in zip(self.cpu, other.cpu)],
+        )
+
+
+@dataclass
+class Stats:
+    mean: float
+    stdev: float
+    min: float
+    median: float
+    max: float
+    cpu_mean: float
+
+    @classmethod
+    def of(cls, samples: Samples) -> "Stats":
+        wall = samples.wall
+        return cls(
+            mean=statistics.fmean(wall),
+            stdev=statistics.stdev(wall) if len(wall) > 1 else 0.0,
+            min=min(wall),
+            median=statistics.median(wall),
+            max=max(wall),
+            cpu_mean=statistics.fmean(samples.cpu),
+        )
+
+    @property
+    def rel_stdev(self) -> float:
+        return self.stdev / self.mean if self.mean else 0.0
+
+
+@dataclass
+class BenchFile:
+    name: str
+    code: str
+    samples: dict[str, Samples] = field(default_factory=dict)
+
+    @property
+    def bytes(self) -> int:
+        return len(self.code.encode())
+
+    @property
+    def lines(self) -> int:
+        return len(split_lines(self.code))
+
+
+def bench_commands(args) -> dict[str, list[str]]:
+    """The measured command of every tool; the same commands as `test` uses, without
+    afmt's --result-check unless it is asked for."""
+    afmt = [str(args.afmt)]
+    if args.result_check:
+        afmt.append("--result-check")
+    commands = {"afmt": afmt}
+    if args.compare:
+        commands["rustfmt"] = [args.rustfmt, "--edition", args.edition]
+    return commands
+
+
+def timed_run(cmd: list[str], code: bytes, timeout: float) -> tuple[float, float]:
+    """Runs `cmd` with `code` on stdin; returns the wall time and the CPU time (user + sys)
+    of the child in seconds. Runs must not overlap: the CPU time is the difference of
+    the usage of all finished children."""
+    before = resource.getrusage(resource.RUSAGE_CHILDREN)
+    start = time.perf_counter()
+    try:
+        proc = subprocess.run(
+            cmd, input=code, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            timeout=timeout, cwd=ROOT_DIR,
+        )
+    except subprocess.TimeoutExpired:
+        raise CommandError(f"`{' '.join(cmd)}` timed out after {timeout}s")
+    wall = time.perf_counter() - start
+    after = resource.getrusage(resource.RUSAGE_CHILDREN)
+    if proc.returncode != 0:
+        raise CommandError(
+            f"`{' '.join(cmd)}` exited with code {proc.returncode}\n"
+            f"{proc.stderr.decode(errors='replace').rstrip()}"
+        )
+    cpu = (after.ru_utime - before.ru_utime) + (after.ru_stime - before.ru_stime)
+    return wall, cpu
+
+
+def format_seconds(seconds: float) -> str:
+    if seconds >= 1:
+        return f"{seconds:.3f} s"
+    if seconds >= 1e-3:
+        return f"{seconds * 1e3:.2f} ms"
+    return f"{seconds * 1e6:.0f} µs"
+
+
+def format_ratio(ratio: float) -> Text:
+    """`ratio` is afmt time / rustfmt time; below 1 afmt is faster."""
+    if ratio <= 1:
+        return Text(f"{ratio:.2f}× ({1 / ratio:.2f}× faster)", style="green")
+    return Text(f"{ratio:.2f}× ({ratio:.2f}× slower)", style="red")
+
+
+def stats_row(stats: Stats) -> list[str]:
+    return [
+        format_seconds(stats.mean),
+        format_seconds(stats.stdev),
+        f"{stats.rel_stdev:.1%}",
+        format_seconds(stats.min),
+        format_seconds(stats.median),
+        format_seconds(stats.max),
+        format_seconds(stats.cpu_mean),
+    ]
+
+
+def stats_table(title: str, rows: list[tuple[str, str, Stats]]) -> Table:
+    table = Table(title=title, title_justify="left", title_style="bold")
+    table.add_column("test", overflow="fold", min_width=16)
+    table.add_column("tool", no_wrap=True)
+    for column in ("mean", "σ", "σ %", "min", "median", "max", "CPU"):
+        table.add_column(column, justify="right", no_wrap=True)
+    previous = None
+    for name, tool, stats in rows:
+        table.add_row(name if name != previous else "", tool, *stats_row(stats))
+        previous = name
+    return table
+
+
+def git_revision() -> dict[str, str | bool | None]:
+    def git(*cmd: str) -> str | None:
+        proc = subprocess.run(["git", *cmd], cwd=ROOT_DIR, capture_output=True, text=True)
+        return proc.stdout.strip() if proc.returncode == 0 else None
+
+    status = git("status", "--porcelain", "--untracked-files=no")
+    return {"commit": git("rev-parse", "HEAD"), "dirty": bool(status) if status is not None else None}
+
+
+def tool_version(cmd: list[str]) -> str | None:
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return proc.stdout.strip() or None
+
+
+def stats_json(stats: Stats) -> dict[str, float]:
+    return {
+        "mean": stats.mean,
+        "stdev": stats.stdev,
+        "min": stats.min,
+        "median": stats.median,
+        "max": stats.max,
+        "cpu_mean": stats.cpu_mean,
+    }
+
+
+def write_bench_results(path: Path, args, files: list[BenchFile], totals: dict[str, Samples]) -> None:
+    commands = bench_commands(args)
+    tools = {"afmt": {"command": commands["afmt"]}}
+    if "rustfmt" in commands:
+        tools["rustfmt"] = {
+            "command": commands["rustfmt"],
+            "version": tool_version([args.rustfmt, "--version"]),
+        }
+    data = {
+        "date": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+        "git": git_revision(),
+        "host": {"machine": platform.machine(), "system": platform.platform(), "python": platform.python_version()},
+        "runs": args.runs,
+        "warmup": args.warmup,
+        "unit": "seconds",
+        "tools": tools,
+        "files": [
+            {
+                "name": f.name,
+                "bytes": f.bytes,
+                "lines": f.lines,
+                "results": {
+                    tool: {"wall": s.wall, "cpu": s.cpu, "stats": stats_json(Stats.of(s))}
+                    for tool, s in f.samples.items()
+                },
+            }
+            for f in files
+        ],
+        "total": {
+            tool: {"wall": s.wall, "cpu": s.cpu, "stats": stats_json(Stats.of(s))}
+            for tool, s in totals.items()
+        },
+    }
+    path.write_text(json.dumps(data, indent=2) + "\n")
+    console.print(f"Results written to {path}", highlight=False)
+
+
+def cmd_bench(args, sources: list[Path]) -> None:
+    commands = bench_commands(args)
+    files = [BenchFile(s.relative_to(SOURCES_DIR).as_posix(), s.read_text()) for s in sources]
+    for f in files:
+        f.samples = {tool: Samples() for tool in commands}
+
+    console.print(
+        f"[bold]Benchmarking[/bold] {len(files)} files, {args.warmup} warmup + {args.runs} runs, "
+        f"tools: {', '.join(commands)}",
+        highlight=False,
+    )
+    failed: dict[str, str] = {}
+    with Progress(
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TimeElapsedColumn(),
+        console=console,
+        transient=True,
+    ) as progress:
+        task = progress.add_task("Running", total=(args.warmup + args.runs) * len(files))
+        # run by run over all files, and the tools one after another on each file,
+        # so that a drift of the machine affects all files and tools alike
+        for run in range(args.warmup + args.runs):
+            progress.update(task, description="Warmup" if run < args.warmup else f"Run {run - args.warmup + 1}")
+            for f in files:
+                if f.name in failed:
+                    progress.advance(task)
+                    continue
+                code = f.code.encode()
+                for tool, cmd in commands.items():
+                    try:
+                        wall, cpu = timed_run(cmd, code, args.timeout)
+                    except CommandError as e:
+                        failed[f.name] = f"{tool}: {e}"
+                        break
+                    if run >= args.warmup:
+                        f.samples[tool].wall.append(wall)
+                        f.samples[tool].cpu.append(cpu)
+                progress.advance(task)
+
+    for name, error in failed.items():
+        console.print(f"[bold red]FAIL[/bold red] {name}: {error}", highlight=False)
+    files = [f for f in files if f.name not in failed]
+    if not files:
+        console.print("[bold red]No file was formatted successfully[/bold red]")
+        sys.exit(1)
+
+    rows = [(f.name, tool, Stats.of(s)) for f in files for tool, s in f.samples.items()]
+    console.print(stats_table("Per file (wall time, CPU time = user + sys)", rows))
+
+    totals: dict[str, Samples] = {}
+    for tool in commands:
+        total = Samples([0.0] * args.runs, [0.0] * args.runs)
+        for f in files:
+            total = total.add(f.samples[tool])
+        totals[tool] = total
+    total_stats = {tool: Stats.of(s) for tool, s in totals.items()}
+    console.print(
+        stats_table(
+            f"All {len(files)} files per run",
+            [("total", tool, stats) for tool, stats in total_stats.items()],
+        )
+    )
+
+    size = sum(f.bytes for f in files)
+    lines = sum(f.lines for f in files)
+    afmt_mean = total_stats["afmt"].mean
+    console.print(
+        f"[bold]afmt throughput:[/bold] {lines / afmt_mean:,.0f} lines/s, "
+        f"{size / afmt_mean / 1024:,.0f} KiB/s ({lines} lines, {size / 1024:.1f} KiB per run)",
+        highlight=False,
+    )
+
+    if "rustfmt" in commands:
+        table = Table(title="afmt / rustfmt (mean wall time)", title_justify="left", title_style="bold")
+        table.add_column("test")
+        table.add_column("afmt", justify="right")
+        table.add_column("rustfmt", justify="right")
+        table.add_column("ratio")
+        ratios = []
+        for f in files:
+            afmt, rustfmt = Stats.of(f.samples["afmt"]), Stats.of(f.samples["rustfmt"])
+            ratio = afmt.mean / rustfmt.mean
+            ratios.append(ratio)
+            table.add_row(f.name, format_seconds(afmt.mean), format_seconds(rustfmt.mean), format_ratio(ratio))
+        table.add_section()
+        rustfmt_mean = total_stats["rustfmt"].mean
+        table.add_row(
+            "total", format_seconds(afmt_mean), format_seconds(rustfmt_mean),
+            format_ratio(afmt_mean / rustfmt_mean),
+        )
+        geomean = math.exp(statistics.fmean(math.log(r) for r in ratios))
+        table.add_row("geometric mean of ratios", "", "", format_ratio(geomean))
+        console.print(table)
+
+    if args.output:
+        write_bench_results(args.output, args, files, totals)
+    if failed:
+        sys.exit(1)
+
+
 def main() -> None:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--list", action="store_true", help="list selected tests and exit")
@@ -518,7 +839,38 @@ def main() -> None:
         "(by default outputs are shown as they are, with changed lines highlighted)",
     )
 
+    bench = commands.add_parser(
+        "bench", parents=[common], help="measure the speed of release afmt (and rustfmt)"
+    )
+    bench.add_argument(
+        "filters",
+        nargs="*",
+        help=f"benchmark only {filters_help} (default: tests in tests/sources/benchmarks)",
+    )
+    bench.add_argument("-n", "--runs", type=int, default=5, help="measured runs per file (default: 5)")
+    bench.add_argument(
+        "-w", "--warmup", type=int, default=1, help="unmeasured runs per file before measuring (default: 1)"
+    )
+    bench.add_argument(
+        "-c",
+        "--compare",
+        action="store_true",
+        help="also measure rustfmt with the same number of runs and compare",
+    )
+    bench.add_argument(
+        "--result-check", action="store_true", help="run afmt with --result-check (slower)"
+    )
+    bench.add_argument("-o", "--output", type=Path, help="store the results as JSON into this file")
+
     args = parser.parse_args()
+
+    if args.command == "bench":
+        if args.runs < 1 or args.warmup < 0:
+            parser.error("--runs must be at least 1 and --warmup at least 0")
+        # benchmarks measure the optimized build
+        args.release = True
+        if not args.filters:
+            args.filters = BENCH_DEFAULT_FILTERS
 
     sources = collect_sources(args.filters)
     if args.list:
@@ -529,9 +881,11 @@ def main() -> None:
         console.print("[yellow]No tests selected[/yellow]")
         sys.exit(1)
 
-    prepare_tools(args)
+    prepare_tools(args, need_rustfmt=args.command != "bench" or args.compare)
     if args.command == "test":
         cmd_test(args, sources)
+    elif args.command == "bench":
+        cmd_bench(args, sources)
     else:
         cmd_compare(args, sources)
 

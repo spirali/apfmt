@@ -27,11 +27,11 @@ fn format_path_expr(fmt: &Formatter, path_expr: PathExpr) -> Frag {
 
 /// Whether a single argument can overflow, i.e. start on the line of `(` and end on the line of `)`:
 /// `f(if a {\n ...\n})`. Follows the combinable expressions of the style guide.
-// TODO: `match`, loops, struct literals and macros once they are supported; method calls
-// ([combinable-chain] in TODO)
+// TODO: `match`, loops, struct literals and macros once they are supported
 fn is_combinable_expr(expr: &Expr) -> bool {
     match expr {
         Expr::CallExpr(_)
+        | Expr::MethodCallExpr(_)
         | Expr::IfExpr(_)
         | Expr::BlockExpr(_)
         | Expr::ArrayExpr(_)
@@ -84,10 +84,20 @@ fn is_overflowing_closure(exprs: &[Expr]) -> bool {
 }
 
 /// An expression as a list item, and how it may overflow as the last item (see `Overflow`): a
-/// combinable expression with all its layouts (see `is_combinable_expr`), a closure with some of them
-/// (see `ClosureLayouts`)
+/// combinable expression with all its layouts (see `is_combinable_expr`), a method call chain and
+/// a closure with some of them (see `postfix_chain_layouts` and `ClosureLayouts`)
 fn format_expr_item(fmt: &Formatter, expr: Expr) -> (Frag, Overflow) {
     match expr {
+        // On the line of `(` only with its elements on one line, the arguments of the last one may
+        // break: `f(a.b(|x| {` / `...` / `}))`, not the chain broken before every `.`
+        Expr::MethodCallExpr(ref call) if call.attrs().next().is_none() => {
+            let layouts = postfix_chain_parts(fmt, expr);
+            let overflow = layouts
+                .other
+                .clone()
+                .map_or(Overflow::Never, Overflow::With);
+            (layouts.all(fmt), overflow)
+        }
         Expr::ClosureExpr(closure) if closure.attrs().next().is_none() => {
             let layouts = closure_layouts(fmt, closure);
             let overflow = layouts
@@ -717,7 +727,8 @@ fn postfix_chain_parts(fmt: &Formatter, expr: Expr) -> HeadLayouts {
                 last.push_token(e.question_mark_token().unwrap(), Tight);
             }
             Expr::IndexExpr(e) => {
-                let index = format_expr(fmt, e.index().unwrap());
+                // Broken only when it does not fit on one line: `a[i + j]`
+                let index = fmt.keep_together(format_expr(fmt, e.index().unwrap()));
                 let index = Delimiters::brackets_of(e.syntax()).enclose(fmt, index);
                 let last = elements.last_mut().map_or(&mut root, |(_, tail)| tail);
                 last.push(index);

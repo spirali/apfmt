@@ -210,12 +210,18 @@ fn push_where_clause(
 /// `fn name<T>(params) -> Ret where ... { body }`, or with `;` instead of the body
 fn format_fn(fmt: &Formatter, item_fn: AstFn) -> Frag {
     let mut builder = Builder::new(fmt);
-    builder.push(format_named_item_head(
-        fmt,
-        &item_fn,
-        item_fn.fn_token().unwrap(),
-    ));
-    builder.push(format_param_list(fmt, item_fn.param_list().unwrap()));
+    let head = format_named_item_head(fmt, &item_fn, item_fn.fn_token().unwrap());
+    let param_list = item_fn.param_list().unwrap();
+    let has_params = param_list.self_param().is_some() || param_list.params().next().is_some();
+    let params = format_param_list(fmt, param_list);
+    if item_fn.generic_param_list().is_some() && has_params {
+        // broken generics are followed by broken parameters, as rustfmt does (the Style Guide does
+        // not say): `>(` / `    a: A,` / `) {`
+        builder.push(fmt.concat_breaking_together(head, params));
+    } else {
+        builder.push(head);
+        builder.push(params);
+    }
     if let Some(ret_type) = item_fn.ret_type() {
         builder.push(format_ret_type(fmt, ret_type));
     }

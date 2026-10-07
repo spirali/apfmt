@@ -6,7 +6,8 @@ use crate::layout::list::FlatLimit;
 use ra_ap_syntax::{NodeOrToken, SyntaxKind, SyntaxNode};
 
 /// `a op b op c` on one line, or broken before every operator with indented continuation lines;
-/// `rest` are the (operator, operand) pairs following `first`
+/// `rest` are the (operator, operand) pairs following `first`. A short first operand takes the
+/// following operand, as in rustfmt: `a + b` / `    + c` (see `vertical_lines`).
 pub(crate) fn infix_chain(fmt: &Formatter, first: Frag, rest: &[(Frag, Frag)]) -> Frag {
     chain(fmt, first, rest, true)
 }
@@ -57,10 +58,15 @@ fn chain(fmt: &Formatter, first: Frag, rest: &[(Frag, Frag)], indent: bool) -> F
         fmt,
         std::iter::once(first.clone()).chain(lines.iter().cloned()),
     );
-    let mut vertical = Builder::new(fmt);
-    vertical.push(first);
-    vertical.push_lines(lines, indent);
-    fmt.alt_frag(fmt.flat(flat), vertical.into_frag())
+    let vertical = if indent {
+        vertical_lines(fmt, &first, &lines)
+    } else {
+        let mut vertical = Builder::new(fmt);
+        vertical.push(first);
+        vertical.push_lines(lines, false);
+        vertical.into_frag()
+    };
+    fmt.alt_frag(fmt.flat(flat), vertical)
 }
 
 /// An element of a postfix chain: `.field`, `.method::<T>(args)` or `.await`, with the `?` and
@@ -137,25 +143,33 @@ pub(crate) fn postfix_chain_layouts(
 
 /// The chain broken before every element, see `postfix_chain_layouts`; `elements` are formatted
 fn vertical_chain(fmt: &Formatter, root: &Frag, elements: &[Frag]) -> Frag {
-    let indent_width = fmt.config().indent_width as usize;
     // An element broken over more lines costs a split: the Style Guide prefers single-line elements
     let lines = elements
         .iter()
         .map(|e| fmt.keep_together(e.clone()))
         .collect::<Vec<_>>();
-    let mut head = root.clone();
+    vertical_lines(fmt, root, &lines)
+}
+
+/// `head` followed by `lines`, each on its own block-indented line. A short head takes the lines
+/// that follow it while its last line ends at most at the indentation of the next line, so it is
+/// not left alone on its line: `x.baz?` / `    .qux()`, `a + b` / `    + c`, also `foo(` / `...` /
+/// `).baz?`
+fn vertical_lines(fmt: &Formatter, head: &Frag, lines: &[Frag]) -> Frag {
+    let indent_width = fmt.config().indent_width as usize;
+    let mut head = head.clone();
     let mut layouts: Option<Frag> = None;
-    for k in 0..=elements.len() {
+    for k in 0..=lines.len() {
         let mut builder = Builder::new(fmt);
         builder.push(head.clone());
         builder.push_lines(lines[k..].iter().cloned(), true);
         let layout = builder.into_frag();
         layouts = Some(fmt.alt_opt(layout, layouts));
-        if k == elements.len() {
+        if k == lines.len() {
             break;
         }
-        // The head may take the next element only if its last line can be short: it is short on a
-        // single line, or it is the root ending with a delimiter (`foo(` / `...` / `)`)
+        // The head may take the next line only if its last line can be short: it is short on a
+        // single line, or it is the first fragment ending with a delimiter (`foo(` / `...` / `)`)
         let short = (k == 0 && head.may_end_with_delimiter())
             || fmt.flat_width(&head).is_some_and(|w| w <= indent_width);
         if !short {
