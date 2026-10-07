@@ -7,12 +7,14 @@ mod format;
 mod formatter;
 mod layout;
 mod resolver;
+mod rewrite;
 mod utils;
 
 use crate::check::check_result;
 pub use crate::config::Config;
 use crate::format::format_source_file;
 use crate::formatter::Formatter;
+use crate::rewrite::rewrite_source;
 pub use error::{Error, Result};
 use ra_ap_syntax::{AstNode, WalkEvent};
 use ra_ap_syntax::{NodeOrToken, SourceFile};
@@ -60,26 +62,38 @@ fn parse_source_code(config: &Config, code: &str) -> Result<SourceFile> {
     if !errors.is_empty() {
         return Err(Error::SyntaxErrors(errors));
     }
-    let file = parse.tree();
+    Ok(parse.tree())
+}
+
+/// The parsed source and the tree to format: the source after the rewrites (`rewrite/`, e.g. the imports
+/// sorted), parsed again if they changed it
+fn prepare_source_code(config: &Config, code: &str) -> Result<(SourceFile, SourceFile)> {
+    let file = parse_source_code(config, code)?;
+    let prepared = match rewrite_source(&file, code) {
+        Some(rewritten) => parse_source_code(config, &rewritten).map_err(|error| {
+            Error::GenericError(format!("Rewriting the source broke the code: {error:?}"))
+        })?,
+        None => file.clone(),
+    };
     if config.dump_parse_tree {
-        print_tree(&file);
+        print_tree(&prepared);
     }
-    Ok(file)
+    Ok((file, prepared))
 }
 
 /// The doc graph built for the source code in the Graphviz DOT format, instead of the formatted code
 pub fn doc_graph_to_dot(config: &Config, code: &str) -> Result<String> {
-    let file = parse_source_code(config, code)?;
+    let (_, file) = prepare_source_code(config, code)?;
     let fmt = Formatter::new(config);
     let frag = format_source_file(&fmt, &file);
     Ok(fmt.doc_graph_to_dot(&frag))
 }
 
 pub fn format_source_code(config: &Config, code: &str) -> Result<String> {
-    let file = parse_source_code(config, code)?;
+    let (file, prepared) = prepare_source_code(config, code)?;
 
     let fmt = Formatter::new(config);
-    let frag = format_source_file(&fmt, &file);
+    let frag = format_source_file(&fmt, &prepared);
 
     if config.dump_doc_tree {
         fmt.dump(&frag);

@@ -1,7 +1,7 @@
 use super::Formatter;
 use crate::comments::own_line_comment_follows;
 use super::frag::{Branch, Branches, Edge, Frag, compute_space};
-use super::trivia::TriviaStop;
+use crate::comments::TriviaStop;
 use crate::doc::{DocId, EMPTY_DOC, NEWLINE_DOC, NEWLINE_OR_SPACE_DOC};
 use crate::formatter::Edge::{BraceClose, BraceOpen, Break, Close, LineStart, Nothing};
 use ra_ap_syntax::SyntaxToken;

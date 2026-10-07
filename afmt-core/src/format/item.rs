@@ -1,4 +1,4 @@
-//! Items: functions, structs, enums
+//! Items: functions, structs, enums, use declarations
 
 use super::expr::format_expr;
 use super::generics::{format_generic_param_list, format_where_clause};
@@ -14,9 +14,9 @@ use crate::layout::list::{
     list_items, list_items_cast,
 };
 use ra_ap_syntax::ast::{
-    Abi, Enum, FieldList, Fn as AstFn, HasGenericParams, HasName, HasVisibility, Item, Param,
-    ParamList, RecordField, RecordFieldList, SelfParam, Struct, TupleField, TupleFieldList,
-    Variant, Visibility, WhereClause,
+    Abi, Enum, FieldList, Fn as AstFn, HasAttrs, HasGenericParams, HasName, HasVisibility, Item,
+    Param, ParamList, RecordField, RecordFieldList, Rename, SelfParam, Struct, TupleField,
+    TupleFieldList, Use, UseTree, UseTreeList, Variant, Visibility, WhereClause,
 };
 use ra_ap_syntax::{AstNode, NodeOrToken, SyntaxKind, SyntaxToken};
 
@@ -353,12 +353,89 @@ fn format_enum(fmt: &Formatter, item: Enum) -> Frag {
     builder.into_frag()
 }
 
+/// `use tree;`, `pub(crate) use tree;`
+fn format_use(fmt: &Formatter, item: Use) -> Frag {
+    if let Some(attr) = item.attrs().next() {
+        // They would be lost
+        panic!("not supported yet: {attr:?}");
+    }
+    let mut builder = Builder::new(fmt);
+    if let Some(visibility) = item.visibility() {
+        builder.push(format_visibility(fmt, visibility));
+    }
+    builder.push_keyword(item.use_token().unwrap());
+    builder.push(format_use_tree(fmt, item.use_tree().unwrap()));
+    builder.push_separator(SyntaxKind::SEMICOLON);
+    builder.into_frag()
+}
+
+/// `a::b`, `a::b as c`, `a::*`, `a::{b, c}`, `::{a, b}` or `{a, b}`
+fn format_use_tree(fmt: &Formatter, tree: UseTree) -> Frag {
+    let mut builder = Builder::new(fmt);
+    if let Some(path) = tree.path() {
+        builder.push(format_path(fmt, path));
+    }
+    if let Some(token) = tree.coloncolon_token() {
+        builder.push_token(token, Tight);
+    }
+    if let Some(token) = tree.star_token() {
+        builder.push_token(token, Word);
+    }
+    if let Some(list) = tree.use_tree_list() {
+        builder.push(format_use_tree_list(fmt, list));
+    }
+    if let Some(rename) = tree.rename() {
+        builder.push(format_rename(fmt, rename));
+    }
+    builder.into_frag()
+}
+
+/// `as name` or `as _`
+fn format_rename(fmt: &Formatter, rename: Rename) -> Frag {
+    let mut builder = Builder::new(fmt);
+    builder.push_token(rename.as_token().unwrap(), Word);
+    match (rename.name(), rename.underscore_token()) {
+        (Some(name), _) => builder.push(format_name(fmt, name)),
+        (None, Some(token)) => builder.push_token(token, Word),
+        (None, None) => panic!("{rename:?}"),
+    }
+    builder.into_frag()
+}
+
+/// `{a, b}` of a use tree: on a single line if it fits, otherwise the names filled on lines (Style Guide:
+/// "non-nested imports must be grouped on as few lines as possible"). If an item is a nested import
+/// (`b::{c, d}`), the list is always broken and every item containing `::` is alone on its line.
+fn format_use_tree_list(fmt: &Formatter, list: UseTreeList) -> Frag {
+    let trees = list_items_cast(list.syntax(), |t: UseTree| t);
+    let has_nested_list = trees.iter().any(|t| t.frag.use_tree_list().is_some());
+    let items = trees
+        .iter()
+        .map(|tree| {
+            // Paths (`a::b`, `a::*`) are alone on their line only next to nested imports, as in rustfmt
+            let own_line = has_nested_list
+                && tree
+                    .frag
+                    .syntax()
+                    .descendants_with_tokens()
+                    .any(|e| e.kind() == SyntaxKind::COLON2);
+            tree.map(|t| format_use_tree(fmt, t.clone()))
+                .own_line_if(own_line)
+        })
+        .collect::<Vec<ListItem>>();
+    let delims = Delimiters::tight_braces_of(list.syntax());
+    let layout = ListLayout::tall(FlatLimit::MaxWidth)
+        .fill_if(true)
+        .broken_if(has_nested_list);
+    delimited_list(fmt, &delims, &items, layout)
+}
+
 pub(super) fn format_item(fmt: &Formatter, item: Item) -> Frag {
     let mut builder = Builder::new(fmt);
     match item {
         Item::Fn(item) => builder.push(format_fn(fmt, item)),
         Item::Struct(item) => builder.push(format_struct(fmt, item)),
         Item::Enum(item) => builder.push(format_enum(fmt, item)),
+        Item::Use(item) => builder.push(format_use(fmt, item)),
         x => {
             panic!("{x:?}");
         }

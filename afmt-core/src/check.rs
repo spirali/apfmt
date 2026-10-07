@@ -1,5 +1,7 @@
+use ra_ap_syntax::ast::{HasVisibility, Use, UseTree};
 use ra_ap_syntax::{
-    AstNode, Direction, NodeOrToken, SourceFile, SyntaxKind, SyntaxToken, TextSize, WalkEvent,
+    AstNode, Direction, NodeOrToken, SourceFile, SyntaxKind, SyntaxNode, SyntaxToken, TextSize,
+    WalkEvent,
 };
 
 #[derive(PartialEq, Eq, Debug)]
@@ -7,6 +9,8 @@ enum Step {
     Enter(SyntaxKind),
     Leave(SyntaxKind),
     Token(SyntaxKind, String),
+    /// A `use` item in its canonical form, see `canonical_use`
+    Use(String),
 }
 
 pub(crate) fn check_result(
@@ -50,8 +54,16 @@ pub(crate) fn check_result(
 /// The preorder walk of the tree without trivia and without trailing commas, with source offsets
 fn steps(file: &SourceFile) -> Vec<(Step, TextSize)> {
     let mut out = Vec::new();
-    for event in file.syntax().preorder_with_tokens() {
+    let mut walk = file.syntax().preorder_with_tokens();
+    while let Some(event) = walk.next() {
         match event {
+            WalkEvent::Enter(NodeOrToken::Node(node)) if node.kind() == SyntaxKind::USE => {
+                // Imports are sorted and normalized, so they are compared in a canonical form
+                let canonical = canonical_use(&Use::cast(node.clone()).unwrap());
+                out.push((Step::Use(canonical), node.text_range().start()));
+                walk.skip_subtree();
+            }
+            WalkEvent::Leave(NodeOrToken::Node(node)) if node.kind() == SyntaxKind::USE => {}
             WalkEvent::Enter(NodeOrToken::Node(node)) => {
                 out.push((Step::Enter(node.kind()), node.text_range().start()))
             }
@@ -77,7 +89,75 @@ fn steps(file: &SourceFile) -> Vec<(Step, TextSize)> {
             _ => {}
         }
     }
+    sort_use_runs(&mut out);
     out
+}
+
+/// Consecutive `use` items may be reordered, and an empty one (`use a::{};`) removed, so each run of
+/// them is compared as a sorted list without the empty ones
+fn sort_use_runs(steps: &mut Vec<(Step, TextSize)>) {
+    steps.retain(|(step, _)| !matches!(step, Step::Use(text) if text.is_empty()));
+    let is_use = |step: &(Step, TextSize)| matches!(step.0, Step::Use(_));
+    let mut start = 0;
+    while start < steps.len() {
+        let len = steps[start..].iter().take_while(|s| is_use(s)).count();
+        steps[start..start + len].sort_by(|(a, _), (b, _)| match (a, b) {
+            (Step::Use(a), Step::Use(b)) => a.cmp(b),
+            _ => unreachable!(),
+        });
+        start += len.max(1);
+    }
+}
+
+/// The source text of `node` without trivia
+fn code_text(node: &SyntaxNode) -> String {
+    node.descendants_with_tokens()
+        .filter_map(NodeOrToken::into_token)
+        .filter(|t| !t.kind().is_trivia())
+        .map(|t| t.text().to_string())
+        .collect()
+}
+
+/// `pub use tree` with the tree in its canonical form (see `canonical_use_tree`); empty if the item
+/// imports nothing
+fn canonical_use(item: &Use) -> String {
+    let Some(tree) = item.use_tree().as_ref().and_then(canonical_use_tree) else {
+        return String::new();
+    };
+    let visibility = item.visibility().map(|v| code_text(v.syntax()));
+    format!("{} use {tree}", visibility.unwrap_or_default())
+}
+
+/// The tree in a normal form: lists sorted, empty trees removed and `a::{b}` written as `a::b` (except
+/// `a::{self}`); `None` if the tree imports nothing
+fn canonical_use_tree(tree: &UseTree) -> Option<String> {
+    let mut text = tree
+        .path()
+        .map(|p| code_text(p.syntax()))
+        .unwrap_or_default();
+    if tree.coloncolon_token().is_some() {
+        text.push_str("::");
+    }
+    if tree.star_token().is_some() {
+        text.push('*');
+    }
+    if let Some(list) = tree.use_tree_list() {
+        let mut items: Vec<String> = list
+            .use_trees()
+            .filter_map(|t| canonical_use_tree(&t))
+            .collect();
+        items.sort();
+        match items.as_slice() {
+            [] => return None,
+            [item] if item != "self" && !item.starts_with("self as ") => text.push_str(item),
+            _ => text.push_str(&format!("{{{}}}", items.join(","))),
+        }
+    }
+    if let Some(rename) = tree.rename() {
+        let name = code_text(rename.syntax());
+        text.push_str(&format!(" as {}", name.strip_prefix("as").unwrap_or(&name)));
+    }
+    Some(text)
 }
 
 fn is_trailing_comma(token: &SyntaxToken) -> bool {
@@ -183,6 +263,28 @@ mod tests {
             check_result_test("extern fn f() {}", "extern \"C\" fn f() {}"),
             Ok(())
         );
+    }
+
+    #[test]
+    fn sorted_imports_pass() {
+        let input = "use c;\nuse a::{d, b::{}, c};\nuse a::{b};\nuse x::{};";
+        let output = "use a::b;\nuse a::{c, d};\nuse c;";
+        assert_eq!(check_result_test(input, output), Ok(()));
+    }
+
+    #[test]
+    fn changed_import_fails() {
+        let error = check_result_test("use a::{b, c};", "use a::{b, d};").unwrap_err();
+        assert!(error.contains("Use"), "{error}");
+        let error = check_result_test("use a::{self};", "use a;").unwrap_err();
+        assert!(error.contains("Use"), "{error}");
+    }
+
+    #[test]
+    fn imports_moved_across_items_fail() {
+        let error = check_result_test("use a;\nfn f() {}\nuse b;", "use a;\nuse b;\nfn f() {}")
+            .unwrap_err();
+        assert!(error.contains("Use"), "{error}");
     }
 
     #[test]

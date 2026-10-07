@@ -1,7 +1,7 @@
 //! Facts about comments and trivia in the source: token queries (what follows a token, where a
 //! comment is) and comment text; placing comments in the output is `formatter/trivia.rs`
 
-use ra_ap_syntax::{SyntaxKind, SyntaxToken};
+use ra_ap_syntax::{SyntaxKind, SyntaxNode, SyntaxToken};
 
 /// Puts a single space after the opening and before the closing sigil of a single-line
 /// block comment (`/*a*/` -> `/* a */`). Returns `None` when the text stays as it is.
@@ -107,4 +107,108 @@ pub(crate) fn own_line_comment_follows(token: &SyntaxToken) -> bool {
         }
         t.kind() == SyntaxKind::COMMENT && newlines > 0
     })
+}
+
+/// Whether `node` contains a comment
+pub(crate) fn has_comments(node: &SyntaxNode) -> bool {
+    node.descendants_with_tokens()
+        .any(|e| e.kind() == SyntaxKind::COMMENT)
+}
+
+pub(crate) fn is_line_comment(token: &SyntaxToken) -> bool {
+    token.kind() == SyntaxKind::COMMENT && token.text().starts_with("//")
+}
+
+/// The first token of `node` that is not trivia; rust-analyzer attaches the comments in front of an item
+/// to the item
+pub(crate) fn first_code_token(node: &SyntaxNode) -> SyntaxToken {
+    let first = node.first_token().unwrap();
+    trivia_from(Some(first.clone()))
+        .last()
+        .map_or(Some(first), |t| t.next_token())
+        .unwrap()
+}
+
+/// The first token after `token` that is not trivia
+pub(crate) fn next_code_token(token: &SyntaxToken) -> Option<SyntaxToken> {
+    std::iter::successors(token.next_token(), |t| t.next_token()).find(|t| !t.kind().is_trivia())
+}
+
+/// Where taking the trivia after a token stops at the latest (see `trivia_end`)
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TriviaStop {
+    /// In front of the first token that is not trivia
+    Code,
+    /// In front of the first own-line comment
+    OwnLine,
+    /// Right after the separator; comments behind it are left
+    Separator,
+}
+
+/// The last token of the trivia taken after `token`: comments up to `stop`, and the `separator` if it
+/// follows them (comments in front of a separator are never own-line, they move behind it); `token`
+/// itself when nothing is taken. `Builder::push_trivia` places exactly these tokens.
+pub(crate) fn trivia_end(
+    token: &SyntaxToken,
+    separator: Option<SyntaxKind>,
+    stop: TriviaStop,
+) -> SyntaxToken {
+    let next_code = next_code_token(token).map(|t| t.kind());
+    let mut separator = separator.filter(|kind| next_code == Some(*kind));
+    let first = token.next_token();
+    let mut end = token.clone();
+    let mut newlines = 0;
+    for t in std::iter::successors(first, |t| t.next_token()) {
+        match t.kind() {
+            SyntaxKind::WHITESPACE => newlines += count_newlines(&t),
+            SyntaxKind::COMMENT => {
+                if separator.is_some() {
+                    newlines = 0;
+                }
+                if newlines > 0 && stop != TriviaStop::Code {
+                    break;
+                }
+                newlines = 0;
+                end = t;
+            }
+            kind if Some(kind) == separator => {
+                newlines = 0;
+                separator = None;
+                end = t;
+                if stop == TriviaStop::Separator {
+                    break;
+                }
+            }
+            _ => break,
+        }
+    }
+    end
+}
+
+/// Where the post comments of a list item ending with `token` stop (as rustfmt calls them): after the
+/// comments ending the line of the `separator` (an own-line comment belongs to the next item), or
+/// right after the separator if code follows on its line
+pub(crate) fn post_comments_stop(token: &SyntaxToken, separator: SyntaxKind) -> TriviaStop {
+    if rest_of_line_is_comments(token, Some(separator)) {
+        TriviaStop::OwnLine
+    } else {
+        TriviaStop::Separator
+    }
+}
+
+/// The last token of the post comments of a list item ending with `token`, its separator included
+/// (see `post_comments_stop`); what `Builder::push_separator_with_trailing_comments` takes
+pub(crate) fn post_comments_end(token: &SyntaxToken, separator: SyntaxKind) -> SyntaxToken {
+    let stop = post_comments_stop(token, separator);
+    trivia_end(token, Some(separator), stop)
+}
+
+/// The last token of the comments ending the line of `token` (`( // c`), or `token` if code follows
+/// on its line; what `Builder::push_comments_ending_line` takes
+pub(crate) fn comments_ending_line_end(token: &SyntaxToken) -> SyntaxToken {
+    if rest_of_line_is_comments(token, None) {
+        trivia_end(token, None, TriviaStop::OwnLine)
+    } else {
+        token.clone()
+    }
 }

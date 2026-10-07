@@ -2,19 +2,11 @@ use super::Builder;
 use super::frag::{Edge, Frag};
 use crate::doc::{COMMA_DOC, DocId, EMPTY_DOC, EMPTYLINE_DOC, NEWLINE_DOC, SEMICOLON_DOC};
 use crate::formatter::Edge::{Break, Comma, Nothing, Word};
-use crate::comments::{count_newlines, is_leading_block_comment, rest_of_line_is_comments, trivia_from};
+use crate::comments::{
+    TriviaStop, count_newlines, is_leading_block_comment, is_line_comment, next_code_token, post_comments_stop,
+    rest_of_line_is_comments, trivia_end, trivia_from,
+};
 use ra_ap_syntax::{SyntaxKind, SyntaxToken};
-
-/// Where `Builder::push_trivia` stops at the latest
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum TriviaStop {
-    /// In front of the first token that is not trivia
-    Code,
-    /// In front of the first own-line comment
-    OwnLine,
-    /// Right after the separator; comments behind it are left
-    Separator,
-}
 
 fn separator_doc(kind: SyntaxKind) -> DocId {
     match kind {
@@ -90,7 +82,7 @@ impl<'a> Builder<'a> {
 
     /// Pushes the comment `token`; a line comment ends the line (`Break`)
     fn push_comment(&mut self, token: &SyntaxToken) {
-        let end = if token.text().starts_with("//") {
+        let end = if is_line_comment(token) {
             Break
         } else {
             Word
@@ -113,64 +105,52 @@ impl<'a> Builder<'a> {
     }
 
     /// Pushes the trivia after the cursor: its comments, with the line breaks and blank lines between them,
-    /// up to `stop` at the latest. The source `separator`, if it follows the comments, is taken without
-    /// printing (the caller pushed one in front of them). Moves the cursor to the last token taken and
-    /// returns whether a comment was pushed.
-    pub(super) fn push_trivia(&mut self, mut separator: Option<SyntaxKind>, stop: TriviaStop) -> bool {
-        let Some(mut cursor) = self.frag.cursor.take() else {
+    /// up to `stop` at the latest (see `trivia_end`). The source `separator`, if it follows the comments,
+    /// is taken without printing (the caller pushed one in front of them). Moves the cursor to the last
+    /// token taken and returns whether a comment was pushed.
+    pub(super) fn push_trivia(&mut self, separator: Option<SyntaxKind>, stop: TriviaStop) -> bool {
+        let Some(cursor) = self.frag.cursor.take() else {
             return false;
         };
+        let end = trivia_end(&cursor, separator, stop);
         let mut pushed = false;
         let mut newlines = 0;
+        // Comments in front of the separator are moved behind it, so they are never own-line
+        let mut before_separator = separator
+            .is_some_and(|kind| next_code_token(&cursor).is_some_and(|t| t.kind() == kind));
         let mut element = cursor.next_token();
-        if separator.is_some() {
-            // The separator is only taken from the source when it follows the comments
-            let next = std::iter::successors(element.clone(), |t| t.next_token())
-                .find(|t| !matches!(t.kind(), SyntaxKind::WHITESPACE | SyntaxKind::COMMENT));
-            if next.map(|t| t.kind()) != separator {
-                separator = None;
-            }
-        }
-        while let Some(token) = element {
+        while cursor != end
+            && let Some(token) = element
+        {
             match token.kind() {
-                SyntaxKind::WHITESPACE => {
-                    newlines += count_newlines(&token);
-                }
+                SyntaxKind::WHITESPACE => newlines += count_newlines(&token),
                 SyntaxKind::COMMENT => {
-                    if separator.is_some() {
-                        // The comment is moved after the separator, so it stays on the separator's line
+                    if before_separator {
                         newlines = 0;
-                    }
-                    let own_line = newlines > 0;
-                    if own_line && stop != TriviaStop::Code {
-                        break;
                     }
                     // Blank lines at the start of a fragment are dropped; the parent decides spacing
                     if newlines > 0 && !self.frag.is_empty() {
                         self.push_blank_lines(newlines);
                     }
-                    newlines = 0;
-                    if own_line {
+                    if newlines > 0 {
                         self.push_line_break_if(NEWLINE_DOC, |end| end != Nothing);
                     }
+                    newlines = 0;
                     self.push_comment(&token);
                     pushed = true;
-                    cursor = token.clone();
                 }
-                x if Some(x) == separator => {
-                    // The separator is moved before the comments, so newlines in front of it do not count
+                // The separator is moved before the comments, so newlines in front of it do not count
+                _ => {
                     newlines = 0;
-                    separator = None;
-                    cursor = token.clone();
-                    if stop == TriviaStop::Separator {
-                        break;
-                    }
+                    before_separator = false;
                 }
-                _ => break,
+            }
+            if token == end {
+                break;
             }
             element = token.next_token();
         }
-        self.frag.cursor = Some(cursor);
+        self.frag.cursor = Some(end);
         pushed
     }
 
@@ -232,11 +212,7 @@ impl<'a> Builder<'a> {
         let Some(cursor) = cursor else {
             return false;
         };
-        let stop = if rest_of_line_is_comments(&cursor, Some(kind)) {
-            TriviaStop::OwnLine
-        } else {
-            TriviaStop::Separator
-        };
+        let stop = post_comments_stop(&cursor, kind);
         self.frag.cursor = Some(cursor);
         self.push_trivia(Some(kind), stop)
     }

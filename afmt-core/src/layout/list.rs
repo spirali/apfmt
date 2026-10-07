@@ -13,15 +13,24 @@ pub(crate) struct ListItem<T = Frag> {
     pub frag: T,
     /// `None` for the last item without a trailing comma
     pub comma: Option<SyntaxToken>,
+    /// The item is alone on its line in a FillList (in the other layouts, it is placed as any item)
+    pub own_line: bool,
 }
 
 impl<T> ListItem<T> {
-    /// The item formatted by `format`, with the same comma
+    /// The item formatted by `format`, with the same comma and `own_line`
     pub fn map(&self, format: impl FnOnce(&T) -> Frag) -> ListItem {
         ListItem {
             frag: format(&self.frag),
             comma: self.comma.clone(),
+            own_line: self.own_line,
         }
+    }
+
+    /// If `own_line`, the item is alone on its line in a FillList
+    pub fn own_line_if(mut self, own_line: bool) -> Self {
+        self.own_line = own_line;
+        self
     }
 }
 
@@ -36,7 +45,11 @@ pub(crate) fn list_items<T>(
         match element {
             SyntaxElement::Node(child) => {
                 if let Some(frag) = format(child) {
-                    items.push(ListItem { frag, comma: None });
+                    items.push(ListItem {
+                        frag,
+                        comma: None,
+                        own_line: false,
+                    });
                 }
             }
             SyntaxElement::Token(token) if token.kind() == SyntaxKind::COMMA => {
@@ -90,21 +103,25 @@ fn flat_list(
 }
 
 /// Items filled on lines, as many on each line as fit: `a, b, c,` / `d, e,`; with a line break after `open`,
-/// indented, and a trailing comma. Comments are placed like rustfmt does: a comment before the comma or
-/// ending the line belongs to the item and ends the line, a comment followed by an item on the same line
-/// stays in front of it, and an own-line comment gets its own line. Comments ending the line of `open`
-/// stay there, as in vertical lists.
+/// indented, and a trailing comma. Items with `own_line` are alone on their line. Comments are placed
+/// like rustfmt does: a comment before the comma or ending the line belongs to the item and ends the
+/// line, a comment followed by an item on the same line stays in front of it, and an own-line comment
+/// gets its own line. Comments ending the line of `open` stay there, as in vertical lists.
 fn fill_list(fmt: &Formatter, items: &[ListItem], open: Option<SyntaxToken>) -> Frag {
     let mut builder = Builder::with_cursor(fmt, open);
     let line_comments = builder.push_comments_ending_line();
-    for (item, is_last) in with_is_last(items) {
+    for (i, item) in items.iter().enumerate() {
         builder.push_leading_comments();
         builder.push(item.frag.clone());
         let had_post_comment = builder.push_separator_with_trailing_comments(SyntaxKind::COMMA);
-        if is_last {
+        let Some(next) = items.get(i + 1) else {
             break;
-        }
-        if had_post_comment || builder.cursor().is_some_and(own_line_comment_follows) {
+        };
+        if had_post_comment
+            || item.own_line
+            || next.own_line
+            || builder.cursor().is_some_and(own_line_comment_follows)
+        {
             builder.push_newline();
         } else {
             builder.push_soft_line_break();
@@ -164,6 +181,8 @@ enum DelimiterKind {
     /// `{ }`: a single-line list has spaces inside, comments of an empty list go on their own
     /// indented lines
     Braces,
+    /// `{ }` without spaces inside, as `Parens`: `a::{b, c}`
+    TightBraces,
 }
 
 impl Delimiters {
@@ -197,6 +216,17 @@ impl Delimiters {
         )
     }
 
+    /// The `{` and `}` of the list `node` without spaces inside a single-line list (a use tree list:
+    /// `a::{b, c}`)
+    pub fn tight_braces_of(node: &SyntaxNode) -> Self {
+        Self::of(
+            node,
+            SyntaxKind::L_CURLY,
+            SyntaxKind::R_CURLY,
+            DelimiterKind::TightBraces,
+        )
+    }
+
     /// The first `open` and the last `close` token among the children of `node`
     fn of(node: &SyntaxNode, open: SyntaxKind, close: SyntaxKind, kind: DelimiterKind) -> Self {
         let token = |kind: SyntaxKind| {
@@ -213,7 +243,9 @@ impl Delimiters {
 
     fn edges(&self) -> (Edge, Edge) {
         match self.kind {
-            DelimiterKind::Parens | DelimiterKind::Angles => (Open, Close),
+            DelimiterKind::Parens | DelimiterKind::Angles | DelimiterKind::TightBraces => {
+                (Open, Close)
+            }
             DelimiterKind::Braces => (BraceOpen, BraceClose),
         }
     }
@@ -274,7 +306,7 @@ impl Delimiters {
 }
 
 /// The layouts a delimited list may take, see `delimited_list`. Start with `tall` or `fixed_vertical`
-/// and refine it with `fill_if`, `hug_if` and `trailing_separator`.
+/// and refine it with `fill_if`, `broken_if`, `hug_if` and `trailing_separator`.
 pub(crate) struct ListLayout {
     /// The items on a single line; `None` allows only the broken layout
     flat: Option<FlatLimit>,
@@ -318,6 +350,14 @@ impl ListLayout {
         self
     }
 
+    /// If `broken`, only the broken layout is allowed, even when the items fit on a single line
+    pub fn broken_if(mut self, broken: bool) -> Self {
+        if broken {
+            self.flat = None;
+        }
+        self
+    }
+
     /// If `hug`, the only item may overflow (see `ListLayout::hug`)
     pub fn hug_if(mut self, hug: bool) -> Self {
         self.hug = hug;
@@ -357,7 +397,7 @@ pub(crate) enum FlatLimit {
 enum BrokenList {
     /// One item per line, see `vertical_list`
     Vertical { keep_blank_lines: bool },
-    /// As many items per line as fit, see `fill_list`
+    /// As many items per line as fit, except items with `own_line`, see `fill_list`
     Fill,
 }
 
