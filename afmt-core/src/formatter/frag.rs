@@ -59,6 +59,13 @@ impl Frag {
         Frag::new(EMPTY_DOC, Nothing, Nothing, None)
     }
 
+    /// Whether a layout of the fragment may end with a closing delimiter, e.g. a call `f(...)`
+    pub fn may_end_with_delimiter(&self) -> bool {
+        self.branches
+            .iter()
+            .any(|b| matches!(b.end, Edge::Close | Edge::BraceClose))
+    }
+
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.branches.len() == 1 && self.branches[0].doc_id.is_empty()

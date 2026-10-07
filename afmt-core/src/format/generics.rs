@@ -5,7 +5,7 @@ use super::ty::format_type;
 use crate::format::common::{format_lifetime, format_name};
 use crate::formatter::Edge::{Comma, Operator, Tight};
 use crate::formatter::{Builder, Formatter, Frag};
-use crate::layout::chain::infix_chain;
+use crate::layout::chain::{infix_chain, operator_chain};
 use crate::layout::list::{
     Delimiters, FlatLimit, ListLayout, TrailingSeparator, delimited_list, keyword_list,
     list_items_cast,
@@ -14,7 +14,7 @@ use ra_ap_syntax::ast::{
     ConstParam, GenericParam, GenericParamList, HasName, HasTypeBounds, LifetimeParam, TypeBound,
     TypeBoundList, TypeParam, WhereClause, WherePred,
 };
-use ra_ap_syntax::{AstNode, NodeOrToken, SyntaxKind};
+use ra_ap_syntax::{AstNode, SyntaxKind};
 
 /// `<'a, T: Clone, const N: usize>`; kept on one line if possible, the Style Guide prefers breaking
 /// other parts of an item declaration
@@ -82,25 +82,13 @@ fn push_bounds(fmt: &Formatter, builder: &mut Builder, node: &impl HasTypeBounds
     }
 }
 
-/// `A + B + 'a`: on one line, or broken before every `+` (taxonomy: BoundsChain); a type, so kept on
+/// `A + B + 'a`: on one line, or broken before every `+`; a type, so kept on
 /// one line if possible
 pub(super) fn format_type_bound_list(fmt: &Formatter, list: TypeBoundList) -> Frag {
-    let mut bounds = Vec::new();
-    let mut pluses = Vec::new();
-    for child in list.syntax().children_with_tokens() {
-        match child {
-            NodeOrToken::Node(node) => {
-                bounds.push(format_type_bound(fmt, TypeBound::cast(node).unwrap()))
-            }
-            NodeOrToken::Token(token) if token.kind() == SyntaxKind::PLUS => {
-                pluses.push(fmt.token(token, Operator))
-            }
-            NodeOrToken::Token(_) => {}
-        }
-    }
-    let mut bounds = bounds.into_iter();
-    let first = bounds.next().unwrap();
-    let rest = pluses.into_iter().zip(bounds).collect::<Vec<_>>();
+    let (first, rest) = operator_chain(fmt, list.syntax(), SyntaxKind::PLUS, |node| {
+        format_type_bound(fmt, TypeBound::cast(node).unwrap())
+    })
+    .expect("bounds start with a bound");
     fmt.keep_together(infix_chain(fmt, first, &rest))
 }
 

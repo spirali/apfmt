@@ -15,8 +15,8 @@ Test harness for afmt.
 
 `compare`: show afmt and rustfmt output side by side for selected tests.
   The comparison is always against rustfmt; `<name>.expected.rs` files are ignored.
-  Lines are aligned and differing lines are highlighted (with --raw, outputs are shown
-  unaligned, line N next to line N, and changed lines are still highlighted).
+  Outputs are shown unaligned, line N next to line N, with changed lines highlighted
+  (with --align, lines are aligned by inserting blank lines and differing lines are highlighted).
 
 Usage:
   uv run tests/run.py test                  # run all tests
@@ -28,7 +28,7 @@ Usage:
   uv run tests/run.py compare calls         # side by side for tests whose path contains "calls"
   uv run tests/run.py compare --list calls  # list selected tests
   uv run tests/run.py compare -a calls      # also show tests where outputs are equal
-  uv run tests/run.py compare -r calls      # raw outputs, no alignment lines inserted
+  uv run tests/run.py compare -A calls      # align outputs by inserting blank lines
 """
 
 import argparse
@@ -462,7 +462,7 @@ def cmd_compare(args, sources: list[Path]) -> None:
             title = f"{name} [green](identical)[/green]"
         else:
             title = f"{name} [red](differs)[/red]"
-        console.print(side_by_side(title, afmt_out, rustfmt_out, args.raw))
+        console.print(side_by_side(title, afmt_out, rustfmt_out, not args.align))
         for err in errors:
             console.print(Text(err, style="bold red"))
         console.print()
@@ -511,11 +511,11 @@ def main() -> None:
         "-a", "--all", action="store_true", help="also show tests where outputs are equal"
     )
     compare.add_argument(
-        "-r",
-        "--raw",
+        "-A",
+        "--align",
         action="store_true",
-        help="show outputs as they are, without inserting alignment lines "
-        "(changed lines are still highlighted)",
+        help="align the outputs by inserting blank lines and highlight differing lines "
+        "(by default outputs are shown as they are, with changed lines highlighted)",
     )
 
     args = parser.parse_args()

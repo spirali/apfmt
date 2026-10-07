@@ -1,5 +1,6 @@
 //! Transformation of the Rust syntax tree into a doc, one module per syntax category
 
+mod attr;
 mod common;
 mod expr;
 mod generics;
@@ -9,11 +10,12 @@ mod path;
 mod stmt;
 mod ty;
 
+use self::attr::format_attr;
 use self::item::format_item;
 use crate::comments::{count_newlines, next_code_token, trivia_from};
 use crate::formatter::Edge::Word;
 use crate::formatter::{Builder, Formatter, Frag};
-use ra_ap_syntax::ast::HasModuleItem;
+use ra_ap_syntax::ast::{HasAttrs, HasModuleItem};
 use ra_ap_syntax::{AstNode, SourceFile, SyntaxKind};
 
 pub(crate) fn format_source_file(fmt: &Formatter, node: &SourceFile) -> Frag {
@@ -37,6 +39,9 @@ pub(crate) fn format_source_file(fmt: &Formatter, node: &SourceFile) -> Frag {
     }
     // No token precedes the comments at the start of the file, so no cursor would place them
     builder.push_comments_from(first);
+    for attr in node.attrs() {
+        builder.push_on_new_line(format_attr(fmt, attr));
+    }
     for child in node.items() {
         builder.push_on_new_line(format_item(fmt, child));
     }

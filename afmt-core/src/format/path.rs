@@ -51,7 +51,7 @@ fn format_path_segment(fmt: &Formatter, segment: PathSegment) -> Frag {
 }
 
 /// An identifier or one of `self`, `super`, `crate`, `Self`
-fn format_name_ref(fmt: &Formatter, name_ref: NameRef) -> Frag {
+pub(super) fn format_name_ref(fmt: &Formatter, name_ref: NameRef) -> Frag {
     fmt.token(name_ref.syntax().first_token().unwrap(), Word)
 }
 
@@ -74,7 +74,7 @@ fn format_type_anchor(fmt: &Formatter, anchor: TypeAnchor) -> Frag {
 }
 
 /// `<A, B>`, or the turbofish `::<A, B>`
-fn format_generic_arg_list(fmt: &Formatter, args: GenericArgList) -> Frag {
+pub(super) fn format_generic_arg_list(fmt: &Formatter, args: GenericArgList) -> Frag {
     let mut builder = Builder::new(fmt);
     if let Some(token) = args.coloncolon_token() {
         builder.push_token(token, Tight);

@@ -1,7 +1,9 @@
 use crate::config::Config;
-use crate::doc::{DocArena, DocId, DocNode};
+use crate::doc::{Cost, DocArena, DocId, DocNode};
 use smallvec::{SmallVec, smallvec};
+use std::cell::RefCell;
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 #[derive(Clone)]
@@ -13,7 +15,7 @@ struct Measure {
     /// The overflow beyond the page width, quadratic in its length; saturating, a single line can be
     /// very long (e.g. an embedded blob of data)
     badness: u64,
-    splits: u32,
+    cost: Cost,
     height: u32,
 }
 
@@ -47,7 +49,7 @@ impl Measure {
         Measure {
             last: Some(last),
             badness,
-            splits: 0,
+            cost: Cost::new(0),
             height,
         }
     }
@@ -57,7 +59,7 @@ impl Measure {
         Measure {
             last: ctx.col,
             badness: 0,
-            splits: 0,
+            cost: Cost::new(0),
             height: 0,
         }
     }
@@ -72,7 +74,7 @@ impl Measure {
     fn cost_cmp(&self, other: &Measure) -> Ordering {
         self.badness
             .cmp(&other.badness)
-            .then(self.splits.cmp(&other.splits))
+            .then(self.cost.cmp(&other.cost))
             .then(self.height.cmp(&other.height))
     }
 }
@@ -85,7 +87,7 @@ pub enum Content {
     Indent(u32, Rc<Content>),
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Context {
     /// `None` at the start of a line, before its indentation (see `Measure::last`)
     col: Option<u32>,
@@ -101,6 +103,7 @@ impl Context {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct Layout {
     measure: Measure,
     content: Rc<Content>,
@@ -108,6 +111,7 @@ pub(crate) struct Layout {
 
 type LayoutVec = SmallVec<[Layout; 1]>;
 
+#[derive(Clone)]
 pub(crate) struct LayoutSet {
     layouts: LayoutVec,
 }
@@ -201,6 +205,9 @@ pub(crate) struct Resolver<'a> {
     config: &'a Config,
     root: DocId,
     new_line: Rc<Content>,
+    /// The layouts of the docs that are shared by more alternatives (`Alt` nodes), by context; the
+    /// doc is a DAG, so without it a shared doc is resolved again in every alternative containing it
+    memo: RefCell<HashMap<(DocId, Context), LayoutSet>>,
 }
 
 impl<'a> Resolver<'a> {
@@ -210,6 +217,7 @@ impl<'a> Resolver<'a> {
             config,
             root,
             new_line: Rc::new(Content::Newline),
+            memo: RefCell::new(HashMap::new()),
         }
     }
 
@@ -255,7 +263,7 @@ impl<'a> Resolver<'a> {
                 measure: Measure {
                     last: None,
                     badness: 0,
-                    splits: 0,
+                    cost: Cost::new(0),
                     height: 1,
                 },
                 content: self.new_line.clone(),
@@ -281,7 +289,7 @@ impl<'a> Resolver<'a> {
                             .measure
                             .badness
                             .saturating_add(layout1.measure.badness);
-                        layout2.measure.splits += layout1.measure.splits;
+                        layout2.measure.cost = layout2.measure.cost.saturating_add(layout1.measure.cost);
                         layout2.measure.height += layout1.measure.height;
                         layout2.content = Rc::new(Content::Concat(
                             layout1.content.clone(),
@@ -293,11 +301,18 @@ impl<'a> Resolver<'a> {
                 out
             }
             DocNode::Flat(doc) => self.resolve(Context { flat: true, ..ctx }, *doc),
-            DocNode::KeepTogether(doc) => {
+            DocNode::Dispreferred(doc, cost) => {
+                let mut layout_set = self.resolve(ctx, *doc);
+                for layout in &mut layout_set.layouts {
+                    layout.measure.cost = layout.measure.cost.saturating_add(*cost);
+                }
+                layout_set
+            }
+            DocNode::KeepTogether(doc, cost) => {
                 let mut layout_set = self.resolve(ctx, *doc);
                 for layout in &mut layout_set.layouts {
                     if layout.measure.height > 0 {
-                        layout.measure.splits += 1;
+                        layout.measure.cost = layout.measure.cost.saturating_add(*cost);
                     }
                 }
                 layout_set
@@ -309,10 +324,25 @@ impl<'a> Resolver<'a> {
                     .retain(|layout| layout.measure.height > 0);
                 layout_set
             }
+            DocNode::ShortLastLine(doc) => {
+                let max = ctx.indent + self.config.indent_width;
+                let mut layout_set = self.resolve(ctx, *doc);
+                layout_set
+                    .layouts
+                    .retain(|layout| layout.measure.last.is_none_or(|last| last <= max));
+                layout_set
+            }
             DocNode::Alt(doc1, doc2) => {
+                if let Some(layout_set) = self.memo.borrow().get(&(doc, ctx)) {
+                    return layout_set.clone();
+                }
                 let la = self.resolve(ctx, *doc1);
                 let lb = self.resolve(ctx, *doc2);
-                merge_layout_sets(la, lb)
+                let layout_set = merge_layout_sets(la, lb);
+                self.memo
+                    .borrow_mut()
+                    .insert((doc, ctx), layout_set.clone());
+                layout_set
             }
             DocNode::Align(doc) => {
                 let indent = ctx.text_col();

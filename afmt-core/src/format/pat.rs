@@ -1,14 +1,20 @@
 //! Patterns
 
-use super::path::format_path;
+use super::expr::{format_range, single_item_separator};
+use super::path::{format_name_ref, format_path};
 use crate::format::common::format_name;
-use crate::formatter::Edge::{Operator, Word};
+use crate::formatter::Edge::{Comma, Operator, Tight, Word};
 use crate::formatter::{Builder, Formatter, Frag};
+use crate::layout::chain::{operator_chain, unindented_infix_chain};
 use crate::layout::list::{
-    Delimiters, FlatLimit, ListLayout, TrailingSeparator, delimited_list, list_items_cast,
+    Delimiters, FlatLimit, ListLayout, TrailingSeparator, delimited_list, list_items,
+    list_items_cast,
 };
-use ra_ap_syntax::AstNode;
-use ra_ap_syntax::ast::{HasName, IdentPat, Pat, TuplePat, TupleStructPat};
+use ra_ap_syntax::ast::{
+    HasName, IdentPat, LiteralPat, OrPat, ParenPat, Pat, RangePat, RecordPat, RecordPatField,
+    RefPat, RestPat, SlicePat, TuplePat, TupleStructPat,
+};
+use ra_ap_syntax::{AstNode, SyntaxKind};
 
 fn format_ident_pat(fmt: &Formatter, pat: IdentPat) -> Frag {
     let mut builder = Builder::new(fmt);
@@ -28,13 +34,8 @@ fn format_ident_pat(fmt: &Formatter, pat: IdentPat) -> Frag {
 
 fn format_tuple_pat(fmt: &Formatter, pat: TuplePat) -> Frag {
     let fields = list_items_cast(pat.syntax(), |p| format_pat(fmt, p));
-    // `(a,)` is a tuple, `(a)` is just a parenthesized pattern
-    let trailing = if fields.len() == 1 {
-        TrailingSeparator::Required
-    } else {
-        TrailingSeparator::IfVertical
-    };
-    let layout = ListLayout::tall(FlatLimit::MaxWidth).trailing_separator(trailing);
+    let layout = ListLayout::tall(FlatLimit::MaxWidth)
+        .trailing_separator(single_item_separator(fields.len()));
     delimited_list(fmt, &Delimiters::parens_of(pat.syntax()), &fields, layout)
 }
 
@@ -52,14 +53,111 @@ fn format_tuple_struct_pat(fmt: &Formatter, pat: TupleStructPat) -> Frag {
     builder.into_frag()
 }
 
+/// `[a, b, ..]`
+fn format_slice_pat(fmt: &Formatter, pat: SlicePat) -> Frag {
+    let items = list_items_cast(pat.syntax(), |p| format_pat(fmt, p));
+    let delims = Delimiters::brackets_of(pat.syntax());
+    delimited_list(fmt, &delims, &items, ListLayout::tall(FlatLimit::MaxWidth))
+}
+
+/// `-1`, `"a"`
+fn format_literal_pat(fmt: &Formatter, pat: LiteralPat) -> Frag {
+    let mut builder = Builder::new(fmt);
+    if let Some(token) = pat.minus_token() {
+        builder.push_token(token, Tight);
+    }
+    builder.push_token(pat.literal().unwrap().token(), Word);
+    builder.into_frag()
+}
+
+/// `&pat` or `&mut pat`
+fn format_ref_pat(fmt: &Formatter, pat: RefPat) -> Frag {
+    let mut builder = Builder::new(fmt);
+    builder.push_token(pat.amp_token().unwrap(), Tight);
+    if let Some(token) = pat.mut_token() {
+        builder.push_keyword(token);
+    }
+    builder.push(format_pat(fmt, pat.pat().unwrap()));
+    builder.into_frag()
+}
+
+fn format_paren_pat(fmt: &Formatter, pat: ParenPat) -> Frag {
+    let inner = format_pat(fmt, pat.pat().unwrap());
+    Delimiters::parens_of(pat.syntax()).enclose(fmt, inner)
+}
+
+/// `A | B | C` on one line, or broken before every `|` without indentation (Style Guide)
+fn format_or_pat(fmt: &Formatter, pat: OrPat) -> Frag {
+    let chain = operator_chain(fmt, pat.syntax(), SyntaxKind::PIPE, |node| {
+        format_pat(fmt, Pat::cast(node).unwrap())
+    });
+    let Some((first, rest)) = chain else {
+        panic!("not supported yet: a leading `|` in {pat:?}");
+    };
+    unindented_infix_chain(fmt, first, &rest)
+}
+
+/// `name`, `ref mut name` or `name: pat`
+fn format_record_pat_field(fmt: &Formatter, field: RecordPatField) -> Frag {
+    let mut builder = Builder::new(fmt);
+    if let Some(name_ref) = field.name_ref() {
+        builder.push(format_name_ref(fmt, name_ref));
+        builder.push_token(field.colon_token().unwrap(), Comma);
+    }
+    builder.push(format_pat(fmt, field.pat().unwrap()));
+    builder.into_frag()
+}
+
+/// `S { a, b: c, .. }`: on a single line if the fields fit within `struct_lit_width`, otherwise one
+/// field per line; `..` is last, without a comma
+fn format_record_pat(fmt: &Formatter, pat: RecordPat) -> Frag {
+    let mut builder = Builder::new(fmt);
+    builder.push(format_path(fmt, pat.path().unwrap()));
+    let list = pat.record_pat_field_list().unwrap();
+    let fields = list_items(list.syntax(), |node| match node.kind() {
+        SyntaxKind::RECORD_PAT_FIELD => Some(format_record_pat_field(
+            fmt,
+            RecordPatField::cast(node).unwrap(),
+        )),
+        SyntaxKind::REST_PAT => Some(format_rest_pat(fmt, RestPat::cast(node).unwrap())),
+        _ => None,
+    });
+    let trailing = if list.rest_pat().is_some() {
+        TrailingSeparator::Omitted
+    } else {
+        TrailingSeparator::IfVertical
+    };
+    let layout = ListLayout::tall(FlatLimit::Within(fmt.config().struct_lit_width))
+        .trailing_separator(trailing);
+    let delims = Delimiters::braces_of(list.syntax());
+    builder.push(delimited_list(fmt, &delims, &fields, layout));
+    builder.into_frag()
+}
+
+/// `..`
+fn format_rest_pat(fmt: &Formatter, pat: RestPat) -> Frag {
+    fmt.token(pat.dotdot_token().unwrap(), Word)
+}
+
+fn format_range_pat(fmt: &Formatter, pat: RangePat) -> Frag {
+    format_range(fmt, &pat, |p| format_pat(fmt, p))
+}
+
 pub(super) fn format_pat(fmt: &Formatter, pat: Pat) -> Frag {
     match pat {
         Pat::IdentPat(pat) => format_ident_pat(fmt, pat),
         Pat::WildcardPat(pat) => fmt.token(pat.underscore_token().unwrap(), Word),
         Pat::TuplePat(pat) => format_tuple_pat(fmt, pat),
         Pat::TupleStructPat(pat) => format_tuple_struct_pat(fmt, pat),
-        x => {
-            panic!("{x:?}")
-        }
+        Pat::PathPat(pat) => format_path(fmt, pat.path().unwrap()),
+        Pat::LiteralPat(pat) => format_literal_pat(fmt, pat),
+        Pat::RefPat(pat) => format_ref_pat(fmt, pat),
+        Pat::ParenPat(pat) => format_paren_pat(fmt, pat),
+        Pat::OrPat(pat) => format_or_pat(fmt, pat),
+        Pat::SlicePat(pat) => format_slice_pat(fmt, pat),
+        Pat::RecordPat(pat) => format_record_pat(fmt, pat),
+        Pat::RestPat(pat) => format_rest_pat(fmt, pat),
+        Pat::RangePat(pat) => format_range_pat(fmt, pat),
+        x => panic!("not supported yet: {x:?}"),
     }
 }

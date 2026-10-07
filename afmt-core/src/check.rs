@@ -1,4 +1,4 @@
-use ra_ap_syntax::ast::{HasAttrs, HasVisibility, Use, UseTree};
+use ra_ap_syntax::ast::{self, HasAttrs, HasVisibility, Use, UseTree};
 use ra_ap_syntax::{
     AstNode, Direction, NodeOrToken, SourceFile, SyntaxKind, SyntaxNode, SyntaxToken, TextSize,
     WalkEvent,
@@ -51,12 +51,45 @@ pub(crate) fn check_result(
     Ok(())
 }
 
+/// Whether `node` is the block of a closure body that holds just an expression, `|x| { x }`: the
+/// formatter removes its braces or adds them, so it is compared as if it had none
+fn is_optional_closure_block(node: &SyntaxNode) -> bool {
+    if node.kind() != SyntaxKind::BLOCK_EXPR
+        || node
+            .parent()
+            .is_none_or(|p| p.kind() != SyntaxKind::CLOSURE_EXPR)
+    {
+        return false;
+    }
+    let Some(stmt_list) = node
+        .first_child()
+        .filter(|c| c.kind() == SyntaxKind::STMT_LIST)
+    else {
+        return false;
+    };
+    // No label or modifier in front of `{`, and only an expression in it
+    node.first_token() == stmt_list.first_token()
+        && stmt_list.children().count() == 1
+        && stmt_list.children().all(|c| ast::Expr::can_cast(c.kind()))
+}
+
 /// The preorder walk of the tree without trivia and without trailing commas, with source offsets
 fn steps(file: &SourceFile) -> Vec<(Step, TextSize)> {
     let mut out = Vec::new();
+    // The blocks of `is_optional_closure_block` and their statement lists, walked as if not there
+    let mut transparent: Vec<SyntaxNode> = Vec::new();
     let mut walk = file.syntax().preorder_with_tokens();
     while let Some(event) = walk.next() {
         match event {
+            WalkEvent::Enter(NodeOrToken::Node(node)) if is_optional_closure_block(&node) => {
+                transparent.push(node.first_child().unwrap());
+                transparent.push(node);
+            }
+            WalkEvent::Enter(NodeOrToken::Node(node))
+            | WalkEvent::Leave(NodeOrToken::Node(node))
+                if transparent.contains(&node) => {}
+            WalkEvent::Enter(NodeOrToken::Token(token))
+                if token.parent().is_some_and(|p| transparent.contains(&p)) => {}
             WalkEvent::Enter(NodeOrToken::Node(node)) if node.kind() == SyntaxKind::USE => {
                 // Imports are sorted and normalized, so they are compared in a canonical form
                 let canonical = canonical_use(&Use::cast(node.clone()).unwrap());
@@ -127,7 +160,11 @@ fn canonical_use(item: &Use) -> String {
         return String::new();
     };
     let visibility = item.visibility().map(|v| code_text(v.syntax()));
-    format!("{} {} use {tree}", attrs.join(" "), visibility.unwrap_or_default())
+    format!(
+        "{} {} use {tree}",
+        attrs.join(" "),
+        visibility.unwrap_or_default()
+    )
 }
 
 /// The tree in a normal form: lists sorted, empty trees removed and `a::{b}` written as `a::b` (except
@@ -168,15 +205,12 @@ fn is_trailing_comma(token: &SyntaxToken) -> bool {
             .siblings_with_tokens(Direction::Next)
             .skip(1)
             .find(|e| !e.kind().is_trivia())
-            // Also a comma ending its node: the last item of a `where` clause
+            // The closing delimiter of the list (`)`, `]`, `}`, `>`, the `|` of closure parameters), or
+            // nothing: a comma ending its node, the last item of a `where` clause
             .is_none_or(|e| {
-                matches!(
-                    e.kind(),
-                    SyntaxKind::R_PAREN
-                        | SyntaxKind::R_BRACK
-                        | SyntaxKind::R_CURLY
-                        | SyntaxKind::R_ANGLE
-                )
+                e.as_token().is_some_and(|t| {
+                    token.parent().and_then(|p| p.last_token()).as_ref() == Some(t)
+                })
             })
 }
 

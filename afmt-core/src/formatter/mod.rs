@@ -8,13 +8,13 @@ mod trivia;
 use crate::comments::{multiline_comment_lines, normalize_block_comment};
 use crate::config::Config;
 use crate::doc::DocNode::Newline;
-use crate::doc::{DocArena, DocId, DocNode, EMPTY_DOC, NEWLINE_DOC, NEWLINE_OR_SPACE_DOC};
+use crate::doc::{Cost, DocArena, DocId, DocNode, EMPTY_DOC, NEWLINE_DOC, NEWLINE_OR_SPACE_DOC};
 use crate::formatter::Edge::{Keyword, LineStart, Nothing, Word};
 use crate::resolver::Resolver;
 pub(crate) use builder::Builder;
 use frag::{Branch, Branches};
 pub(crate) use frag::{Edge, Frag};
-use ra_ap_syntax::SyntaxToken;
+use ra_ap_syntax::{SyntaxNode, SyntaxToken};
 use std::cell::RefCell;
 
 pub(crate) struct Formatter<'a> {
@@ -47,9 +47,52 @@ impl<'a> Formatter<'a> {
         )
     }
 
+    /// A token with different edges on its sides, e.g. the negative `!` of `impl !Send`: a space in
+    /// front of it (`Word`), none after it (`Tight`)
+    pub fn token_with_edges(&self, token: SyntaxToken, start: Edge, end: Edge) -> Frag {
+        Frag::new(
+            self.make_node(DocNode::Token(token.clone())),
+            start,
+            end,
+            Some(token),
+        )
+    }
+
     /// Text that is not in the source (e.g. an inserted `"C"`), without a cursor
     pub fn text(&self, text: &str, edge: Edge) -> Frag {
         Frag::new_simple(self.make_node(DocNode::Text(text.to_string())), edge, None)
+    }
+
+    /// The source text of `node` unchanged, comments included, with the edges of
+    /// its first and last token; its last token is the cursor
+    pub fn verbatim(&self, node: &SyntaxNode, start: Edge, end: Edge) -> Frag {
+        let (first, last) = (node.first_token().unwrap(), node.last_token().unwrap());
+        self.verbatim_range(&first, &last, start, end)
+    }
+
+    /// The source text from `first` to `last` (inclusive) unchanged, see `verbatim`
+    pub fn verbatim_range(
+        &self,
+        first: &SyntaxToken,
+        last: &SyntaxToken,
+        start: Edge,
+        end: Edge,
+    ) -> Frag {
+        let mut text = String::new();
+        let mut token = Some(first.clone());
+        while let Some(t) = token {
+            text.push_str(t.text());
+            if &t == last {
+                break;
+            }
+            token = t.next_token();
+        }
+        Frag::new(
+            self.make_node(DocNode::Text(text)),
+            start,
+            end,
+            Some(last.clone()),
+        )
     }
 
     /// Just the token, without a cursor: the caller places the trivia (comments) that follow it
@@ -94,6 +137,15 @@ impl<'a> Formatter<'a> {
         })
     }
 
+    /// The following lines of the fragment are indented to the column where it starts (visual
+    /// indentation), e.g. closure parameters: `|a: A,` / ` b: B|`
+    pub fn align(&self, frag: Frag) -> Frag {
+        self.map_branches(frag, |b| Branch {
+            doc_id: self.make_node(DocNode::Align(b.doc_id)),
+            ..b
+        })
+    }
+
     /// The fragment starts on a new line with the current indentation
     pub fn on_next_line(&self, frag: Frag) -> Frag {
         self.prefix_break(NEWLINE_DOC, LineStart, frag)
@@ -114,7 +166,7 @@ impl<'a> Formatter<'a> {
     /// The body of a block or a broken list after its opening delimiter, indented on the next lines.
     /// With `line_comments` (the body starts with comments ending the delimiter's line, see
     /// `Builder::push_comments_ending_line`), they stay on the delimiter's line after a space if it
-    /// fits, otherwise they are the body's first line (taxonomy: StayOnOpenerLine).
+    /// fits, otherwise they are the body's first line.
     pub fn body_after_opener(&self, line_comments: bool, body: Frag) -> Frag {
         self.nest(if line_comments {
             self.on_same_or_next_line(body)
@@ -124,9 +176,16 @@ impl<'a> Formatter<'a> {
     }
 
     /// The fragment continues the current line, or starts an indented next line,
-    /// e.g. the right-hand side of `=`
+    /// e.g. the right-hand side of `=`; broken over more lines on the next line, it costs a split,
+    /// so it is broken there only if it does not fit on the current line either
     pub fn same_or_indented_line(&self, frag: Frag) -> Frag {
-        self.alt_frag(frag.clone(), self.indented_line(frag))
+        self.alt_frag(frag.clone(), self.indented_line(self.keep_together(frag)))
+    }
+
+    /// The fragment is always followed by a space, e.g. an attribute in front of a parameter:
+    /// `#[cfg(x)] &self`
+    pub fn followed_by_space(&self, frag: Frag) -> Frag {
+        self.map_branches(frag, |b| Branch { end: Keyword, ..b })
     }
 
     /// Restricts the fragment to layouts that span more than one line
@@ -138,10 +197,29 @@ impl<'a> Formatter<'a> {
     }
 
     /// The fragment should stay on one line if possible: a layout spanning more lines is used only when
-    /// all single-line layouts overflow (taxonomy: KeepTogether), e.g. a type
+    /// all single-line layouts overflow, e.g. a type
     pub fn keep_together(&self, frag: Frag) -> Frag {
         self.map_branches(frag, |b| Branch {
-            doc_id: self.make_node(DocNode::KeepTogether(b.doc_id)),
+            doc_id: self.make_node(DocNode::KeepTogether(b.doc_id, Cost::new(1))),
+            ..b
+        })
+    }
+
+    /// The fragment costs a split, so it is used only when the layouts without it are worse: a layout
+    /// the Style Guide accepts only as a fallback, e.g. `{` on its own line after an `if` head
+    pub fn dispreferred(&self, frag: Frag) -> Frag {
+        self.map_branches(frag, |b| Branch {
+            doc_id: self.make_node(DocNode::Dispreferred(b.doc_id, Cost::new(1))),
+            ..b
+        })
+    }
+
+    /// Restricts the fragment to layouts whose last line ends at most at the indentation of a nested
+    /// line, so a following fragment on that line still starts left of the nested lines below it,
+    /// e.g. a chain root followed by the first element: `x.baz?` / `    .qux()`
+    pub fn short_last_line(&self, frag: Frag) -> Frag {
+        self.map_branches(frag, |b| Branch {
+            doc_id: self.make_node(DocNode::ShortLastLine(b.doc_id)),
             ..b
         })
     }
@@ -172,6 +250,14 @@ impl<'a> Formatter<'a> {
         match other {
             Some(other) => self.alt_frag(frag, other),
             None => frag,
+        }
+    }
+
+    /// The alternative of the fragments that are present
+    pub fn alt_some(&self, frag1: Option<Frag>, frag2: Option<Frag>) -> Option<Frag> {
+        match (frag1, frag2) {
+            (Some(frag1), frag2) => Some(self.alt_opt(frag1, frag2)),
+            (None, frag2) => frag2,
         }
     }
 
@@ -220,7 +306,6 @@ impl<'a> Formatter<'a> {
             .reduce(|a, b| self.alt_doc(a, b))
             .unwrap()
     }
-
 
     pub fn dump(&self, frag: &Frag) {
         let root = self.frag_to_doc(frag);
@@ -274,7 +359,9 @@ impl<'a> Formatter<'a> {
             Newline | DocNode::Nest(_) | DocNode::Align(_) => None,
             DocNode::Flat(d) => self.flat_width_doc(*d),
             DocNode::MultiLine(_) => None,
-            DocNode::KeepTogether(d) => self.flat_width_doc(*d),
+            DocNode::KeepTogether(d, _) | DocNode::Dispreferred(d, _) | DocNode::ShortLastLine(d) => {
+                self.flat_width_doc(*d)
+            }
             DocNode::Concat(a, b) => self
                 .flat_width_doc(*a)
                 .and_then(|size1| self.flat_width_doc(*b).map(|size2| size1 + size2)),
@@ -286,11 +373,13 @@ impl<'a> Formatter<'a> {
         }
     }
 
-    /// Width of the fragment on a single line, the widest of its branches (each with its narrowest
-    /// alternative); `None` if a branch cannot be on a single line
+    /// Width of the fragment on a single line, the widest of its branches that can be on a single line
+    /// (each with its narrowest alternative); `None` if no branch can be (a branch that cannot is
+    /// dropped by `flat`, e.g. the braced layout of a closure)
     pub fn flat_width(&self, frag: &Frag) -> Option<usize> {
         frag.branches
             .iter()
-            .try_fold(0, |width, b| Some(width.max(self.flat_width_doc(b.doc_id)?)))
+            .filter_map(|b| self.flat_width_doc(b.doc_id))
+            .max()
     }
 }

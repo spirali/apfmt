@@ -1,21 +1,167 @@
-//! Chains of operators
+//! Chains: binary operators (`a && b && c`) and postfix chains (`a.b().c()?`)
 
+use crate::formatter::Edge::Operator;
 use crate::formatter::{Builder, Formatter, Frag};
+use crate::layout::list::FlatLimit;
+use ra_ap_syntax::{NodeOrToken, SyntaxKind, SyntaxNode};
 
 /// `a op b op c` on one line, or broken before every operator with indented continuation lines;
 /// `rest` are the (operator, operand) pairs following `first`
 pub(crate) fn infix_chain(fmt: &Formatter, first: Frag, rest: &[(Frag, Frag)]) -> Frag {
-    let mut flat = Builder::new(fmt);
-    let mut vertical = Builder::new(fmt);
-    flat.push(first.clone());
-    vertical.push(first);
-    for (op, operand) in rest {
-        flat.push(op.clone());
-        flat.push(operand.clone());
-        let mut line = Builder::new(fmt);
-        line.push(op.clone());
-        line.push(operand.clone());
-        vertical.push(fmt.indented_line(line.into_frag()));
+    chain(fmt, first, rest, true)
+}
+
+/// `a op b op c` on one line, or broken before every operator with continuation lines at the
+/// indentation of the first line, e.g. or-patterns: `A` / `| B` / `| C`
+pub(crate) fn unindented_infix_chain(fmt: &Formatter, first: Frag, rest: &[(Frag, Frag)]) -> Frag {
+    chain(fmt, first, rest, false)
+}
+
+/// The operands of `node` separated by the operator tokens `op` (`A + B`, `A | B`), formatted with
+/// `format`: the first one and the (operator, operand) pairs following it, for `infix_chain`; `None`
+/// if the node starts with the operator (`| A | B`)
+pub(crate) fn operator_chain(
+    fmt: &Formatter,
+    node: &SyntaxNode,
+    op: SyntaxKind,
+    mut format: impl FnMut(SyntaxNode) -> Frag,
+) -> Option<(Frag, Vec<(Frag, Frag)>)> {
+    let mut first = None;
+    let mut rest = Vec::new();
+    let mut operator = None;
+    for child in node.children_with_tokens() {
+        match child {
+            NodeOrToken::Node(node) => {
+                let operand = format(node);
+                match operator.take() {
+                    Some(operator) => rest.push((operator, operand)),
+                    None => first = Some(operand),
+                }
+            }
+            NodeOrToken::Token(token) if token.kind() == op => {
+                first.as_ref()?;
+                operator = Some(fmt.token(token, Operator));
+            }
+            NodeOrToken::Token(_) => {}
+        }
     }
-    fmt.alt_frag(fmt.flat(flat.into_frag()), vertical.into_frag())
+    Some((first?, rest))
+}
+
+fn chain(fmt: &Formatter, first: Frag, rest: &[(Frag, Frag)], indent: bool) -> Frag {
+    let lines = rest
+        .iter()
+        .map(|(op, operand)| Builder::concat(fmt, [op.clone(), operand.clone()]))
+        .collect::<Vec<_>>();
+    let flat = Builder::concat(
+        fmt,
+        std::iter::once(first.clone()).chain(lines.iter().cloned()),
+    );
+    let mut vertical = Builder::new(fmt);
+    vertical.push(first);
+    vertical.push_lines(lines, indent);
+    fmt.alt_frag(fmt.flat(flat), vertical.into_frag())
+}
+
+/// An element of a postfix chain: `.field`, `.method::<T>(args)` or `.await`, with the `?` and
+/// indexes following it. `head` stays on one line; `tail` (the arguments and what follows them, may
+/// be empty) may break.
+pub(crate) struct ChainElement {
+    pub head: Frag,
+    pub tail: Frag,
+}
+
+/// `root.a.b()?.c()` in the layouts of the Style Guide:
+/// - on one line, if it fits (with two or more elements, within `chain_width`, as rustfmt does);
+/// - broken before every `.`, each element on its own block-indented line; a short root stays with
+///   the elements that follow it while its last line ends at most at the indentation of the next
+///   line (`x.baz?` / `    .qux()`, also `foo(` / `...` / `).baz?`);
+/// - all on one line except the arguments of the last element, which break (`a.b().c(` / `...` /
+///   `)`), if the line fits as the single-line layout does; the Style Guide prefers the elements on
+///   their own lines, so this layout costs a split, as every broken element in the previous layout
+///   does.
+///
+/// Returns the broken layout, with indented continuation lines (a hanging indent), and the others;
+/// without elements (`a?[0]`), there is only the root.
+pub(crate) fn postfix_chain_layouts(
+    fmt: &Formatter,
+    root: Frag,
+    elements: &[ChainElement],
+) -> (Option<Frag>, Option<Frag>) {
+    let Some(last) = elements.last() else {
+        return (None, Some(root));
+    };
+    let full = elements
+        .iter()
+        .map(|e| Builder::concat(fmt, [e.head.clone(), e.tail.clone()]))
+        .collect::<Vec<_>>();
+    let vertical = vertical_chain(fmt, &root, &full);
+
+    let limit = if elements.len() >= 2 {
+        FlatLimit::Within(fmt.config().chain_width)
+    } else {
+        FlatLimit::MaxWidth
+    };
+    // The single-line width of the root and the elements in front of the last one, measured once; the
+    // layouts are checked exactly by `FlatLimit::apply` (comments in between count too)
+    let rest = &full[..full.len() - 1];
+    let rest_width = std::iter::once(&root)
+        .chain(rest)
+        .try_fold(0, |w, f| Some(w + fmt.flat_width(f)?));
+    let fits = |last: &Frag| {
+        let width = rest_width.zip(fmt.flat_width(last)).map(|(a, b)| a + b);
+        width.is_some_and(|w| match limit {
+            FlatLimit::Within(limit) => w <= limit as usize,
+            FlatLimit::MaxWidth => true,
+        })
+    };
+    let line = |last: &Frag| {
+        let frags = std::iter::once(&root).chain(rest).chain([last]);
+        limit.apply(fmt, Builder::concat(fmt, frags.cloned()))
+    };
+
+    let mut other = None;
+    let full_last = full.last().unwrap();
+    if fits(full_last) {
+        other = line(full_last);
+    }
+    if !last.tail.is_empty()
+        && fits(&last.head)
+        && let Some(line) = line(&last.head)
+    {
+        let overflow = Builder::concat(fmt, [line, fmt.multi_line(last.tail.clone())]);
+        other = Some(fmt.alt_opt(fmt.dispreferred(overflow), other));
+    }
+    (Some(vertical), other)
+}
+
+/// The chain broken before every element, see `postfix_chain_layouts`; `elements` are formatted
+fn vertical_chain(fmt: &Formatter, root: &Frag, elements: &[Frag]) -> Frag {
+    let indent_width = fmt.config().indent_width as usize;
+    // An element broken over more lines costs a split: the Style Guide prefers single-line elements
+    let lines = elements
+        .iter()
+        .map(|e| fmt.keep_together(e.clone()))
+        .collect::<Vec<_>>();
+    let mut head = root.clone();
+    let mut layouts: Option<Frag> = None;
+    for k in 0..=elements.len() {
+        let mut builder = Builder::new(fmt);
+        builder.push(head.clone());
+        builder.push_lines(lines[k..].iter().cloned(), true);
+        let layout = builder.into_frag();
+        layouts = Some(fmt.alt_opt(layout, layouts));
+        if k == elements.len() {
+            break;
+        }
+        // The head may take the next element only if its last line can be short: it is short on a
+        // single line, or it is the root ending with a delimiter (`foo(` / `...` / `)`)
+        let short = (k == 0 && head.may_end_with_delimiter())
+            || fmt.flat_width(&head).is_some_and(|w| w <= indent_width);
+        if !short {
+            break;
+        }
+        head = Builder::concat(fmt, [fmt.short_last_line(head), lines[k].clone()]);
+    }
+    layouts.unwrap()
 }

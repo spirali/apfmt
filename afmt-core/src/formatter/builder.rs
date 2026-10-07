@@ -1,7 +1,7 @@
 use super::Formatter;
-use crate::comments::own_line_comment_follows;
 use super::frag::{Branch, Branches, Edge, Frag, compute_space};
 use crate::comments::TriviaStop;
+use crate::comments::own_line_comment_follows;
 use crate::doc::{DocId, EMPTY_DOC, EMPTYLINE_DOC, NEWLINE_DOC, NEWLINE_OR_SPACE_DOC};
 use crate::formatter::Edge::{BraceClose, BraceOpen, Break, Close, LineStart, Nothing};
 use ra_ap_syntax::SyntaxToken;
@@ -30,6 +30,15 @@ impl<'a> Builder<'a> {
         let mut frag = Frag::empty();
         frag.cursor = cursor;
         Builder { fmt, frag }
+    }
+
+    /// The fragments one after another, see `push`
+    pub fn concat(fmt: &'a Formatter, frags: impl IntoIterator<Item = Frag>) -> Frag {
+        let mut builder = Builder::new(fmt);
+        for frag in frags {
+            builder.push(frag);
+        }
+        builder.into_frag()
     }
 
     #[inline]
@@ -109,12 +118,60 @@ impl<'a> Builder<'a> {
         self.join(frag);
     }
 
+    /// Pushes each of `lines` on its own line, all of them indented one level deeper with `indent`,
+    /// e.g. the continuation lines of a broken chain (`.b()`, `&& b`). Comments on the line of the left
+    /// side stay there; own-line comments in between keep their own lines, at the indentation of
+    /// the lines.
+    pub fn push_lines(&mut self, lines: impl IntoIterator<Item = Frag>, indent: bool) {
+        let mut lines = lines.into_iter().peekable();
+        if lines.peek().is_none() {
+            return;
+        }
+        let fmt = self.fmt;
+        self.push_trivia(None, TriviaStop::OwnLine);
+        let mut nested = Builder::with_cursor(fmt, self.frag.cursor.take());
+        // The newline in front of the first line belongs to `nested`, so it is indented with it
+        nested.push_newline();
+        for line in lines {
+            nested.push_on_new_line(line);
+        }
+        let nested = nested.into_frag();
+        // A line comment on the left side is ended by the newline of `nested`
+        self.push_line_break_if(EMPTY_DOC, |end| end == Break);
+        self.join(if indent { fmt.nest(nested) } else { nested });
+    }
+
+    /// Takes the source up to `token` (inclusive) without output, e.g. the `}` of braces removed around a
+    /// closure body; the source in between must not contain comments
+    pub fn skip_to_token(&mut self, token: SyntaxToken) {
+        self.push_comments();
+        self.frag.cursor = Some(token);
+    }
+
+    /// Pushes `text` that is not in the source, e.g. braces added around a closure body. The cursor
+    /// stays, so the trivia after it is placed after the text, and the source that follows is still
+    /// taken after it (e.g. a separator).
+    pub fn push_generated(&mut self, text: &str, edge: Edge) {
+        let cursor = self.frag.cursor.take();
+        let frag = self.fmt.text(text, edge);
+        if self.frag.is_empty() {
+            self.frag = frag;
+        } else {
+            self.join(frag);
+        }
+        self.frag.cursor = cursor;
+    }
+
     fn push_continuation(&mut self, frag: Frag) {
         // Comments on the same line as the left side stay there
         self.push_trivia(None, TriviaStop::OwnLine);
         // After an own-line comment, or a line comment ending the left side, the continuation goes on
-        // an indented line (taxonomy: ContinuationComment), unless it starts its own line anyway
-        let own_line_comment = self.frag.cursor.as_ref().is_some_and(own_line_comment_follows);
+        // an indented line, unless it starts its own line anyway
+        let own_line_comment = self
+            .frag
+            .cursor
+            .as_ref()
+            .is_some_and(own_line_comment_follows);
         let line_comment = self.frag.branches.iter().any(|b| b.end == Break)
             && !frag.branches.iter().all(|b| b.start == LineStart);
         if !own_line_comment && !line_comment {

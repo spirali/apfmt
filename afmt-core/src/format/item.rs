@@ -1,7 +1,8 @@
-//! Items: functions, structs, enums, use declarations
+//! Items: functions, structs, enums, use declarations, impls, traits, modules, constants, type aliases
 
+use super::attr::{attach_attrs, format_attr, format_with_attrs};
 use super::expr::format_expr;
-use super::generics::{format_generic_param_list, format_where_clause};
+use super::generics::{format_generic_param_list, format_type_bound_list, format_where_clause};
 use super::pat::format_pat;
 use super::path::format_path;
 use super::stmt::format_block_expr;
@@ -14,11 +15,13 @@ use crate::layout::list::{
     list_items, list_items_cast,
 };
 use ra_ap_syntax::ast::{
-    Abi, Enum, FieldList, Fn as AstFn, HasAttrs, HasGenericParams, HasName, HasVisibility, Item,
-    Param, ParamList, RecordField, RecordFieldList, Rename, SelfParam, Struct, TupleField,
-    TupleFieldList, Use, UseTree, UseTreeList, Variant, Visibility, WhereClause,
+    Abi, AssocItemList, Attr, Const, Enum, Expr, ExternBlock, FieldList, Fn as AstFn,
+    GenericParamList, HasAttrs, HasGenericParams, HasModuleItem, HasName, HasTypeBounds,
+    HasVisibility, Impl, Item, ItemList, Meta, Module, Param, ParamList, RecordField,
+    RecordFieldList, Rename, SelfParam, Static, Struct, Trait, TupleField, TupleFieldList, Type,
+    TypeAlias, TypeBoundList, Use, UseTree, UseTreeList, Variant, Visibility, WhereClause,
 };
-use ra_ap_syntax::{AstNode, NodeOrToken, SyntaxKind, SyntaxToken};
+use ra_ap_syntax::{AstNode, NodeOrToken, SyntaxKind, SyntaxNode, SyntaxToken};
 
 /// `self`, `&self`, `&'a mut self`, `mut self` or `self: Type`
 fn format_self_param(fmt: &Formatter, param: SelfParam) -> Frag {
@@ -40,41 +43,92 @@ fn format_self_param(fmt: &Formatter, param: SelfParam) -> Frag {
     builder.into_frag()
 }
 
-/// `pat: Type`
+/// `pat: Type`, just `Type` in a function pointer type, or just `pat` in a closure
 fn format_param(fmt: &Formatter, param: Param) -> Frag {
-    let (Some(pat), Some(ty), None) = (param.pat(), param.ty(), param.dotdotdot_token()) else {
-        panic!("{param:?}");
-    };
+    assert!(
+        param.dotdotdot_token().is_none(),
+        "not supported yet: {param:?}"
+    );
     let mut builder = Builder::new(fmt);
-    builder.push(format_pat(fmt, pat));
-    builder.push_token(param.colon_token().unwrap(), Comma);
-    builder.push(format_type(fmt, ty));
+    if let Some(pat) = param.pat() {
+        builder.push(format_pat(fmt, pat));
+    }
+    if let Some(ty) = param.ty() {
+        if let Some(colon) = param.colon_token() {
+            builder.push_token(colon, Comma);
+        }
+        builder.push(format_type(fmt, ty));
+    }
     builder.into_frag()
 }
 
 /// `(a: A, b: B)` on a single line, or one parameter per line with a trailing comma
-fn format_param_list(fmt: &Formatter, param_list: ParamList) -> Frag {
-    let params = list_items(param_list.syntax(), |n| match n.kind() {
-        SyntaxKind::SELF_PARAM => Some(format_self_param(fmt, SelfParam::cast(n).unwrap())),
-        SyntaxKind::PARAM => Some(format_param(fmt, Param::cast(n).unwrap())),
-        _ => None,
-    });
+pub(super) fn format_param_list(fmt: &Formatter, param_list: ParamList) -> Frag {
+    let params = param_items(fmt, &param_list);
     let delims = Delimiters::parens_of(param_list.syntax());
     delimited_list(fmt, &delims, &params, ListLayout::tall(FlatLimit::MaxWidth))
 }
 
-/// The head of an item up to its generic parameters: the visibility, the qualifiers (`default const
-/// async gen unsafe safe extern "abi"`, in the source order), the keyword, the name and the generic
-/// parameters, e.g. `pub const unsafe fn name<T>`, `pub struct Name<T>`
-fn format_item_head<N: HasName + HasGenericParams>(
+/// `|a, b: B|` of a closure on a single line (`None` if a comment prevents it), and broken (`None`
+/// without parameters, or with a single one that fits on a single line): aligned after `|` as rustfmt
+/// does (`|a: A,` / ` b: B|`), an explicit exception to the Style Guide's "function definition syntax"
+/// (see CLAUDE.md)
+pub(super) fn closure_params_layouts(
     fmt: &Formatter,
-    item: &N,
-    keyword: SyntaxToken,
-) -> Frag {
-    let mut builder = Builder::new(fmt);
-    for child in item.syntax().children_with_tokens() {
+    param_list: ParamList,
+) -> (Option<Frag>, Option<Frag>) {
+    let params = param_items(fmt, &param_list);
+    let delims = Delimiters::pipes_of(param_list.syntax());
+    if params.is_empty() {
+        return (Some(delims.format_empty(fmt)), None);
+    }
+    let flat = flat_layout(
+        fmt,
+        &delims,
+        &params,
+        FlatLimit::MaxWidth,
+        TrailingSeparator::IfVertical,
+    )
+    .map(|flat| delims.wrap_body(fmt, flat));
+    // A single parameter is the same broken, unless a comment forces a line break
+    if params.len() == 1 && flat.is_some() {
+        return (flat, None);
+    }
+    let layout = ListLayout::tall(FlatLimit::MaxWidth)
+        .broken_if(true)
+        .aligned();
+    (flat, Some(delimited_list(fmt, &delims, &params, layout)))
+}
+
+fn param_items(fmt: &Formatter, param_list: &ParamList) -> Vec<ListItem> {
+    list_items(param_list.syntax(), |n| match n.kind() {
+        SyntaxKind::SELF_PARAM => {
+            let param = SelfParam::cast(n).unwrap();
+            Some(format_with_attrs(fmt, &param, true, || {
+                format_self_param(fmt, param.clone())
+            }))
+        }
+        SyntaxKind::PARAM => {
+            let param = Param::cast(n).unwrap();
+            Some(format_with_attrs(fmt, &param, true, || {
+                format_param(fmt, param.clone())
+            }))
+        }
+        _ => None,
+    })
+}
+
+/// The visibility and the qualifiers (`default const async gen unsafe safe extern "abi"`) of `node` in
+/// the source order, up to `keyword` (exclusive); attributes are formatted by the caller
+pub(super) fn push_qualifiers(
+    fmt: &Formatter,
+    builder: &mut Builder,
+    node: &SyntaxNode,
+    keyword: &SyntaxToken,
+) {
+    for child in node.children_with_tokens() {
         match child {
-            NodeOrToken::Token(token) if token == keyword => break,
+            NodeOrToken::Token(token) if &token == keyword => break,
             NodeOrToken::Token(token) => match token.kind() {
                 kind if kind.is_trivia() => {}
                 SyntaxKind::DEFAULT_KW
@@ -82,25 +136,50 @@ fn format_item_head<N: HasName + HasGenericParams>(
                 | SyntaxKind::ASYNC_KW
                 | SyntaxKind::GEN_KW
                 | SyntaxKind::UNSAFE_KW
-                | SyntaxKind::SAFE_KW => builder.push_token(token, Word),
+                | SyntaxKind::SAFE_KW
+                | SyntaxKind::AUTO_KW => builder.push_token(token, Word),
                 _ => panic!("not supported yet: {token:?}"),
             },
             NodeOrToken::Node(node) => match node.kind() {
+                SyntaxKind::ATTR => {}
                 SyntaxKind::VISIBILITY => {
                     builder.push(format_visibility(fmt, Visibility::cast(node).unwrap()))
                 }
                 SyntaxKind::ABI => builder.push(format_abi(fmt, Abi::cast(node).unwrap())),
-                // Attributes, ...: they would be lost
                 _ => panic!("not supported yet: {node:?}"),
             },
         }
     }
+}
+
+/// The head of an item up to its generic parameters: the visibility, the qualifiers (see
+/// `push_qualifiers`), the keyword, the name and the generic parameters, e.g. `pub const unsafe fn
+/// name<T>`, `pub struct Name<T>`
+fn format_item_head(
+    fmt: &Formatter,
+    item: &SyntaxNode,
+    keyword: SyntaxToken,
+    name: Frag,
+    generics: Option<GenericParamList>,
+) -> Frag {
+    let mut builder = Builder::new(fmt);
+    push_qualifiers(fmt, &mut builder, item, &keyword);
     builder.push_token(keyword, Word);
-    builder.push(format_name(fmt, item.name().unwrap()));
-    if let Some(generics) = item.generic_param_list() {
+    builder.push(name);
+    if let Some(generics) = generics {
         builder.push(format_generic_param_list(fmt, generics));
     }
     builder.into_frag()
+}
+
+/// `format_item_head` of a named item
+fn format_named_item_head<N: HasName + HasGenericParams>(
+    fmt: &Formatter,
+    item: &N,
+    keyword: SyntaxToken,
+) -> Frag {
+    let name = format_name(fmt, item.name().unwrap());
+    format_item_head(fmt, item.syntax(), keyword, name, item.generic_param_list())
 }
 
 /// `extern "abi"`; a missing ABI is written out, `extern` is `extern "C"` (Style Guide: "always specify
@@ -131,7 +210,11 @@ fn push_where_clause(
 /// `fn name<T>(params) -> Ret where ... { body }`, or with `;` instead of the body
 fn format_fn(fmt: &Formatter, item_fn: AstFn) -> Frag {
     let mut builder = Builder::new(fmt);
-    builder.push(format_item_head(fmt, &item_fn, item_fn.fn_token().unwrap()));
+    builder.push(format_named_item_head(
+        fmt,
+        &item_fn,
+        item_fn.fn_token().unwrap(),
+    ));
     builder.push(format_param_list(fmt, item_fn.param_list().unwrap()));
     if let Some(ret_type) = item_fn.ret_type() {
         builder.push(format_ret_type(fmt, ret_type));
@@ -160,8 +243,12 @@ fn format_visibility(fmt: &Formatter, visibility: Visibility) -> Frag {
     builder.into_frag()
 }
 
-/// `pub name: Type`
+/// `pub name: Type`, with its attributes on their own lines
 fn format_record_field(fmt: &Formatter, field: RecordField) -> Frag {
+    format_with_attrs(fmt, &field, false, || format_record_field_body(fmt, &field))
+}
+
+fn format_record_field_body(fmt: &Formatter, field: &RecordField) -> Frag {
     let mut builder = Builder::new(fmt);
     if let Some(visibility) = field.visibility() {
         builder.push(format_visibility(fmt, visibility));
@@ -172,14 +259,16 @@ fn format_record_field(fmt: &Formatter, field: RecordField) -> Frag {
     builder.into_frag()
 }
 
-/// `pub Type`
+/// `pub Type`, with its attributes on the same line
 fn format_tuple_field(fmt: &Formatter, field: TupleField) -> Frag {
-    let mut builder = Builder::new(fmt);
-    if let Some(visibility) = field.visibility() {
-        builder.push(format_visibility(fmt, visibility));
-    }
-    builder.push(format_type(fmt, field.ty().unwrap()));
-    builder.into_frag()
+    format_with_attrs(fmt, &field, true, || {
+        let mut builder = Builder::new(fmt);
+        if let Some(visibility) = field.visibility() {
+            builder.push(format_visibility(fmt, visibility));
+        }
+        builder.push(format_type(fmt, field.ty().unwrap()));
+        builder.into_frag()
+    })
 }
 
 /// `{ a: A, b: B }` of a struct: always one field per line
@@ -205,7 +294,11 @@ fn format_tuple_field_list(fmt: &Formatter, list: TupleFieldList) -> Frag {
 /// `struct Name;`, `struct Name { a: A }` or `struct Name(A);`
 fn format_struct(fmt: &Formatter, item: Struct) -> Frag {
     let mut builder = Builder::new(fmt);
-    builder.push(format_item_head(fmt, &item, item.struct_token().unwrap()));
+    builder.push(format_named_item_head(
+        fmt,
+        &item,
+        item.struct_token().unwrap(),
+    ));
     // The `where` clause is in front of the fields in `struct S<T> where ... { a: T }`, and after
     // them, followed by `;`, in `struct S<T>(T) where ...;`
     match item.field_list() {
@@ -241,6 +334,8 @@ enum VariantFields {
 
 /// A variant formatted up to the layout of its struct fields
 struct VariantParts {
+    /// The attributes, each on its own line
+    attrs: Vec<Frag>,
     name: Frag,
     fields: VariantFields,
     /// `= expr`
@@ -279,6 +374,7 @@ fn struct_variant_single_line(fmt: &Formatter, s: &StructVariantFields) -> Optio
 }
 
 fn variant_parts(fmt: &Formatter, variant: Variant) -> VariantParts {
+    let attrs = variant.attrs().map(|attr| format_attr(fmt, attr)).collect();
     let fields = match variant.field_list() {
         Some(FieldList::RecordFieldList(list)) => {
             VariantFields::Struct(struct_variant_fields(fmt, list))
@@ -298,14 +394,16 @@ fn variant_parts(fmt: &Formatter, variant: Variant) -> VariantParts {
         builder.into_frag()
     });
     VariantParts {
+        attrs,
         name: format_name(fmt, variant.name().unwrap()),
         fields,
         discriminant,
     }
 }
 
-/// `Name`, `Name(A, B)`, `Name { a: A }` or `Name = discriminant`; with `single_line`, the fields of a
-/// struct variant on a single line (see `struct_variant_single_line`), otherwise one per line
+/// `Name`, `Name(A, B)`, `Name { a: A }` or `Name = discriminant`, after its attributes; with
+/// `single_line`, the fields of a struct variant on a single line (see `struct_variant_single_line`),
+/// otherwise one per line
 fn format_variant(fmt: &Formatter, parts: &VariantParts, single_line: Option<&Frag>) -> Frag {
     let mut builder = Builder::new(fmt);
     builder.push(parts.name.clone());
@@ -325,29 +423,42 @@ fn format_variant(fmt: &Formatter, parts: &VariantParts, single_line: Option<&Fr
     if let Some(discriminant) = &parts.discriminant {
         builder.push(discriminant.clone());
     }
-    builder.into_frag()
+    attach_attrs(fmt, parts.attrs.iter().cloned(), false, builder.into_frag())
 }
 
 fn format_enum(fmt: &Formatter, item: Enum) -> Frag {
     let mut builder = Builder::new(fmt);
-    builder.push(format_item_head(fmt, &item, item.enum_token().unwrap()));
+    builder.push(format_named_item_head(
+        fmt,
+        &item,
+        item.enum_token().unwrap(),
+    ));
     push_where_clause(fmt, &mut builder, item.where_clause(), false);
 
     let list = item.variant_list().unwrap();
     let delims = Delimiters::braces_of(list.syntax());
     let variants = list_items_cast(list.syntax(), |v| variant_parts(fmt, v));
+    // The other variants than struct variants are the same in both bodies, so they are formatted once
+    let fixed = variants
+        .iter()
+        .map(|v| match v.frag.fields {
+            VariantFields::Struct(_) => None,
+            _ => Some(format_variant(fmt, &v.frag, None)),
+        })
+        .collect::<Vec<_>>();
     // `single_lines`: the single-line fields of the struct variants, in their order
     let body = |single_lines: Option<&[Frag]>| {
         let mut single_lines = single_lines.map(|lines| lines.iter());
         let items = variants
             .iter()
-            .map(|v| {
-                v.map(|parts| {
-                    let single_line = match parts.fields {
-                        VariantFields::Struct(_) => single_lines.as_mut().and_then(Iterator::next),
-                        _ => None,
-                    };
-                    format_variant(fmt, parts, single_line)
+            .zip(&fixed)
+            .map(|(v, fixed)| {
+                v.map(|parts| match fixed {
+                    Some(fixed) => fixed.clone(),
+                    None => {
+                        let single_line = single_lines.as_mut().and_then(Iterator::next);
+                        format_variant(fmt, parts, single_line)
+                    }
                 })
             })
             .collect::<Vec<ListItem>>();
@@ -375,10 +486,6 @@ fn format_enum(fmt: &Formatter, item: Enum) -> Frag {
 
 /// `use tree;`, `pub(crate) use tree;`
 fn format_use(fmt: &Formatter, item: Use) -> Frag {
-    if let Some(attr) = item.attrs().next() {
-        // They would be lost
-        panic!("not supported yet: {attr:?}");
-    }
     let mut builder = Builder::new(fmt);
     if let Some(visibility) = item.visibility() {
         builder.push(format_visibility(fmt, visibility));
@@ -449,16 +556,281 @@ fn format_use_tree_list(fmt: &Formatter, list: UseTreeList) -> Frag {
     delimited_list(fmt, &delims, &items, layout)
 }
 
-pub(super) fn format_item(fmt: &Formatter, item: Item) -> Frag {
+/// `: A + B` of a trait: on the line of the head, or broken after `:` with the bounds on an indented
+/// line; then `{` of `block_follows` is on its own line (Style Guide)
+fn format_supertraits(
+    fmt: &Formatter,
+    colon: SyntaxToken,
+    bounds: TypeBoundList,
+    block_follows: bool,
+) -> Frag {
+    let bounds = format_type_bound_list(fmt, bounds);
+    let mut broken = Builder::new(fmt);
+    broken.push(fmt.indented_line(bounds.clone()));
+    if block_follows {
+        broken.push_newline();
+    }
     let mut builder = Builder::new(fmt);
-    match item {
-        Item::Fn(item) => builder.push(format_fn(fmt, item)),
-        Item::Struct(item) => builder.push(format_struct(fmt, item)),
-        Item::Enum(item) => builder.push(format_enum(fmt, item)),
-        Item::Use(item) => builder.push(format_use(fmt, item)),
-        x => {
-            panic!("{x:?}");
-        }
+    builder.push_token(colon, Comma);
+    builder.push(fmt.alt_frag(fmt.flat(bounds), broken.into_frag()));
+    builder.into_frag()
+}
+
+/// `{ items }` of a module, an impl, a trait or an extern block: the inner attributes of `list`
+/// and the `items`, each on its own line
+fn format_item_block(
+    fmt: &Formatter,
+    list: &impl HasAttrs,
+    items: impl Iterator<Item = SyntaxNode>,
+) -> Frag {
+    let lines = list
+        .attrs()
+        .map(|attr| format_attr(fmt, attr))
+        .chain(items.map(|item| format_item(fmt, Item::cast(item).unwrap())));
+    Delimiters::braces_of(list.syntax()).format_block(fmt, lines)
+}
+
+fn format_item_list(fmt: &Formatter, list: ItemList) -> Frag {
+    format_item_block(fmt, &list, list.items().map(|i| i.syntax().clone()))
+}
+
+fn format_assoc_item_list(fmt: &Formatter, list: AssocItemList) -> Frag {
+    format_item_block(fmt, &list, list.assoc_items().map(|i| i.syntax().clone()))
+}
+
+/// `unsafe extern "C" { items }`
+fn format_extern_block(fmt: &Formatter, item: ExternBlock) -> Frag {
+    let mut builder = Builder::new(fmt);
+    if let Some(token) = item.unsafe_token() {
+        builder.push_token(token, Word);
+    }
+    builder.push(format_abi(fmt, item.abi().unwrap()));
+    let list = item.extern_item_list().unwrap();
+    builder.push(format_item_block(
+        fmt,
+        &list,
+        list.extern_items().map(|i| i.syntax().clone()),
+    ));
+    builder.into_frag()
+}
+
+/// `mod name;` or `mod name { items }`
+fn format_module(fmt: &Formatter, item: Module) -> Frag {
+    let mut builder = Builder::new(fmt);
+    let name = format_name(fmt, item.name().unwrap());
+    builder.push(format_item_head(
+        fmt,
+        item.syntax(),
+        item.mod_token().unwrap(),
+        name,
+        None,
+    ));
+    match item.item_list() {
+        Some(list) => builder.push(format_item_list(fmt, list)),
+        None => builder.push_separator(SyntaxKind::SEMICOLON),
     }
     builder.into_frag()
+}
+
+/// `impl<T> Trait for Type where ... { items }`, also `unsafe impl`, `impl !Trait for Type`
+fn format_impl(fmt: &Formatter, item: Impl) -> Frag {
+    let mut builder = Builder::new(fmt);
+    let impl_token = item.impl_token().unwrap();
+    let impl_start = impl_token.text_range().start();
+    let generics = item.generic_param_list();
+    builder.push(format_item_head(
+        fmt,
+        item.syntax(),
+        impl_token,
+        Frag::empty(),
+        generics,
+    ));
+    let self_ty = item.self_ty().unwrap();
+    if let Some(trait_) = item.trait_() {
+        // `const` of `impl const Trait`; in front of the generics, it is a qualifier
+        if let Some(token) = item
+            .const_token()
+            .filter(|t| t.text_range().start() > impl_start)
+        {
+            builder.push_keyword(token);
+        }
+        if let Some(token) = item.excl_token() {
+            builder.push(fmt.token_with_edges(token, Word, Tight));
+        }
+        builder.push(format_type(fmt, trait_));
+        builder.push_keyword(item.for_token().unwrap());
+    }
+    builder.push(format_type(fmt, self_ty));
+    push_where_clause(fmt, &mut builder, item.where_clause(), false);
+    builder.push(format_assoc_item_list(fmt, item.assoc_item_list().unwrap()));
+    builder.into_frag()
+}
+
+/// `trait Name<T>: Bounds where ... { items }`
+fn format_trait(fmt: &Formatter, item: Trait) -> Frag {
+    if item.eq_token().is_some() {
+        panic!("not supported yet: a trait alias {item:?}");
+    }
+    let mut builder = Builder::new(fmt);
+    builder.push(format_named_item_head(
+        fmt,
+        &item,
+        item.trait_token().unwrap(),
+    ));
+    if let Some(colon) = item.colon_token() {
+        let block_follows = item.where_clause().is_none();
+        let bounds = item.type_bound_list().unwrap();
+        builder.push(format_supertraits(fmt, colon, bounds, block_follows));
+    }
+    push_where_clause(fmt, &mut builder, item.where_clause(), false);
+    builder.push(format_assoc_item_list(fmt, item.assoc_item_list().unwrap()));
+    builder.into_frag()
+}
+
+/// `: Type = value;` of a constant or a static; the value stays on the line of `=` or moves to the
+/// next line, indented
+fn push_typed_value(
+    fmt: &Formatter,
+    builder: &mut Builder,
+    colon: Option<SyntaxToken>,
+    ty: Option<Type>,
+    eq: Option<SyntaxToken>,
+    value: Option<Expr>,
+) {
+    if let Some(ty) = ty {
+        builder.push_token(colon.unwrap(), Comma);
+        builder.push(format_type(fmt, ty));
+    }
+    if let Some(value) = value {
+        builder.push_token(eq.unwrap(), Operator);
+        builder.push(fmt.same_or_indented_line(format_expr(fmt, value)));
+    }
+    builder.push_separator(SyntaxKind::SEMICOLON);
+}
+
+/// `const NAME: Type = value;` or `const _: Type = value;`
+fn format_const(fmt: &Formatter, item: Const) -> Frag {
+    let mut builder = Builder::new(fmt);
+    let name = match (item.name(), item.underscore_token()) {
+        (Some(name), _) => format_name(fmt, name),
+        (None, Some(token)) => fmt.token(token, Word),
+        (None, None) => panic!("{item:?}"),
+    };
+    let keyword = item.const_token().unwrap();
+    builder.push(format_item_head(
+        fmt,
+        item.syntax(),
+        keyword,
+        name,
+        item.generic_param_list(),
+    ));
+    push_typed_value(
+        fmt,
+        &mut builder,
+        item.colon_token(),
+        item.ty(),
+        item.eq_token(),
+        item.body(),
+    );
+    builder.into_frag()
+}
+
+/// `static NAME: Type = value;` or `static mut NAME: Type = value;`
+fn format_static(fmt: &Formatter, item: Static) -> Frag {
+    let mut name = Builder::new(fmt);
+    if let Some(token) = item.mut_token() {
+        name.push_token(token, Word);
+    }
+    name.push(format_name(fmt, item.name().unwrap()));
+    let keyword = item.static_token().unwrap();
+    let mut builder = Builder::new(fmt);
+    builder.push(format_item_head(
+        fmt,
+        item.syntax(),
+        keyword,
+        name.into_frag(),
+        None,
+    ));
+    push_typed_value(
+        fmt,
+        &mut builder,
+        item.colon_token(),
+        item.ty(),
+        item.eq_token(),
+        item.body(),
+    );
+    builder.into_frag()
+}
+
+/// `type Name<T>: Bounds = Type;`; a `where` clause in front of `=` ends with a line break, one
+/// after the type precedes `;`. The type stays on the line of `=` or moves to the next line, indented.
+fn format_type_alias(fmt: &Formatter, item: TypeAlias) -> Frag {
+    let mut builder = Builder::new(fmt);
+    builder.push(format_named_item_head(
+        fmt,
+        &item,
+        item.type_token().unwrap(),
+    ));
+    if let Some(colon) = item.colon_token() {
+        builder.push_token(colon, Comma);
+        builder.push(format_type_bound_list(fmt, item.type_bound_list().unwrap()));
+    }
+    let where_clause = item.where_clause();
+    let where_first = where_clause.as_ref().is_some_and(|clause| {
+        item.eq_token()
+            .is_none_or(|eq| clause.syntax().text_range().start() < eq.text_range().start())
+    });
+    if where_first {
+        push_where_clause(fmt, &mut builder, where_clause.clone(), item.ty().is_none());
+    }
+    if let Some(ty) = item.ty() {
+        let eq = fmt.token(item.eq_token().unwrap(), Operator);
+        let ty = format_type(fmt, ty);
+        if where_clause.is_some() && !where_first {
+            // With a trailing `where` clause, `= Type` is on its own indented line (Style Guide)
+            let mut rhs = Builder::new(fmt);
+            rhs.push(eq);
+            rhs.push(ty);
+            builder.push(fmt.indented_line(rhs.into_frag()));
+        } else {
+            builder.push(eq);
+            builder.push(fmt.same_or_indented_line(ty));
+        }
+    }
+    if !where_first {
+        push_where_clause(fmt, &mut builder, where_clause, true);
+    }
+    builder.push_separator(SyntaxKind::SEMICOLON);
+    builder.into_frag()
+}
+
+/// Whether the attribute is `#[rustfmt::skip]`
+fn is_rustfmt_skip(attr: &Attr) -> bool {
+    matches!(attr.meta(), Some(Meta::PathMeta(meta)) if meta.path().is_some_and(|p| p.syntax().text() == "rustfmt::skip"))
+}
+
+/// An item preceded by its attributes, each on its own line; an item with `#[rustfmt::skip]` is kept
+/// as it is in the source, from its first attribute on
+pub(super) fn format_item(fmt: &Formatter, item: Item) -> Frag {
+    if let Some(attr) = item.attrs().next()
+        && item.attrs().any(|attr| is_rustfmt_skip(&attr))
+    {
+        let first = attr.syntax().first_token().unwrap();
+        let last = item.syntax().last_token().unwrap();
+        return fmt.verbatim_range(&first, &last, Word, Word);
+    }
+    format_with_attrs(fmt, &item, false, || match item.clone() {
+        Item::Fn(item) => format_fn(fmt, item),
+        Item::Struct(item) => format_struct(fmt, item),
+        Item::Enum(item) => format_enum(fmt, item),
+        Item::Use(item) => format_use(fmt, item),
+        Item::Module(item) => format_module(fmt, item),
+        Item::Impl(item) => format_impl(fmt, item),
+        Item::Trait(item) => format_trait(fmt, item),
+        Item::Const(item) => format_const(fmt, item),
+        Item::Static(item) => format_static(fmt, item),
+        Item::TypeAlias(item) => format_type_alias(fmt, item),
+        Item::ExternBlock(item) => format_extern_block(fmt, item),
+        x => panic!("not supported yet: {x:?}"),
+    })
 }

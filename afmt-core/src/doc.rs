@@ -12,6 +12,21 @@ impl DocId {
     }
 }
 
+#[derive(Debug, Clone, Copy, Ord, PartialOrd, Eq, PartialEq)]
+pub(crate) struct Cost(u32);
+
+impl Cost {
+    #[inline]
+    pub fn new(value: u32) -> Self {
+        Cost(value)
+    }
+
+    #[inline]
+    pub fn saturating_add(self, other: Cost) -> Self {
+        Cost::new(self.0.saturating_add(other.0))
+    }
+}
+
 pub(crate) enum DocNode {
     Token(SyntaxToken),
     Text(String),
@@ -25,9 +40,14 @@ pub(crate) enum DocNode {
     /// Only layouts of the inner doc that span more than one line
     MultiLine(DocId),
     /// The inner doc should stay on one line if possible
-    /// If broken, it increases "splits" in resolver that has a higher priority
-    /// than number of lines
-    KeepTogether(DocId),
+    /// If broken, it adds into costs
+    KeepTogether(DocId, Cost),
+    /// Every layout of the inner doc costs a split: it is used only when the layouts without it are
+    /// worse, e.g. a layout the Style Guide accepts only as a fallback
+    Dispreferred(DocId, Cost),
+    /// Only layouts of the inner doc whose last line ends at most at the indentation of a nested line
+    /// (`indent + indent_width`), e.g. a short chain root that the next element may follow: `x.baz?`
+    ShortLastLine(DocId),
 }
 
 pub(crate) struct DocArena {
@@ -94,7 +114,9 @@ impl DocArena {
                 DocNode::Align(_) => ("Align".into(), "parallelogram", "aquamarine"),
                 DocNode::Flat(_) => ("Flat".into(), "hexagon", "pink"),
                 DocNode::MultiLine(_) => ("MultiLine".into(), "octagon", "plum"),
-                DocNode::KeepTogether(_) => ("KeepTogether".into(), "doubleoctagon", "khaki"),
+                DocNode::KeepTogether(_, cost) => (format!("KeepTogether {}", cost.0), "doubleoctagon", "khaki"),
+                DocNode::Dispreferred(_, cost) => (format!("Dispreferred {}", cost.0), "tripleoctagon", "khaki"),
+                DocNode::ShortLastLine(_) => ("ShortLastLine".into(), "house", "lightpink"),
             };
             let label = label
                 .replace('\\', "\\\\")
@@ -114,7 +136,9 @@ impl DocArena {
                 | DocNode::Align(d)
                 | DocNode::Flat(d)
                 | DocNode::MultiLine(d)
-                | DocNode::KeepTogether(d) => vec![(*d, "")],
+                | DocNode::KeepTogether(d, _)
+                | DocNode::Dispreferred(d, _)
+                | DocNode::ShortLastLine(d) => vec![(*d, "")],
             };
             for (child, edge_label) in &children {
                 write!(out, "    n{} -> n{}", doc.0, child.0).unwrap();
@@ -168,8 +192,20 @@ impl DocArena {
                 make_ident();
                 println!(")");
             }
-            DocNode::KeepTogether(d) => {
-                println!("KeepTogether(");
+            DocNode::Dispreferred(d, cost) => {
+                println!("Dispreferred[{}](", cost.0);
+                self.dump_helper(*d, indent + 1);
+                make_ident();
+                println!(")");
+            }
+            DocNode::KeepTogether(d, cost) => {
+                println!("KeepTogether[{}](", cost.0);
+                self.dump_helper(*d, indent + 1);
+                make_ident();
+                println!(")");
+            }
+            DocNode::ShortLastLine(d) => {
+                println!("ShortLastLine(");
                 self.dump_helper(*d, indent + 1);
                 make_ident();
                 println!(")");

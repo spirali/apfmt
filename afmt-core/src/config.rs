@@ -5,6 +5,16 @@ pub struct Config {
     pub indent_width: u32,
     pub blank_lines_upper_bound: u32,
     pub fn_call_width: u32,
+    /// Maximal width of a chain of fields and method calls put on a single line: `a.b().c()`
+    pub chain_width: u32,
+    /// Maximal width of the elements of an array literal put on a single line
+    pub array_width: u32,
+    /// Maximal width of the fields of a struct literal or a struct pattern put on a single line:
+    /// `S { a, b }`
+    pub struct_lit_width: u32,
+    /// Maximal width of the arguments of a function-like attribute put on a single line:
+    /// `#[derive(A, B)]`
+    pub attr_fn_like_width: u32,
     /// Maximal width of the fields of an enum struct variant put on a single line: `A { x: u32 }`
     pub struct_variant_width: u32,
     /// Maximal width of `if a { b } else { c }` put on a single line
@@ -28,6 +38,10 @@ impl Default for Config {
             indent_width: 4,
             blank_lines_upper_bound: 1,
             fn_call_width: 60,
+            chain_width: 60,
+            array_width: 60,
+            struct_lit_width: 18,
+            attr_fn_like_width: 70,
             struct_variant_width: 35,
             single_line_if_else_max_width: 50,
             short_array_element_width_threshold: 10,

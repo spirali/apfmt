@@ -236,7 +236,7 @@ impl<'a> Builder<'a> {
     /// Pushes the comments after the cursor if nothing but comments follows on its line, e.g. `( // c`
     /// or `{ /* c */`; a comment followed by code on the line is left for that code. Returns whether it
     /// pushed any; the code after them starts on a new line. Used at the start of a block or a broken
-    /// list, placed with `Formatter::body_after_opener` (taxonomy: StayOnOpenerLine).
+    /// list, placed with `Formatter::body_after_opener`.
     pub fn push_comments_ending_line(&mut self) -> bool {
         let ends_line = self.frag.cursor.as_ref().is_some_and(|c| rest_of_line_is_comments(c, None));
         ends_line && self.push_trivia(None, TriviaStop::OwnLine)

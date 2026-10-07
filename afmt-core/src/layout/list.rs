@@ -1,8 +1,8 @@
 //! Delimited, comma-separated lists
 
+use crate::comments::{is_line_comment, own_line_comment_follows, trivia_from};
 use crate::formatter::Edge::{BraceClose, BraceOpen, Close, Comma, Open, Word};
 use crate::formatter::{Builder, Edge, Formatter, Frag};
-use crate::comments::{own_line_comment_follows, trivia_from};
 use crate::utils::with_is_last;
 use ra_ap_syntax::{AstNode, SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken};
 
@@ -15,21 +15,44 @@ pub(crate) struct ListItem<T = Frag> {
     pub comma: Option<SyntaxToken>,
     /// The item is alone on its line in a FillList (in the other layouts, it is placed as any item)
     pub own_line: bool,
+    /// Whether the item may overflow as the last item of the list
+    pub overflow: Overflow,
+}
+
+/// Whether and how the last item of a list may overflow: it starts on the line
+/// of the opening delimiter, after the other items, and ends on the line of the closing one
+/// (`f(if a {` / `...` / `})`, `f(a, |x| {` / `...` / `})`); only a combinable expression may
+#[derive(Clone, Default)]
+pub(crate) enum Overflow {
+    #[default]
+    Never,
+    /// With these layouts of the item; the list layout with fewer lines wins
+    With(Frag),
+    /// With these layouts of the item, preferred whenever it fits: the broken layouts of the list
+    /// cost a split (Style Guide: closures)
+    Preferred(Frag),
 }
 
 impl<T> ListItem<T> {
-    /// The item formatted by `format`, with the same comma and `own_line`
+    /// The item formatted by `format`, with the same comma, `own_line` and `overflow`
     pub fn map(&self, format: impl FnOnce(&T) -> Frag) -> ListItem {
         ListItem {
             frag: format(&self.frag),
             comma: self.comma.clone(),
             own_line: self.own_line,
+            overflow: self.overflow.clone(),
         }
     }
 
     /// If `own_line`, the item is alone on its line in a FillList
     pub fn own_line_if(mut self, own_line: bool) -> Self {
         self.own_line = own_line;
+        self
+    }
+
+    /// How the item may overflow as the last item of the list
+    pub fn with_overflow(mut self, overflow: Overflow) -> Self {
+        self.overflow = overflow;
         self
     }
 }
@@ -49,6 +72,7 @@ pub(crate) fn list_items<T>(
                         frag,
                         comma: None,
                         own_line: false,
+                        overflow: Overflow::Never,
                     });
                 }
             }
@@ -132,7 +156,29 @@ fn fill_list(fmt: &Formatter, items: &[ListItem], open: Option<SyntaxToken>) -> 
     fmt.body_after_opener(line_comments, builder.into_frag())
 }
 
-/// One item per line with a trailing comma (unless it is `Never`), indented; `open` is the opening
+/// One item per line, aligned to the column after `open` (visual indentation), without a trailing
+/// comma; the closing delimiter follows the last item: `|a: A,` / ` b: B|`. Only for closure
+/// parameters, an explicit exception to the Style Guide (see CLAUDE.md).
+fn aligned_list(fmt: &Formatter, items: &[ListItem], open: Option<SyntaxToken>) -> Frag {
+    let mut builder = Builder::with_cursor(fmt, open);
+    builder.flush_trivia();
+    for (item, is_last) in with_is_last(items) {
+        builder.push(item.frag.clone());
+        if is_last {
+            builder.skip_separator(SyntaxKind::COMMA);
+            break;
+        }
+        builder.push_separator(SyntaxKind::COMMA);
+        builder.flush_trivia();
+        builder.push_newline();
+    }
+    builder.flush_trivia();
+    // A line comment would swallow the closing delimiter
+    builder.end_line_after_line_comment();
+    fmt.align(builder.into_frag())
+}
+
+/// One item per line with a trailing comma (unless it is `Never` or `Omitted`), indented; `open` is the opening
 /// delimiter and the comments following it are part of the list. With `keep_blank_lines`, blank lines between items are kept
 /// (up to `blank_lines_upper_bound`), e.g. between struct fields.
 fn vertical_list(
@@ -147,12 +193,19 @@ fn vertical_list(
     builder.push_leading_comments();
     for (item, is_last) in with_is_last(items) {
         builder.push(item.frag.clone());
+        let skip = matches!(
+            trailing,
+            TrailingSeparator::Never | TrailingSeparator::Omitted
+        );
+        if is_last && skip {
+            builder.skip_separator(SyntaxKind::COMMA);
+        } else {
+            builder.push_separator(SyntaxKind::COMMA);
+        }
         if is_last && trailing == TrailingSeparator::Never {
             // The token after the list follows the last item on its line: `T: Clone;`
-            builder.skip_separator(SyntaxKind::COMMA);
             break;
         }
-        builder.push_separator(SyntaxKind::COMMA);
         // Blank lines in front of the closing delimiter are dropped
         if keep_blank_lines && !is_last {
             builder.flush_trivia_and_end_line();
@@ -178,6 +231,10 @@ enum DelimiterKind {
     Parens,
     /// `< >`: as `Parens`
     Angles,
+    /// `[ ]`: as `Parens`
+    Brackets,
+    /// `| |` of closure parameters: as `Parens`
+    Pipes,
     /// `{ }`: a single-line list has spaces inside, comments of an empty list go on their own
     /// indented lines
     Braces,
@@ -203,6 +260,26 @@ impl Delimiters {
             SyntaxKind::L_ANGLE,
             SyntaxKind::R_ANGLE,
             DelimiterKind::Angles,
+        )
+    }
+
+    /// The `[` and `]` of the list `node` (an array, a slice pattern, an attribute)
+    pub fn brackets_of(node: &SyntaxNode) -> Self {
+        Self::of(
+            node,
+            SyntaxKind::L_BRACK,
+            SyntaxKind::R_BRACK,
+            DelimiterKind::Brackets,
+        )
+    }
+
+    /// The `|` and `|` of the closure parameters `node`
+    pub fn pipes_of(node: &SyntaxNode) -> Self {
+        Self::of(
+            node,
+            SyntaxKind::PIPE,
+            SyntaxKind::PIPE,
+            DelimiterKind::Pipes,
         )
     }
 
@@ -243,9 +320,11 @@ impl Delimiters {
 
     fn edges(&self) -> (Edge, Edge) {
         match self.kind {
-            DelimiterKind::Parens | DelimiterKind::Angles | DelimiterKind::TightBraces => {
-                (Open, Close)
-            }
+            DelimiterKind::Parens
+            | DelimiterKind::Angles
+            | DelimiterKind::Brackets
+            | DelimiterKind::Pipes
+            | DelimiterKind::TightBraces => (Open, Close),
             DelimiterKind::Braces => (BraceOpen, BraceClose),
         }
     }
@@ -254,11 +333,15 @@ impl Delimiters {
     /// the list layouts do (they start with the opening delimiter as their cursor)
     pub fn wrap_body(&self, fmt: &Formatter, inner: Frag) -> Frag {
         let (open_edge, _) = self.edges();
-        self.surround(fmt, fmt.token_without_cursor(self.open.clone(), open_edge), inner)
+        self.surround(
+            fmt,
+            fmt.token_without_cursor(self.open.clone(), open_edge),
+            inner,
+        )
     }
 
-    /// `inner` between the delimiters, e.g. `(a + b)`, `<T as Trait>`, `{ x }` (taxonomy: Enclosed,
-    /// Braced); the comments following the opening delimiter are placed in front of `inner`
+    /// `inner` between the delimiters, e.g. `(a + b)`, `<T as Trait>`, `{ x }`;
+    /// the comments following the opening delimiter are placed in front of `inner`
     pub fn enclose(&self, fmt: &Formatter, inner: Frag) -> Frag {
         let (open_edge, _) = self.edges();
         self.surround(fmt, fmt.token(self.open.clone(), open_edge), inner)
@@ -299,21 +382,49 @@ impl Delimiters {
         self.wrap_body(fmt, fmt.body_after_opener(line_comments, body.into_frag()))
     }
 
+    /// `{`, then `lines`, each on its own line and block indented, then `}`;
+    /// the blank lines of the source between the lines are kept, those after `{` and
+    /// in front of `}` dropped. Without lines, the empty container (see `format_empty`).
+    pub fn format_block(&self, fmt: &Formatter, lines: impl IntoIterator<Item = Frag>) -> Frag {
+        let mut lines = lines.into_iter().peekable();
+        if lines.peek().is_none() {
+            return self.format_empty(fmt);
+        }
+        // Tokens following `{` belong to the body, so they are nested with it
+        let mut builder = Builder::with_cursor(fmt, Some(self.open.clone()));
+        let line_comments = builder.push_comments_ending_line();
+        builder.push_comments();
+        for line in lines {
+            builder.push_on_new_line(line);
+        }
+        builder.flush_trivia();
+        builder.push_newline();
+        self.wrap_body(
+            fmt,
+            fmt.body_after_opener(line_comments, builder.into_frag()),
+        )
+    }
+
     /// An own-line comment after the opening delimiter allows only broken layouts
     fn has_own_line_comment(&self) -> bool {
         own_line_comment_follows(&self.open)
     }
+
+    /// Whether a line comment is between the last item and the closing delimiter: `a, // c` / `)`
+    fn has_line_comment_before_close(&self) -> bool {
+        std::iter::successors(self.close.prev_token(), |t| t.prev_token())
+            .take_while(|t| t.kind().is_trivia() || t.kind() == SyntaxKind::COMMA)
+            .any(|t| is_line_comment(&t))
+    }
 }
 
 /// The layouts a delimited list may take, see `delimited_list`. Start with `tall` or `fixed_vertical`
-/// and refine it with `fill_if`, `broken_if`, `hug_if` and `trailing_separator`.
+/// and refine it with `fill_if`, `broken_if` and `trailing_separator`. The last item may overflow if
+/// it allows it, see `Overflow`.
 pub(crate) struct ListLayout {
     /// The items on a single line; `None` allows only the broken layout
     flat: Option<FlatLimit>,
     broken: BrokenList,
-    /// The only item may overflow: it starts on the line of the opening delimiter and ends on the line
-    /// of the closing one (`f(if a {` / `...` / `})`); it has to be a combinable expression
-    hug: bool,
     trailing: TrailingSeparator,
 }
 
@@ -325,7 +436,6 @@ impl ListLayout {
             broken: BrokenList::Vertical {
                 keep_blank_lines: false,
             },
-            hug: false,
             trailing: TrailingSeparator::IfVertical,
         }
     }
@@ -337,9 +447,14 @@ impl ListLayout {
             broken: BrokenList::Vertical {
                 keep_blank_lines: true,
             },
-            hug: false,
             trailing: TrailingSeparator::IfVertical,
         }
+    }
+
+    /// The broken layout has one item per line aligned to the opening delimiter, see `aligned_list`
+    pub fn aligned(mut self) -> Self {
+        self.broken = BrokenList::Aligned;
+        self
     }
 
     /// If `fill`, the broken layout has as many items per line as fit instead of one per line
@@ -355,12 +470,6 @@ impl ListLayout {
         if broken {
             self.flat = None;
         }
-        self
-    }
-
-    /// If `hug`, the only item may overflow (see `ListLayout::hug`)
-    pub fn hug_if(mut self, hug: bool) -> Self {
-        self.hug = hug;
         self
     }
 
@@ -381,6 +490,9 @@ pub(crate) enum TrailingSeparator {
     /// Never; in a vertical layout, the token after the list follows the last item on its line, e.g.
     /// the `;` after a `where` clause: `    T: Clone;`
     Never,
+    /// Never, because no item may follow the last one; in a vertical layout, the closing delimiter is
+    /// on its own line, e.g. after `..` in a struct pattern: `    ..` / `}`
+    Omitted,
 }
 
 /// When the items may be put on a single line
@@ -392,6 +504,16 @@ pub(crate) enum FlatLimit {
     Within(u32),
 }
 
+impl FlatLimit {
+    /// `frag` restricted to a single line, if its width allows it
+    pub fn apply(self, fmt: &Formatter, frag: Frag) -> Option<Frag> {
+        match self {
+            FlatLimit::MaxWidth => Some(fmt.flat(frag)),
+            FlatLimit::Within(width) => fmt.flat_within(frag, width),
+        }
+    }
+}
+
 /// The layout of a list that does not fit on a single line
 #[derive(Clone, Copy)]
 enum BrokenList {
@@ -399,6 +521,8 @@ enum BrokenList {
     Vertical { keep_blank_lines: bool },
     /// As many items per line as fit, except items with `own_line`, see `fill_list`
     Fill,
+    /// One item per line, visually aligned, see `aligned_list`
+    Aligned,
 }
 
 /// The items on a single line, without the delimiters, if `limit` allows it and no own-line comment
@@ -414,14 +538,11 @@ pub(crate) fn flat_layout(
         return None;
     }
     let flat = flat_list(fmt, items, Some(delims.open.clone()), trailing);
-    match limit {
-        FlatLimit::MaxWidth => Some(fmt.flat(flat)),
-        FlatLimit::Within(width) => fmt.flat_within(flat, width),
-    }
+    limit.apply(fmt, flat)
 }
 
-/// Items following a keyword, always one per line and indented: `where` / `    T: Clone,` (taxonomy:
-/// WhereClause). The list ends with a line break, so the next token starts a new line (`{`), unless
+/// Items following a keyword, always one per line and indented: `where` / `    T: Clone,`.
+/// The list ends with a line break, so the next token starts a new line (`{`), unless
 /// `trailing` is `Never`: then it follows the last item, which has no comma (`    T: Clone;`).
 pub(crate) fn keyword_list(
     fmt: &Formatter,
@@ -435,6 +556,37 @@ pub(crate) fn keyword_list(
     builder.into_frag()
 }
 
+/// The last item overflows with its layouts `last_layouts` (see `Overflow`); the items in front of it
+/// are on the line of the opening delimiter, within the width of `limit` (as rustfmt does)
+fn overflow_layout(
+    fmt: &Formatter,
+    delims: &Delimiters,
+    items: &[ListItem],
+    last_layouts: &Frag,
+    limit: FlatLimit,
+) -> Option<Frag> {
+    let rest = &items[..items.len() - 1];
+    let mut overflow = if rest.is_empty() {
+        Builder::with_cursor(fmt, Some(delims.open.clone()))
+    } else {
+        let mut line = Builder::new(fmt);
+        line.push(flat_layout(
+            fmt,
+            delims,
+            rest,
+            limit,
+            TrailingSeparator::Required,
+        )?);
+        line
+    };
+    overflow.flush_trivia();
+    overflow.push(last_layouts.clone());
+    overflow.skip_separator(SyntaxKind::COMMA);
+    overflow.flush_trivia();
+    // Only an item that is broken overflows; on a single line, it is the flat layout
+    Some(fmt.multi_line(overflow.into_frag()))
+}
+
 /// A delimited list, `(a, b)`, `<A, B>` or `{ a, b }`, in the layouts `layout` allows
 pub(crate) fn delimited_list(
     fmt: &Formatter,
@@ -446,29 +598,35 @@ pub(crate) fn delimited_list(
         return delims.format_empty(fmt);
     }
     let open = Some(delims.open.clone());
-    let mut layouts = match layout.broken {
+    let mut broken = match layout.broken {
         BrokenList::Vertical { keep_blank_lines } => {
             vertical_list(fmt, items, open.clone(), keep_blank_lines, layout.trailing)
         }
         BrokenList::Fill => fill_list(fmt, items, open.clone()),
+        BrokenList::Aligned => aligned_list(fmt, items, open.clone()),
     };
+    let (last_layouts, broken_is_fallback) = match &items.last().unwrap().overflow {
+        Overflow::Never => (None, false),
+        Overflow::With(layouts) => (Some(layouts), false),
+        Overflow::Preferred(layouts) => (Some(layouts), true),
+    };
+    // A line comment after the last item would end the line in front of the closing delimiter
+    let overflow = last_layouts
+        .filter(|_| !delims.has_own_line_comment() && !delims.has_line_comment_before_close())
+        .and_then(|last_layouts| {
+            let limit = layout.flat.unwrap_or(FlatLimit::MaxWidth);
+            overflow_layout(fmt, delims, items, last_layouts, limit)
+        });
+    // With a preferred overflow, the broken layouts are used only when it does not fit
+    if overflow.is_some() && broken_is_fallback {
+        broken = fmt.dispreferred(broken);
+    }
+    let mut layouts = fmt.alt_opt(broken, overflow);
     if let Some(limit) = layout.flat {
         layouts = fmt.alt_opt(
             layouts,
             flat_layout(fmt, delims, items, limit, layout.trailing),
         );
-    }
-    if layout.hug && !delims.has_own_line_comment() {
-        let [item] = items else {
-            panic!("only a single item can overflow");
-        };
-        let mut overflow = Builder::with_cursor(fmt, open);
-        overflow.flush_trivia();
-        overflow.push(item.frag.clone());
-        overflow.skip_separator(SyntaxKind::COMMA);
-        overflow.flush_trivia();
-        // Only an item that is broken overflows; on a single line, it is the flat layout
-        layouts = fmt.alt_frag(layouts, fmt.multi_line(overflow.into_frag()));
     }
     delims.wrap_body(fmt, layouts)
 }
