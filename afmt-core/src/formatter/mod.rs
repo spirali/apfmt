@@ -263,11 +263,14 @@ impl<'a> Formatter<'a> {
     }
 
     /// Width of the doc on a single line, the narrowest of its alternatives; `None` if it cannot be on
-    /// a single line
+    /// a single line, also because of a text with a line break (a multi-line string literal)
     fn flat_width_doc(&self, doc_id: DocId) -> Option<usize> {
+        let text_width = |text: &str| {
+            (!text.contains('\n')).then(|| unicode_width::UnicodeWidthStr::width(text))
+        };
         match self.doc_arena.borrow().get_node(doc_id) {
-            DocNode::Token(token) => Some(unicode_width::UnicodeWidthStr::width(token.text())),
-            DocNode::Text(t) => Some(unicode_width::UnicodeWidthStr::width(t.as_str())),
+            DocNode::Token(token) => text_width(token.text()),
+            DocNode::Text(t) => text_width(t),
             Newline | DocNode::Nest(_) | DocNode::Align(_) => None,
             DocNode::Flat(d) => self.flat_width_doc(*d),
             DocNode::MultiLine(_) => None,

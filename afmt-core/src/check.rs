@@ -1,4 +1,4 @@
-use ra_ap_syntax::ast::{HasVisibility, Use, UseTree};
+use ra_ap_syntax::ast::{HasAttrs, HasVisibility, Use, UseTree};
 use ra_ap_syntax::{
     AstNode, Direction, NodeOrToken, SourceFile, SyntaxKind, SyntaxNode, SyntaxToken, TextSize,
     WalkEvent,
@@ -118,14 +118,16 @@ fn code_text(node: &SyntaxNode) -> String {
         .collect()
 }
 
-/// `pub use tree` with the tree in its canonical form (see `canonical_use_tree`); empty if the item
-/// imports nothing
+/// `#[attr] pub use tree` with the tree in its canonical form (see `canonical_use_tree`); empty if the
+/// item imports nothing and has no attributes (an item with attributes is never removed)
 fn canonical_use(item: &Use) -> String {
-    let Some(tree) = item.use_tree().as_ref().and_then(canonical_use_tree) else {
+    let attrs: Vec<String> = item.attrs().map(|a| code_text(a.syntax())).collect();
+    let tree = item.use_tree().as_ref().and_then(canonical_use_tree);
+    let Some(tree) = tree.or_else(|| (!attrs.is_empty()).then(|| "{}".to_string())) else {
         return String::new();
     };
     let visibility = item.visibility().map(|v| code_text(v.syntax()));
-    format!("{} use {tree}", visibility.unwrap_or_default())
+    format!("{} {} use {tree}", attrs.join(" "), visibility.unwrap_or_default())
 }
 
 /// The tree in a normal form: lists sorted, empty trees removed and `a::{b}` written as `a::b` (except
@@ -278,6 +280,14 @@ mod tests {
         assert!(error.contains("Use"), "{error}");
         let error = check_result_test("use a::{self};", "use a;").unwrap_err();
         assert!(error.contains("Use"), "{error}");
+    }
+
+    #[test]
+    fn dropped_import_attribute_fails() {
+        let error = check_result_test("#[cfg(test)] use a;", "use a;").unwrap_err();
+        assert!(error.contains("cfg(test)"), "{error}");
+        let error = check_result_test("#[cfg(test)] use a::{};", "").unwrap_err();
+        assert!(error.contains("cfg(test)"), "{error}");
     }
 
     #[test]

@@ -44,13 +44,23 @@ fn process_error(error: afmt_core::Error) {
     };
 }
 
+/// Reports an I/O error on stderr and exits with code 1
+fn exit_with_io_error(what: &str, error: std::io::Error) -> ! {
+    eprintln!("afmt: {what}: {error}");
+    std::process::exit(1);
+}
+
 fn main() {
     let cli = Cli::parse();
     let code = match &cli.file {
-        Some(path) => std::fs::read_to_string(path).unwrap(),
+        Some(path) => std::fs::read_to_string(path).unwrap_or_else(|error| {
+            exit_with_io_error(&format!("cannot read {}", path.display()), error)
+        }),
         None => {
             let mut code = String::new();
-            std::io::stdin().read_to_string(&mut code).unwrap();
+            if let Err(error) = std::io::stdin().read_to_string(&mut code) {
+                exit_with_io_error("cannot read the standard input", error);
+            }
             code
         }
     };
@@ -72,5 +82,12 @@ fn main() {
             std::process::exit(1);
         }
     };
-    println!("{}", out);
+    // An empty file stays empty, otherwise the output ends with a line break
+    let out = if out.is_empty() { out } else { out + "\n" };
+    // Not `print!`, which panics when stdout is closed (e.g. `afmt file.rs | head`)
+    if let Err(error) = std::io::stdout().write_all(out.as_bytes())
+        && error.kind() != std::io::ErrorKind::BrokenPipe
+    {
+        exit_with_io_error("cannot write the output", error);
+    }
 }

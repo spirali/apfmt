@@ -272,18 +272,26 @@ DIFF_STYLE_RIGHT = "on #1d3a1d"
 EMPTY_STYLE = "on grey15"
 
 
-def highlight_lines(code: str) -> list[Text]:
-    syntax = Syntax("", "rust", theme="ansi_dark")
-    lines = syntax.highlight(code).split("\n", allow_blank=True)
+def split_lines(code: str) -> list[str]:
+    """The lines of `code` split on "\\n" only, like `highlight_lines` (`str.splitlines` also splits on
+    `\\r`, form feeds, `\\u2028`, ...)"""
+    lines = code.split("\n")
     # a trailing newline produces one extra empty line
-    if code.endswith("\n") and lines:
+    if code.endswith("\n"):
         lines = lines[:-1]
     return lines
 
 
+def highlight_lines(code: str) -> list[Text]:
+    syntax = Syntax("", "rust", theme="ansi_dark")
+    lines = syntax.highlight(code).split("\n", allow_blank=True)
+    # the highlighted text ends with an extra empty line; one line per line of `split_lines`
+    return lines[: len(split_lines(code))]
+
+
 def side_by_side(title: str, left: str, right: str, raw: bool) -> Table:
-    left_lines = left.splitlines()
-    right_lines = right.splitlines()
+    left_lines = split_lines(left)
+    right_lines = split_lines(right)
     left_hl = highlight_lines(left)
     right_hl = highlight_lines(right)
 

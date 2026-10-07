@@ -2,7 +2,7 @@ use super::Formatter;
 use crate::comments::own_line_comment_follows;
 use super::frag::{Branch, Branches, Edge, Frag, compute_space};
 use crate::comments::TriviaStop;
-use crate::doc::{DocId, EMPTY_DOC, NEWLINE_DOC, NEWLINE_OR_SPACE_DOC};
+use crate::doc::{DocId, EMPTY_DOC, EMPTYLINE_DOC, NEWLINE_DOC, NEWLINE_OR_SPACE_DOC};
 use crate::formatter::Edge::{BraceClose, BraceOpen, Break, Close, LineStart, Nothing};
 use ra_ap_syntax::SyntaxToken;
 
@@ -64,6 +64,11 @@ impl<'a> Builder<'a> {
 
     pub fn push_newline(&mut self) {
         self.push_line_break_if(NEWLINE_DOC, |_| true);
+    }
+
+    /// Ends the line and leaves a blank line after it
+    pub fn push_blank_line(&mut self) {
+        self.push_line_break_if(EMPTYLINE_DOC, |_| true);
     }
 
     /// Pushes `frag` on a new line; the first item of the builder stays where it is.

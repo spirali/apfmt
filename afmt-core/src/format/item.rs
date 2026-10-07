@@ -228,10 +228,9 @@ fn format_struct(fmt: &Formatter, item: Struct) -> Frag {
 /// `{ a: A, b: B }` of a struct variant, which is put on a single line or one field per line together
 /// with the other struct variants of the enum
 struct StructVariantFields {
+    list: RecordFieldList,
     delims: Delimiters,
     fields: Vec<ListItem>,
-    /// The fields on a single line, if they fit within `struct_variant_width`
-    single_line: Option<Frag>,
 }
 
 enum VariantFields {
@@ -251,23 +250,32 @@ struct VariantParts {
 fn struct_variant_fields(fmt: &Formatter, list: RecordFieldList) -> StructVariantFields {
     let delims = Delimiters::braces_of(list.syntax());
     let fields = list_items_cast(list.syntax(), |f| format_record_field(fmt, f));
-    let single_line = if fields.is_empty() {
+    StructVariantFields {
+        list,
+        delims,
+        fields,
+    }
+}
+
+/// The fields of a struct variant on a single line, if they fit within `struct_variant_width`
+fn struct_variant_single_line(fmt: &Formatter, s: &StructVariantFields) -> Option<Frag> {
+    if s.fields.is_empty() {
         // `{}`, unless it contains comments
-        let has_comment = list
+        let has_comment = s
+            .list
             .syntax()
             .children_with_tokens()
             .any(|e| e.kind() == SyntaxKind::COMMENT);
-        (!has_comment).then(Frag::empty)
-    } else {
-        let width = fmt.config().struct_variant_width;
-        let limit = FlatLimit::Within(width);
-        flat_layout(fmt, &delims, &fields, limit, TrailingSeparator::IfVertical)
-    };
-    StructVariantFields {
-        delims,
-        fields,
-        single_line,
+        return (!has_comment).then(Frag::empty);
     }
+    let limit = FlatLimit::Within(fmt.config().struct_variant_width);
+    flat_layout(
+        fmt,
+        &s.delims,
+        &s.fields,
+        limit,
+        TrailingSeparator::IfVertical,
+    )
 }
 
 fn variant_parts(fmt: &Formatter, variant: Variant) -> VariantParts {
@@ -296,16 +304,16 @@ fn variant_parts(fmt: &Formatter, variant: Variant) -> VariantParts {
     }
 }
 
-/// `Name`, `Name(A, B)`, `Name { a: A }` or `Name = discriminant`; with `single_line_structs`, the struct
-/// fields are on a single line
-fn format_variant(fmt: &Formatter, parts: &VariantParts, single_line_structs: bool) -> Frag {
+/// `Name`, `Name(A, B)`, `Name { a: A }` or `Name = discriminant`; with `single_line`, the fields of a
+/// struct variant on a single line (see `struct_variant_single_line`), otherwise one per line
+fn format_variant(fmt: &Formatter, parts: &VariantParts, single_line: Option<&Frag>) -> Frag {
     let mut builder = Builder::new(fmt);
     builder.push(parts.name.clone());
     match &parts.fields {
         VariantFields::Unit => {}
         VariantFields::Tuple(fields) => builder.push(fields.clone()),
-        VariantFields::Struct(s) if single_line_structs => {
-            builder.push(s.delims.wrap_body(fmt, s.single_line.clone().unwrap()));
+        VariantFields::Struct(s) if single_line.is_some() => {
+            builder.push(s.delims.wrap_body(fmt, single_line.unwrap().clone()));
         }
         VariantFields::Struct(s) => builder.push(delimited_list(
             fmt,
@@ -328,27 +336,39 @@ fn format_enum(fmt: &Formatter, item: Enum) -> Frag {
     let list = item.variant_list().unwrap();
     let delims = Delimiters::braces_of(list.syntax());
     let variants = list_items_cast(list.syntax(), |v| variant_parts(fmt, v));
-    let body = |single_line_structs: bool| {
+    // `single_lines`: the single-line fields of the struct variants, in their order
+    let body = |single_lines: Option<&[Frag]>| {
+        let mut single_lines = single_lines.map(|lines| lines.iter());
         let items = variants
             .iter()
-            .map(|v| v.map(|parts| format_variant(fmt, parts, single_line_structs)))
+            .map(|v| {
+                v.map(|parts| {
+                    let single_line = match parts.fields {
+                        VariantFields::Struct(_) => single_lines.as_mut().and_then(Iterator::next),
+                        _ => None,
+                    };
+                    format_variant(fmt, parts, single_line)
+                })
+            })
             .collect::<Vec<ListItem>>();
         delimited_list(fmt, &delims, &items, ListLayout::fixed_vertical())
     };
-    let struct_fields = || {
-        variants.iter().filter_map(|v| match &v.frag.fields {
+    // All struct variants on a single line, or none (Style Guide); they are built one by one up to
+    // the first that does not fit, so no fragment is built in vain (arena hygiene)
+    let single_lines: Option<Vec<Frag>> = variants
+        .iter()
+        .filter_map(|v| match &v.frag.fields {
             VariantFields::Struct(s) => Some(s),
             _ => None,
         })
-    };
-    let all_small =
-        struct_fields().next().is_some() && struct_fields().all(|s| s.single_line.is_some());
+        .map(|s| struct_variant_single_line(fmt, s))
+        .collect();
+    let single_lines = single_lines.filter(|lines| !lines.is_empty());
     // The vertical struct variants stay as a fallback when a single-line one exceeds `max_width`
-    let vertical = body(false);
-    builder.push(if all_small {
-        fmt.alt_frag(body(true), vertical)
-    } else {
-        vertical
+    let vertical = body(None);
+    builder.push(match single_lines {
+        Some(lines) => fmt.alt_frag(body(Some(&lines)), vertical),
+        None => vertical,
     });
     builder.into_frag()
 }

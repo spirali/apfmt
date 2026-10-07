@@ -123,6 +123,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn very_long_line_does_not_overflow_badness() {
+        let literal = format!("\"{}\"", "x".repeat(70_000));
+        let code = format!("fn f() {{ g({literal}, 1); }}");
+        let out = format_source_code(&Config::default(), &code).unwrap();
+        assert_eq!(out, format!("fn f() {{\n    g(\n        {literal},\n        1,\n    );\n}}"));
+    }
+
+    #[test]
     fn normalize_comments() {
         let code = "fn/*a*/f() { g(/**/ 1 /*  b  */, /** c*/ 2); }";
         let config = Config::default();

@@ -6,26 +6,57 @@ use std::rc::Rc;
 
 #[derive(Clone)]
 struct Measure {
-    last: u32,
-    badness: u32,
+    /// The column after the layout; `None` when it ends with a line break: the indentation of the new
+    /// line is written with the next text, at the indentation current there (`Renderer`), e.g. the
+    /// outer one for `)` after a broken list whose last line break is inside its `Nest`
+    last: Option<u32>,
+    /// The overflow beyond the page width, quadratic in its length; saturating, a single line can be
+    /// very long (e.g. an embedded blob of data)
+    badness: u64,
     splits: u32,
     height: u32,
 }
 
+/// The overflow of a line part from `col` to `last` beyond `page_width`, quadratic in its length
+fn overflow(col: u32, last: u32, page_width: u32) -> u64 {
+    if last <= page_width {
+        return 0;
+    }
+    let m = page_width.max(col);
+    let a = u64::from(m - page_width);
+    let b = u64::from(last - m);
+    b.saturating_mul(a.saturating_mul(2).saturating_add(b))
+}
+
 impl Measure {
-    fn from_text(col: u32, page_width: u32, len: u32) -> Self {
-        let last = col + len;
-        let badness = if last > page_width {
-            let m = page_width.max(col);
-            let a = m - page_width;
-            let b = last - m;
-            b * (2 * a + b)
-        } else {
-            0
-        };
+    /// `text` starting at `col`; a text with line breaks (a multi-line string literal or comment) is
+    /// printed as it is, its following lines start at column 0
+    fn from_text(col: u32, page_width: u32, text: &str) -> Self {
+        let mut badness = 0u64;
+        let mut height = 0;
+        let mut start = col;
+        let mut last = col;
+        for (i, line) in text.split('\n').enumerate() {
+            if i > 0 {
+                height += 1;
+                start = 0;
+            }
+            last = start + unicode_width::UnicodeWidthStr::width(line) as u32;
+            badness = badness.saturating_add(overflow(start, last, page_width));
+        }
         Measure {
-            last,
+            last: Some(last),
             badness,
+            splits: 0,
+            height,
+        }
+    }
+
+    /// A layout without text, e.g. an empty text
+    fn empty(ctx: &Context) -> Self {
+        Measure {
+            last: ctx.col,
+            badness: 0,
             splits: 0,
             height: 0,
         }
@@ -56,11 +87,18 @@ pub enum Content {
 
 #[derive(Clone, Copy)]
 pub struct Context {
-    col: u32,
+    /// `None` at the start of a line, before its indentation (see `Measure::last`)
+    col: Option<u32>,
     indent: u32,
-    no_text: bool,
     /// Newlines are not allowed
     flat: bool,
+}
+
+impl Context {
+    /// The column where the next text starts
+    fn text_col(&self) -> u32 {
+        self.col.unwrap_or(self.indent)
+    }
 }
 
 pub(crate) struct Layout {
@@ -123,17 +161,21 @@ impl<'a> Renderer<'a> {
     pub fn render(&mut self, content: &Content) {
         match content {
             Content::Text(t) => {
+                let s = match self.resolver.doc_arena.get_node(*t) {
+                    DocNode::Token(token) => token.text(),
+                    DocNode::Text(t) => t.as_str(),
+                    _ => unreachable!(),
+                };
+                if s.is_empty() {
+                    return;
+                }
+                // The indentation of a new line is written with its first text
                 if self.fresh {
                     self.fresh = false;
                     for _ in 0..self.indent {
                         self.out.push(' ');
                     }
                 }
-                let s = match self.resolver.doc_arena.get_node(*t) {
-                    DocNode::Token(token) => token.text(),
-                    DocNode::Text(t) => t.as_str(),
-                    _ => unreachable!(),
-                };
                 self.out.push_str(s);
             }
             Content::Newline => {
@@ -174,9 +216,8 @@ impl<'a> Resolver<'a> {
     pub fn render(&self, reserve_size: usize) -> String {
         let layout_set = self.resolve(
             Context {
-                col: 0,
+                col: None,
                 indent: 0,
-                no_text: false,
                 flat: false,
             },
             self.root,
@@ -195,18 +236,16 @@ impl<'a> Resolver<'a> {
 
     pub fn resolve(&self, ctx: Context, doc: DocId) -> LayoutSet {
         let resolve_text = |s: &str| {
-            if ctx.no_text && !s.is_empty() {
-                LayoutSet::empty()
+            let measure = if s.is_empty() {
+                Measure::empty(&ctx)
             } else {
-                LayoutSet::single(Layout {
-                    measure: Measure::from_text(
-                        ctx.col,
-                        self.config.max_width,
-                        unicode_width::UnicodeWidthStr::width(s) as u32,
-                    ),
-                    content: Rc::new(Content::Text(doc)),
-                })
-            }
+                // A line break inside a token is not a layout line break, so `ctx.flat` allows it
+                Measure::from_text(ctx.text_col(), self.config.max_width, s)
+            };
+            LayoutSet::single(Layout {
+                measure,
+                content: Rc::new(Content::Text(doc)),
+            })
         };
         match self.doc_arena.get_node(doc) {
             DocNode::Token(token) => resolve_text(token.text()),
@@ -214,7 +253,7 @@ impl<'a> Resolver<'a> {
             DocNode::Newline if ctx.flat => LayoutSet::empty(),
             DocNode::Newline => LayoutSet::single(Layout {
                 measure: Measure {
-                    last: ctx.indent,
+                    last: None,
                     badness: 0,
                     splits: 0,
                     height: 1,
@@ -223,11 +262,8 @@ impl<'a> Resolver<'a> {
             }),
             DocNode::Nest(d) => {
                 let indent = ctx.indent + self.config.indent_width;
-                let mut layout_set = self.resolve(Context { indent, ..ctx }, *d);
-                for layout in &mut layout_set.layouts {
-                    layout.content = Rc::new(Content::Indent(indent, layout.content.clone()));
-                }
-                layout_set
+                let layout_set = self.resolve(Context { indent, ..ctx }, *d);
+                indented(indent, layout_set)
             }
             DocNode::Concat(doc1, doc2) => {
                 let la = self.resolve(ctx, *doc1);
@@ -236,14 +272,15 @@ impl<'a> Resolver<'a> {
                     let mut sub = self.resolve(
                         Context {
                             col: layout1.measure.last,
-                            indent: ctx.indent,
-                            no_text: ctx.no_text,
-                            flat: ctx.flat,
+                            ..ctx
                         },
                         *doc2,
                     );
                     for layout2 in &mut sub.layouts {
-                        layout2.measure.badness += layout1.measure.badness;
+                        layout2.measure.badness = layout2
+                            .measure
+                            .badness
+                            .saturating_add(layout1.measure.badness);
                         layout2.measure.splits += layout1.measure.splits;
                         layout2.measure.height += layout1.measure.height;
                         layout2.content = Rc::new(Content::Concat(
@@ -278,22 +315,25 @@ impl<'a> Resolver<'a> {
                 merge_layout_sets(la, lb)
             }
             DocNode::Align(doc) => {
-                let mut layout_set = self.resolve(
-                    Context {
-                        indent: ctx.col,
-                        ..ctx
-                    },
-                    *doc,
-                );
-                for layout in &mut layout_set.layouts {
-                    layout.content = Rc::new(Content::Indent(ctx.col, layout.content.clone()));
-                }
-                layout_set
+                let indent = ctx.text_col();
+                let layout_set = self.resolve(Context { indent, ..ctx }, *doc);
+                indented(indent, layout_set)
             }
         }
     }
 }
 
+/// The layouts rendered with `indent`; a layout ending with a line break keeps `last: None`, the next
+/// text after it is indented by the indentation current there
+fn indented(indent: u32, mut layout_set: LayoutSet) -> LayoutSet {
+    for layout in &mut layout_set.layouts {
+        layout.content = Rc::new(Content::Indent(indent, layout.content.clone()));
+    }
+    layout_set
+}
+
+/// The Pareto frontier of the layouts by (`last`, cost); a layout ending with a line break (`last: None`)
+/// counts as ending leftmost, it leaves the most room for what follows
 fn merge_layout_sets(a: LayoutSet, b: LayoutSet) -> LayoutSet {
     let mut out = LayoutVec::new();
     let mut a_it = a.layouts.into_iter();
