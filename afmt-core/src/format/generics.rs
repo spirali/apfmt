@@ -87,8 +87,7 @@ fn push_bounds(fmt: &Formatter, builder: &mut Builder, node: &impl HasTypeBounds
 pub(super) fn format_type_bound_list(fmt: &Formatter, list: TypeBoundList) -> Frag {
     let (first, rest) = operator_chain(fmt, list.syntax(), SyntaxKind::PLUS, |node| {
         format_type_bound(fmt, TypeBound::cast(node).unwrap())
-    })
-    .expect("bounds start with a bound");
+    });
     fmt.keep_together(infix_chain(fmt, first, &rest))
 }
 

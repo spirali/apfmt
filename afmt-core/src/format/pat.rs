@@ -2,10 +2,12 @@
 
 use super::expr::{format_range, single_item_separator};
 use super::path::{format_name_ref, format_path};
+use crate::comments::{has_comments, trivia_from};
 use crate::format::common::format_name;
 use crate::formatter::Edge::{Comma, Operator, Tight, Word};
 use crate::formatter::{Builder, Formatter, Frag};
-use crate::layout::chain::{operator_chain, unindented_infix_chain};
+use crate::layout::chain::{operator_chain, unindented_infix_chain, unindented_infix_fill};
+use crate::layout::head::HeadLayouts;
 use crate::layout::list::{
     Delimiters, FlatLimit, ListLayout, TrailingSeparator, delimited_list, list_items,
     list_items_cast,
@@ -15,6 +17,24 @@ use ra_ap_syntax::ast::{
     RefPat, RestPat, SlicePat, TuplePat, TupleStructPat,
 };
 use ra_ap_syntax::{AstNode, SyntaxKind};
+
+/// The layouts of a pattern followed by something on its last line (`= expr`, `in iter`, `if guard`):
+/// a broken or-pattern ends on a `| C` continuation line, so it hangs; a broken pattern costs a split
+pub(super) fn pat_layouts(fmt: &Formatter, pat: Pat) -> HeadLayouts {
+    let or_pat = matches!(pat, Pat::OrPat(_));
+    let frag = fmt.keep_together(format_pat(fmt, pat));
+    if or_pat {
+        HeadLayouts {
+            hanging: Some(fmt.multi_line(frag.clone())),
+            other: Some(fmt.flat(frag)),
+        }
+    } else {
+        HeadLayouts {
+            hanging: None,
+            other: Some(frag),
+        }
+    }
+}
 
 fn format_ident_pat(fmt: &Formatter, pat: IdentPat) -> Frag {
     let mut builder = Builder::new(fmt);
@@ -86,15 +106,54 @@ fn format_paren_pat(fmt: &Formatter, pat: ParenPat) -> Frag {
     Delimiters::parens_of(pat.syntax()).enclose(fmt, inner)
 }
 
-/// `A | B | C` on one line, or broken before every `|` without indentation (Style Guide)
+/// `A | B`, broken before every `|` without indentation; a leading `|` is dropped (Style Guide: "Never
+/// start a match arm pattern with `|`")
 fn format_or_pat(fmt: &Formatter, pat: OrPat) -> Frag {
-    let chain = operator_chain(fmt, pat.syntax(), SyntaxKind::PIPE, |node| {
+    // The comments after a dropped `|` would have no place
+    let leading = pat
+        .syntax()
+        .first_token()
+        .filter(|t| t.kind() == SyntaxKind::PIPE);
+    assert!(
+        !leading.is_some_and(
+            |pipe| trivia_from(pipe.next_token()).any(|t| t.kind() == SyntaxKind::COMMENT)
+        ),
+        "not supported yet: a comment after a leading `|` in {pat:?}"
+    );
+    let (first, rest) = operator_chain(fmt, pat.syntax(), SyntaxKind::PIPE, |node| {
         format_pat(fmt, Pat::cast(node).unwrap())
     });
-    let Some((first, rest)) = chain else {
-        panic!("not supported yet: a leading `|` in {pat:?}");
-    };
-    unindented_infix_chain(fmt, first, &rest)
+    // Small alternatives are filled on lines (Style Guide "Match"), unless comments are among them
+    if pat.pats().all(|p| is_small_pat(&p, true)) && !has_comments(pat.syntax()) {
+        unindented_infix_fill(fmt, first, &rest)
+    } else {
+        unindented_infix_chain(fmt, first, &rest)
+    }
+}
+
+/// Whether the pattern is small in the sense of the Style Guide ("Match"): a single token, `&`
+/// followed by a small pattern, or (if `allow_tuple`) a tuple of one such pattern (`(a,)`)
+fn is_small_pat(pat: &Pat, allow_tuple: bool) -> bool {
+    match pat {
+        Pat::RefPat(pat) => pat.pat().is_some_and(|p| is_small_pat(&p, allow_tuple)),
+        Pat::TuplePat(tuple) if allow_tuple => {
+            let mut fields = tuple.fields();
+            fields.next().is_some_and(|p| is_small_pat(&p, false))
+                && fields.next().is_none()
+                && tuple
+                    .syntax()
+                    .children_with_tokens()
+                    .any(|e| e.kind() == SyntaxKind::COMMA)
+        }
+        pat => {
+            let mut tokens = pat
+                .syntax()
+                .descendants_with_tokens()
+                .filter_map(|e| e.into_token())
+                .filter(|t| !t.kind().is_trivia());
+            tokens.next().is_some() && tokens.next().is_none()
+        }
+    }
 }
 
 /// `name`, `ref mut name` or `name: pat`

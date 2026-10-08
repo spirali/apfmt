@@ -1,14 +1,17 @@
 //! Expressions
 
+use super::attr::format_with_attrs;
+use super::control::{format_for_expr, format_loop_expr, format_match_expr, format_while_expr};
 use super::item::closure_params_layouts;
-use super::pat::format_pat;
+use super::pat::{format_pat, pat_layouts};
 use super::path::{format_generic_arg_list, format_name_ref, format_path};
 use super::stmt::{format_block_expr, format_block_expr_with_tail, push_block_prefix};
 use super::ty::{format_ret_type, format_type};
 use crate::format::common::{format_lifetime, format_repeat, push_modifiers};
-use crate::formatter::Edge::{BraceClose, BraceOpen, Operator, Tight, Word};
+use crate::formatter::Edge::{BraceClose, BraceOpen, Comma, Operator, Tight, Word};
 use crate::formatter::{Builder, Formatter, Frag};
-use crate::layout::chain::{ChainElement, infix_chain, postfix_chain_layouts};
+use crate::layout::chain::{ChainElement, broken_infix_chain, infix_chain, postfix_chain_layouts};
+use crate::layout::head::HeadLayouts;
 use crate::layout::list::TrailingSeparator;
 use crate::layout::list::{
     Delimiters, FlatLimit, ListItem, ListLayout, Overflow, delimited_list, list_items_cast,
@@ -17,7 +20,8 @@ use crate::utils::with_is_last;
 use ra_ap_syntax::ast::{
     ArgList, ArrayExpr, BinExpr, BinaryOp, BlockExpr, BreakExpr, CallExpr, CastExpr, ClosureExpr,
     ContinueExpr, ElseBranch, Expr, HasArgList, HasAttrs, HasGenericArgs, IfExpr, LetExpr, Literal,
-    ParenExpr, Pat, PathExpr, PrefixExpr, RangeExpr, RangeItem, RefExpr, ReturnExpr, TupleExpr,
+    LogicOp, ParenExpr, PathExpr, PrefixExpr, RangeExpr, RangeItem, RecordExpr, RecordExprField,
+    RefExpr, ReturnExpr, StmtList, TupleExpr,
 };
 use ra_ap_syntax::{AstNode, SyntaxKind, SyntaxNode, SyntaxToken};
 
@@ -27,7 +31,7 @@ fn format_path_expr(fmt: &Formatter, path_expr: PathExpr) -> Frag {
 
 /// Whether a single argument can overflow, i.e. start on the line of `(` and end on the line of `)`:
 /// `f(if a {\n ...\n})`. Follows the combinable expressions of the style guide.
-// TODO: `match`, loops, struct literals and macros once they are supported
+// TODO: macros once they are supported
 fn is_combinable_expr(expr: &Expr) -> bool {
     match expr {
         Expr::CallExpr(_)
@@ -36,7 +40,9 @@ fn is_combinable_expr(expr: &Expr) -> bool {
         | Expr::BlockExpr(_)
         | Expr::ArrayExpr(_)
         | Expr::TupleExpr(_)
-        | Expr::ClosureExpr(_) => true,
+        | Expr::ClosureExpr(_)
+        | Expr::RecordExpr(_)
+        | Expr::MatchExpr(_) => true,
         // `f(!g(\n...\n))`, `f(&[\n...\n])`
         Expr::PrefixExpr(expr) => expr.expr().is_some_and(|e| is_combinable_expr(&e)),
         Expr::RefExpr(expr) => expr.expr().is_some_and(|e| is_combinable_expr(&e)),
@@ -148,10 +154,12 @@ fn format_expr_list(
             item.map(|_| frag.clone()).with_overflow(overflow)
         })
         .collect::<Vec<ListItem>>();
-    // A single argument that cannot overflow is not limited by `fn_call_width`, nor is a closure.
-    // Another one that can (e.g. a call) is: when it does not fit, it is broken instead, like
-    // rustfmt does.
-    let unlimited = single.is_some_and(|e| !hug || matches!(e, Expr::ClosureExpr(_)));
+    // A single argument that cannot overflow is not limited by `fn_call_width`, nor is a closure or
+    // a method call (the only postfix chain that can overflow; the others, e.g. `a.b()?`, cannot).
+    // Another one that can (e.g. a call) is: when it does not fit, it is broken instead. All as
+    // rustfmt does; the Style Guide leaves what a small call is to the tool.
+    let unlimited =
+        single.is_some_and(|e| !hug || matches!(e, Expr::ClosureExpr(_) | Expr::MethodCallExpr(_)));
     let flat = if unlimited {
         FlatLimit::MaxWidth
     } else {
@@ -239,13 +247,19 @@ fn format_bin_expr(fmt: &Formatter, expr: BinExpr) -> Frag {
     if let Some(BinaryOp::Assignment { .. }) = expr.op_kind() {
         return format_assignment(fmt, expr);
     }
+    let (first, rest) = bin_chain_operands(fmt, expr);
+    infix_chain(fmt, first, &rest)
+}
+
+/// The operands of a chain of binary operators formatted, for `infix_chain`
+fn bin_chain_operands(fmt: &Formatter, expr: BinExpr) -> (Frag, Vec<(Frag, Frag)>) {
     let mut rest = Vec::new();
     let first = format_expr(fmt, collect_bin_chain(expr, &mut rest));
     let rest = rest
         .into_iter()
         .map(|(op, e)| (fmt.token(op, Operator), format_expr(fmt, e)))
-        .collect::<Vec<_>>();
-    infix_chain(fmt, first, &rest)
+        .collect();
+    (first, rest)
 }
 
 /// `lhs = rhs`, `lhs += rhs`, ...: broken after the operator, like `let`
@@ -366,11 +380,6 @@ fn is_hanging_expr(expr: &Expr) -> bool {
     match expr {
         Expr::BinExpr(_) => true,
         expr if is_postfix_expr(expr) => true,
-        // A broken or-pattern continues with `| B` lines
-        Expr::LetExpr(expr) => {
-            matches!(expr.pat(), Some(Pat::OrPat(_)))
-                || expr.expr().is_some_and(|e| is_hanging_expr(&e))
-        }
         Expr::PrefixExpr(expr) => expr.expr().is_some_and(|e| is_hanging_expr(&e)),
         _ => false,
     }
@@ -378,7 +387,7 @@ fn is_hanging_expr(expr: &Expr) -> bool {
 
 /// `keyword head {`: the head of a control-flow expression (`if cond`, `while cond`, `match expr`,
 /// `for pat in expr`) followed by its block, see `format_head_followed_by`
-fn format_head_with_block(
+pub(super) fn format_head_with_block(
     fmt: &Formatter,
     keyword: SyntaxToken,
     head: &HeadLayouts,
@@ -425,8 +434,15 @@ pub(super) fn format_head_followed_by(
     layouts.unwrap()
 }
 
+/// The statement list of a plain block: no label or modifier in front of `{` (`unsafe {` is an
+/// expression)
+pub(super) fn plain_stmt_list(block: &BlockExpr) -> Option<StmtList> {
+    let stmt_list = block.stmt_list()?;
+    (block.syntax().first_token() == stmt_list.l_curly_token()).then_some(stmt_list)
+}
+
 /// The expression of a block that can be written as `{ expr }`: no statements and no comments
-fn single_line_block_expr(block: &BlockExpr) -> Option<Expr> {
+pub(super) fn single_line_block_expr(block: &BlockExpr) -> Option<Expr> {
     let stmt_list = block.stmt_list()?;
     let has_comment = stmt_list
         .syntax()
@@ -538,7 +554,7 @@ fn collect_postfix_chain(expr: Expr, postfix: &mut Vec<Expr>) -> Expr {
 
 /// `block` broken, or on a single line if it holds just an expression (see `single_line_block_expr`):
 /// `unsafe { x }`
-fn format_block_or_inline(fmt: &Formatter, block: BlockExpr) -> Frag {
+pub(super) fn format_block_or_inline(fmt: &Formatter, block: BlockExpr) -> Frag {
     let Some(tail) = single_line_block_expr(&block) else {
         return format_block_expr(fmt, block);
     };
@@ -565,9 +581,7 @@ fn unbraced_closure_body(expr: &ClosureExpr) -> Option<Expr> {
     let Expr::BlockExpr(block) = &body else {
         return Some(body);
     };
-    let stmt_list = block.stmt_list()?;
-    // A label or a modifier in front of `{`: `unsafe {`
-    if block.syntax().first_token() != stmt_list.l_curly_token() {
+    if plain_stmt_list(block).is_none() {
         return Some(body);
     }
     if expr.ret_type().is_some() {
@@ -576,12 +590,15 @@ fn unbraced_closure_body(expr: &ClosureExpr) -> Option<Expr> {
     single_line_block_expr(block)
 }
 
-/// Whether a closure body without braces may span more lines, as in rustfmt: a block-like expression
-/// (`|x| unsafe {` / `...` / `}`); other expressions get braces then (Style Guide: "Add the `{}` when
-/// ... the body expression is a control-flow expression that spans multiple lines")
-// TODO: `match`, loops and struct literals once they are supported
+/// Whether a closure body without braces may span more lines: a block-like expression (`|x| unsafe {`
+/// / `...` / `}`, `|x| match x {`, `|| Foo {`); other expressions get braces then (Style Guide: "Add
+/// the `{}` when ... the body expression is a control-flow expression that spans multiple lines";
+/// `match` is not one of the Style Guide's control-flow expressions, loops are)
 fn is_block_like_expr(expr: &Expr) -> bool {
-    matches!(expr, Expr::BlockExpr(_))
+    matches!(
+        expr,
+        Expr::BlockExpr(_) | Expr::MatchExpr(_) | Expr::RecordExpr(_)
+    )
 }
 
 fn format_closure_expr(fmt: &Formatter, expr: ClosureExpr) -> Frag {
@@ -641,10 +658,12 @@ fn closure_body_layouts(
     let body = expr.body().unwrap();
     let inner = match unbraced_closure_body(expr) {
         // Braces required, or the body is a block itself: `unsafe {`
-        Some(inner) if inner.syntax() != body.syntax() || !is_block_like_expr(&inner) => inner,
+        Some(inner) if inner.syntax() != body.syntax() || !matches!(inner, Expr::BlockExpr(_)) => {
+            inner
+        }
         _ => {
             let Expr::BlockExpr(block) = body else {
-                unreachable!("checked by `unbraced_closure_body` and `is_block_like_expr`");
+                unreachable!("checked by `unbraced_closure_body` and above");
             };
             let block = format_block_or_inline(fmt, block);
             return (block.clone(), Some(block));
@@ -671,19 +690,69 @@ fn closure_body_layouts(
             let all = fmt.alt_frag(unbraced.into_frag(), braced.clone());
             (all, Some(fmt.alt_frag(inline, braced)))
         }
-        // Braces are added
         _ => {
-            let mut braced = Builder::new(fmt);
-            braced.push_generated("{", BraceOpen);
-            let mut line = Builder::new(fmt);
-            line.push(inner_frag);
-            line.push_newline();
-            braced.push(fmt.body_after_opener(false, line.into_frag()));
-            braced.push_generated("}", BraceClose);
-            let all = fmt.alt_frag(unbraced.into_frag(), braced.into_frag());
+            let all = fmt.alt_frag(unbraced.into_frag(), format_added_braces(fmt, inner_frag));
             (all.clone(), Some(all))
         }
     }
+}
+
+/// `{` / `    inner` / `}` with braces that are not in the source, e.g. around a closure body or a match
+/// arm body that does not fit on the line
+pub(super) fn format_added_braces(fmt: &Formatter, inner: Frag) -> Frag {
+    let mut braced = Builder::new(fmt);
+    braced.push_generated("{", BraceOpen);
+    let mut line = Builder::new(fmt);
+    line.push(inner);
+    line.push_newline();
+    braced.push(fmt.body_after_opener(false, line.into_frag()));
+    braced.push_generated("}", BraceClose);
+    braced.into_frag()
+}
+
+/// `Path { a, b: c, ..base }` (Style Guide "Struct literals"): on a single line if the fields fit
+/// within `struct_lit_width`, otherwise one field per line with a trailing comma; `..base` is last and
+/// has no comma
+fn format_record_expr(fmt: &Formatter, expr: RecordExpr) -> Frag {
+    let mut builder = Builder::new(fmt);
+    builder.push(format_path(fmt, expr.path().unwrap()));
+    let list = expr.record_expr_field_list().unwrap();
+    let mut fields = list_items_cast::<RecordExprField, _>(list.syntax(), |field| {
+        format_with_attrs(fmt, &field, false, || format_record_expr_field(fmt, &field))
+    });
+    let trailing = match list.dotdot_token() {
+        Some(dotdot) => {
+            let mut spread = Builder::new(fmt);
+            spread.push_token(dotdot, Tight);
+            if let Some(base) = list.spread() {
+                spread.push(format_expr(fmt, base));
+            }
+            fields.push(ListItem {
+                frag: spread.into_frag(),
+                comma: None,
+                own_line: false,
+                overflow: Overflow::Never,
+            });
+            TrailingSeparator::Omitted
+        }
+        None => TrailingSeparator::IfVertical,
+    };
+    let layout = ListLayout::tall(FlatLimit::Within(fmt.config().struct_lit_width))
+        .trailing_separator(trailing);
+    let delims = Delimiters::braces_of(list.syntax());
+    builder.push(delimited_list(fmt, &delims, &fields, layout));
+    builder.into_frag()
+}
+
+/// `name: value`, or `name` (the shorthand)
+fn format_record_expr_field(fmt: &Formatter, field: &RecordExprField) -> Frag {
+    let mut builder = Builder::new(fmt);
+    if let Some(colon) = field.colon_token() {
+        builder.push(format_name_ref(fmt, field.name_ref().unwrap()));
+        builder.push_token(colon, Comma);
+    }
+    builder.push(format_expr(fmt, field.expr().unwrap()));
+    builder.into_frag()
 }
 
 /// A chain of fields, method calls, `.await`, `?` and indexes, see `postfix_chain_layouts`
@@ -759,27 +828,71 @@ fn is_postfix_expr(expr: &Expr) -> bool {
     )
 }
 
-/// The layouts of the head of a control-flow expression (`if cond`) or of the initializer of a
-/// `let`-`else`, by what may follow them on their last line (at least one is present)
-pub(super) struct HeadLayouts {
-    /// The layouts ending with an indented continuation line (a hanging indent, see
-    /// `is_hanging_expr`): `{` (`else {`) goes on its own line after them
-    hanging: Option<Frag>,
-    /// The other layouts: `{` may follow on their last line, e.g. after a chain whose last element
-    /// breaks: `if a.b(|x| {` / `...` / `}) {`
-    other: Option<Frag>,
+/// `let pat = expr` of `if let` or `while let`: with the expression on the line of `=`, or broken
+/// after `=` with the expression on an indented line, which hangs (Style Guide). The expression broken
+/// over more lines costs a split in both, so it moves to the next line when it fits on one line there
+/// (as in rustfmt). A broken pattern costs a split; a broken or-pattern hangs too (see
+/// `pat_layouts`).
+fn let_head_layouts(fmt: &Formatter, expr: &LetExpr) -> HeadLayouts {
+    let pat = pat_layouts(fmt, expr.pat().unwrap());
+    let all_pat = pat.clone().all(fmt);
+    let let_token = fmt.keyword(expr.let_token().unwrap());
+    let eq = fmt.token(expr.eq_token().unwrap(), Operator);
+    let with_pat =
+        |pat: Frag, rhs: Frag| Builder::concat(fmt, [let_token.clone(), pat, eq.clone(), rhs]);
+    let rhs = format_head_expr(fmt, expr.expr().unwrap());
+    let rhs = HeadLayouts {
+        hanging: rhs.hanging.map(|frag| fmt.keep_together(frag)),
+        other: rhs.other.map(|frag| fmt.keep_together(frag)),
+    };
+    let other = (rhs.other.clone())
+        .zip(pat.other)
+        .map(|(rhs, pat)| with_pat(pat, rhs));
+    let mut hanging = rhs
+        .hanging
+        .clone()
+        .map(|rhs| with_pat(all_pat.clone(), rhs));
+    if let (Some(pat), Some(rhs)) = (pat.hanging, rhs.other.clone()) {
+        hanging = fmt.alt_some(hanging, Some(with_pat(pat, rhs)));
+    }
+    let next_line = Builder::concat(
+        fmt,
+        [
+            let_token.clone(),
+            all_pat,
+            eq.clone(),
+            fmt.indented_line(rhs.all(fmt)),
+        ],
+    );
+    let hanging = fmt.alt_some(hanging, Some(next_line));
+    HeadLayouts { hanging, other }
 }
 
-impl HeadLayouts {
-    fn all(self, fmt: &Formatter) -> Frag {
-        fmt.alt_some(self.hanging, self.other)
-            .expect("a head has a layout")
+/// Whether the expression is a let chain (`a && let Some(b) = c`) that the Style Guide breaks before
+/// every `&&`: all except two clauses, a literal or a name (optionally after unary operators) and a
+/// `let` clause, which may stay on one line
+fn is_broken_let_chain(expr: &Expr) -> bool {
+    let Expr::BinExpr(expr) = expr else {
+        return false;
+    };
+    if expr.op_kind() != Some(BinaryOp::LogicOp(LogicOp::And)) {
+        return false;
     }
+    let mut rest = Vec::new();
+    let first = collect_bin_chain(expr.clone(), &mut rest);
+    let is_let = |e: &Expr| matches!(e, Expr::LetExpr(_));
+    if !is_let(&first) && !rest.iter().any(|(_, e)| is_let(e)) {
+        return false;
+    }
+    !matches!(rest.as_slice(), [(_, second)] if is_simple_expr(&first) && is_let(second))
 }
 
 pub(super) fn format_head_expr(fmt: &Formatter, expr: Expr) -> HeadLayouts {
     if is_postfix_expr(&expr) {
         return postfix_chain_parts(fmt, expr);
+    }
+    if let Expr::LetExpr(let_expr) = &expr {
+        return let_head_layouts(fmt, let_expr);
     }
     // `!a.b()`
     if let Expr::PrefixExpr(prefix) = &expr
@@ -791,6 +904,16 @@ pub(super) fn format_head_expr(fmt: &Formatter, expr: Expr) -> HeadLayouts {
         return HeadLayouts {
             hanging: head.hanging.map(with_op),
             other: head.other.map(with_op),
+        };
+    }
+    if is_broken_let_chain(&expr) {
+        let Expr::BinExpr(expr) = expr else {
+            unreachable!("checked by `is_broken_let_chain`");
+        };
+        let (first, rest) = bin_chain_operands(fmt, expr);
+        return HeadLayouts {
+            hanging: Some(broken_infix_chain(fmt, first, &rest)),
+            other: None,
         };
     }
     let hanging = is_hanging_expr(&expr);
@@ -839,6 +962,11 @@ pub(super) fn format_expr(fmt: &Formatter, expr: Expr) -> Frag {
         Expr::UnderscoreExpr(expr) => fmt.token(expr.underscore_token().unwrap(), Word),
         expr if is_postfix_expr(&expr) => format_postfix_chain(fmt, expr),
         Expr::ClosureExpr(expr) => format_closure_expr(fmt, expr),
+        Expr::RecordExpr(expr) => format_record_expr(fmt, expr),
+        Expr::MatchExpr(expr) => format_match_expr(fmt, expr),
+        Expr::LoopExpr(expr) => format_loop_expr(fmt, expr),
+        Expr::WhileExpr(expr) => format_while_expr(fmt, expr),
+        Expr::ForExpr(expr) => format_for_expr(fmt, expr),
         x => panic!("not supported yet: {x:?}"),
     }
 }

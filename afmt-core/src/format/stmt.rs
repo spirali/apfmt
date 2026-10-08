@@ -5,7 +5,7 @@ use super::expr::{format_expr, format_head_expr, format_head_followed_by, format
 use super::item::format_item;
 use super::pat::format_pat;
 use super::ty::format_type;
-use crate::format::common::{format_lifetime, push_modifiers};
+use crate::format::common::{push_label, push_modifiers};
 use crate::formatter::Edge::{Comma, Operator, Word};
 use crate::formatter::{Builder, Formatter, Frag};
 use crate::layout::list::Delimiters;
@@ -103,10 +103,7 @@ pub(super) fn format_block_expr_with_tail(
 
 /// Pushes the label and the modifiers of a block in front of its `{`: `'a: `, `unsafe `, `async move `
 pub(super) fn push_block_prefix(fmt: &Formatter, builder: &mut Builder, body: &BlockExpr) {
-    if let Some(label) = body.label() {
-        builder.push(format_lifetime(fmt, label.lifetime().unwrap()));
-        builder.push_token(label.colon_token().unwrap(), Comma);
-    }
+    push_label(fmt, builder, body.label());
     if let Some(modifier) = body.try_block_modifier() {
         panic!("not supported yet: {modifier:?}");
     }

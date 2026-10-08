@@ -51,13 +51,14 @@ pub(crate) fn check_result(
     Ok(())
 }
 
-/// Whether `node` is the block of a closure body that holds just an expression, `|x| { x }`: the
-/// formatter removes its braces or adds them, so it is compared as if it had none
-fn is_optional_closure_block(node: &SyntaxNode) -> bool {
+/// Whether `node` is the block of a closure body or of a match arm body that holds just an
+/// expression, `|x| { x }`, `A => { x }`: the formatter removes its braces or adds them, so it is
+/// compared as if it had none
+fn is_optional_block(node: &SyntaxNode) -> bool {
     if node.kind() != SyntaxKind::BLOCK_EXPR
         || node
             .parent()
-            .is_none_or(|p| p.kind() != SyntaxKind::CLOSURE_EXPR)
+            .is_none_or(|p| !matches!(p.kind(), SyntaxKind::CLOSURE_EXPR | SyntaxKind::MATCH_ARM))
     {
         return false;
     }
@@ -76,12 +77,12 @@ fn is_optional_closure_block(node: &SyntaxNode) -> bool {
 /// The preorder walk of the tree without trivia and without trailing commas, with source offsets
 fn steps(file: &SourceFile) -> Vec<(Step, TextSize)> {
     let mut out = Vec::new();
-    // The blocks of `is_optional_closure_block` and their statement lists, walked as if not there
+    // The blocks of `is_optional_block` and their statement lists, walked as if not there
     let mut transparent: Vec<SyntaxNode> = Vec::new();
     let mut walk = file.syntax().preorder_with_tokens();
     while let Some(event) = walk.next() {
         match event {
-            WalkEvent::Enter(NodeOrToken::Node(node)) if is_optional_closure_block(&node) => {
+            WalkEvent::Enter(NodeOrToken::Node(node)) if is_optional_block(&node) => {
                 transparent.push(node.first_child().unwrap());
                 transparent.push(node);
             }
@@ -113,7 +114,9 @@ fn steps(file: &SourceFile) -> Vec<(Step, TextSize)> {
                 out.push((Step::Leave(node.kind()), node.text_range().end()))
             }
             WalkEvent::Enter(NodeOrToken::Token(token))
-                if !token.kind().is_trivia() && !is_trailing_comma(&token) =>
+                if !token.kind().is_trivia()
+                    && !is_trailing_comma(&token)
+                    && !is_leading_pipe(&token) =>
             {
                 // A shebang includes its line break, which is layout
                 let text = token.text().trim_end().to_string();
@@ -197,6 +200,14 @@ fn canonical_use_tree(tree: &UseTree) -> Option<String> {
         text.push_str(&format!(" as {}", name.strip_prefix("as").unwrap_or(&name)));
     }
     Some(text)
+}
+
+/// The `|` in front of the first pattern of an or-pattern, `| A | B`, which the formatter drops
+fn is_leading_pipe(token: &SyntaxToken) -> bool {
+    token.kind() == SyntaxKind::PIPE
+        && token.parent().is_some_and(|p| {
+            p.kind() == SyntaxKind::OR_PAT && p.first_token().as_ref() == Some(token)
+        })
 }
 
 fn is_trailing_comma(token: &SyntaxToken) -> bool {

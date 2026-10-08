@@ -2,6 +2,7 @@
 
 mod attr;
 mod common;
+mod control;
 mod expr;
 mod generics;
 mod item;

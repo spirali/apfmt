@@ -1,7 +1,7 @@
 use crate::formatter::Edge::{Comma, Word};
 use crate::formatter::{Builder, Formatter, Frag};
 use crate::layout::list::Delimiters;
-use ra_ap_syntax::ast::{Lifetime, Name};
+use ra_ap_syntax::ast::{Label, Lifetime, Name};
 use ra_ap_syntax::{SyntaxKind, SyntaxNode, SyntaxToken};
 
 pub(super) fn format_name(fmt: &Formatter, name: Name) -> Frag {
@@ -42,4 +42,12 @@ pub(super) fn format_repeat(
     inner.push_token(semicolon, Comma);
     inner.push(len);
     Delimiters::brackets_of(node).enclose(fmt, inner.into_frag())
+}
+
+/// Pushes the label of a block or a loop: `'a: `
+pub(super) fn push_label(fmt: &Formatter, builder: &mut Builder, label: Option<Label>) {
+    if let Some(label) = label {
+        builder.push(format_lifetime(fmt, label.lifetime().unwrap()));
+        builder.push_token(label.colon_token().unwrap(), Comma);
+    }
 }

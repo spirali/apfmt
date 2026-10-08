@@ -19,14 +19,14 @@ pub(crate) fn unindented_infix_chain(fmt: &Formatter, first: Frag, rest: &[(Frag
 }
 
 /// The operands of `node` separated by the operator tokens `op` (`A + B`, `A | B`), formatted with
-/// `format`: the first one and the (operator, operand) pairs following it, for `infix_chain`; `None`
-/// if the node starts with the operator (`| A | B`)
+/// `format`: the first one and the (operator, operand) pairs following it, for `infix_chain`. A
+/// leading operator (`| A | B`) is dropped.
 pub(crate) fn operator_chain(
     fmt: &Formatter,
     node: &SyntaxNode,
     op: SyntaxKind,
     mut format: impl FnMut(SyntaxNode) -> Frag,
-) -> Option<(Frag, Vec<(Frag, Frag)>)> {
+) -> (Frag, Vec<(Frag, Frag)>) {
     let mut first = None;
     let mut rest = Vec::new();
     let mut operator = None;
@@ -39,21 +39,43 @@ pub(crate) fn operator_chain(
                     None => first = Some(operand),
                 }
             }
-            NodeOrToken::Token(token) if token.kind() == op => {
-                first.as_ref()?;
+            NodeOrToken::Token(token) if token.kind() == op && first.is_some() => {
                 operator = Some(fmt.token(token, Operator));
             }
             NodeOrToken::Token(_) => {}
         }
     }
-    Some((first?, rest))
+    (first.expect("an operand"), rest)
+}
+
+/// `a op b op c` filled on lines, as many operands on each line as fit, broken before an operator,
+/// with continuation lines at the indentation of the first line, e.g. an or-pattern of short
+/// alternatives: `A | B | C` / `| D | E`
+pub(crate) fn unindented_infix_fill(fmt: &Formatter, first: Frag, rest: &[(Frag, Frag)]) -> Frag {
+    let mut builder = Builder::new(fmt);
+    builder.push(first);
+    for (op, operand) in rest {
+        builder.push_soft_line_break();
+        builder.push(Builder::concat(fmt, [op.clone(), operand.clone()]));
+    }
+    builder.into_frag()
+}
+
+/// `a op b op c` broken before every operator with indented continuation lines, the broken layout
+/// of `infix_chain`
+pub(crate) fn broken_infix_chain(fmt: &Formatter, first: Frag, rest: &[(Frag, Frag)]) -> Frag {
+    vertical_lines(fmt, &first, &operator_lines(fmt, rest))
+}
+
+/// The (operator, operand) pairs joined, one per continuation line
+fn operator_lines(fmt: &Formatter, rest: &[(Frag, Frag)]) -> Vec<Frag> {
+    rest.iter()
+        .map(|(op, operand)| Builder::concat(fmt, [op.clone(), operand.clone()]))
+        .collect()
 }
 
 fn chain(fmt: &Formatter, first: Frag, rest: &[(Frag, Frag)], indent: bool) -> Frag {
-    let lines = rest
-        .iter()
-        .map(|(op, operand)| Builder::concat(fmt, [op.clone(), operand.clone()]))
-        .collect::<Vec<_>>();
+    let lines = operator_lines(fmt, rest);
     let flat = Builder::concat(
         fmt,
         std::iter::once(first.clone()).chain(lines.iter().cloned()),
