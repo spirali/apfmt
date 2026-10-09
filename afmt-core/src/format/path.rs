@@ -1,6 +1,7 @@
 //! Paths and generic arguments
 
 use super::expr::format_expr;
+use super::format_unsupported;
 use super::ty::{format_ret_type, format_type};
 use crate::format::common::format_lifetime;
 use crate::formatter::Edge::{Operator, Tight, Word};
@@ -25,6 +26,9 @@ pub(super) fn format_path(fmt: &Formatter, path: Path) -> Frag {
 
 /// `name`, `name<args>`, `name::<args>`, `Fn(args) -> ret` or `<T as Trait>`; with a leading `::` in `::std`
 fn format_path_segment(fmt: &Formatter, segment: PathSegment) -> Frag {
+    if segment.return_type_syntax().is_some() {
+        return format_unsupported(fmt, segment.syntax(), "return type notation");
+    }
     let mut builder = Builder::new(fmt);
     if let Some(token) = segment.coloncolon_token() {
         builder.push_token(token, Tight);
@@ -43,9 +47,6 @@ fn format_path_segment(fmt: &Formatter, segment: PathSegment) -> Frag {
     }
     if let Some(ret_type) = segment.ret_type() {
         builder.push(format_ret_type(fmt, ret_type));
-    }
-    if let Some(x) = segment.return_type_syntax() {
-        panic!("{x:?}");
     }
     builder.into_frag()
 }
@@ -98,14 +99,14 @@ fn format_generic_arg(fmt: &Formatter, arg: GenericArg) -> Frag {
 
 /// `Item = u32` in `Iterator<Item = u32>`
 fn format_assoc_type_arg(fmt: &Formatter, arg: AssocTypeArg) -> Frag {
+    let (Some(eq_token), None) = (arg.eq_token(), arg.type_bound_list()) else {
+        return format_unsupported(fmt, arg.syntax(), "an associated type bound");
+    };
     let mut builder = Builder::new(fmt);
     builder.push(format_name_ref(fmt, arg.name_ref().unwrap()));
     if let Some(args) = arg.generic_arg_list() {
         builder.push(format_generic_arg_list(fmt, args));
     }
-    let (Some(eq_token), None) = (arg.eq_token(), arg.type_bound_list()) else {
-        panic!("{arg:?}");
-    };
     builder.push_token(eq_token, Operator);
     match (arg.ty(), arg.const_arg()) {
         (Some(ty), _) => builder.push(format_type(fmt, ty)),

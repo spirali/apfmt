@@ -29,6 +29,9 @@ pub struct Config {
     pub dump_parse_tree: bool,
     pub dump_doc_tree: bool,
     pub check_result: bool,
+    /// Copies the syntax that afmt cannot format yet unchanged into the output and reports it in
+    /// `Formatted::unsupported`; otherwise formatting fails with `Error::Unsupported`
+    pub allow_unsupported: bool,
 }
 
 impl Default for Config {
@@ -50,6 +53,7 @@ impl Default for Config {
             dump_parse_tree: false,
             dump_doc_tree: false,
             check_result: false,
+            allow_unsupported: false,
         }
     }
 }

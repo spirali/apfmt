@@ -17,7 +17,7 @@ use crate::comments::{count_newlines, next_code_token, trivia_from};
 use crate::formatter::Edge::Word;
 use crate::formatter::{Builder, Formatter, Frag};
 use ra_ap_syntax::ast::{HasAttrs, HasModuleItem};
-use ra_ap_syntax::{AstNode, SourceFile, SyntaxKind};
+use ra_ap_syntax::{AstNode, NodeOrToken, SourceFile, SyntaxKind, SyntaxNode};
 
 pub(crate) fn format_source_file(fmt: &Formatter, node: &SourceFile) -> Frag {
     let mut builder = Builder::new(fmt);
@@ -49,4 +49,28 @@ pub(crate) fn format_source_file(fmt: &Formatter, node: &SourceFile) -> Frag {
     builder.flush_trivia();
     assert!(builder.cursor().is_none());
     builder.into_frag()
+}
+
+/// `node` copied unchanged from the source and recorded as not supported yet because of `what` (see
+/// `Formatter::unsupported`): from its first token after the leading comments and attributes, which
+/// the caller places (see `format_with_attrs`), to its last token
+pub(super) fn format_unsupported(
+    fmt: &Formatter,
+    node: &SyntaxNode,
+    what: impl Into<String>,
+) -> Frag {
+    let first = node
+        .children_with_tokens()
+        .find(|e| !e.kind().is_trivia() && e.kind() != SyntaxKind::ATTR)
+        .and_then(|e| match e {
+            NodeOrToken::Token(token) => Some(token),
+            NodeOrToken::Node(node) => node.first_token(),
+        })
+        .unwrap();
+    fmt.unsupported(&first, &node.last_token().unwrap(), what.into())
+}
+
+/// `format_unsupported` for a node not supported because of its kind, e.g. `MACRO_EXPR`
+pub(super) fn format_unsupported_kind(fmt: &Formatter, node: &SyntaxNode) -> Frag {
+    format_unsupported(fmt, node, format!("{:?}", node.kind()))
 }

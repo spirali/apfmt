@@ -13,9 +13,9 @@ mod utils;
 use crate::check::check_result;
 pub use crate::config::Config;
 use crate::format::format_source_file;
-use crate::formatter::Formatter;
+use crate::formatter::{Formatter, Unsupported};
 use crate::rewrite::rewrite_source;
-pub use error::{Error, Result};
+pub use error::{Error, Result, UnsupportedSyntax};
 use ra_ap_syntax::{AstNode, WalkEvent};
 use ra_ap_syntax::{NodeOrToken, SourceFile};
 
@@ -89,11 +89,55 @@ pub fn doc_graph_to_dot(config: &Config, code: &str) -> Result<String> {
     Ok(fmt.doc_graph_to_dot(&frag))
 }
 
-pub fn format_source_code(config: &Config, code: &str) -> Result<String> {
+/// The formatted code
+pub struct Formatted {
+    pub code: String,
+    /// The source text copied unchanged into `code` because afmt cannot format it yet (only with
+    /// `Config::allow_unsupported`, which makes it an error otherwise)
+    pub unsupported: Vec<UnsupportedSyntax>,
+}
+
+/// Where the text copied by `Formatter::unsupported` is in `source`, in the source order; a node in
+/// more layouts is listed once
+fn locate_unsupported(
+    source: &SourceFile,
+    mut unsupported: Vec<Unsupported>,
+) -> Vec<UnsupportedSyntax> {
+    if unsupported.is_empty() {
+        return Vec::new();
+    }
+    let source = source.syntax().to_string();
+    unsupported.sort_by_key(|u| (u.range.start(), u.range.end()));
+    unsupported.dedup_by_key(|u| u.range);
+    unsupported
+        .into_iter()
+        .map(|u| {
+            let start = usize::from(u.range.start());
+            let before = &source[..start];
+            let line_start = before.rfind('\n').map_or(0, |i| i + 1);
+            UnsupportedSyntax {
+                line: before.matches('\n').count() + 1,
+                column: before[line_start..].chars().count() + 1,
+                what: u.what,
+                snippet: source[start..usize::from(u.range.end())]
+                    .lines()
+                    .next()
+                    .unwrap_or_default()
+                    .to_string(),
+            }
+        })
+        .collect()
+}
+
+pub fn format_source_code(config: &Config, code: &str) -> Result<Formatted> {
     let (file, prepared) = prepare_source_code(config, code)?;
 
     let fmt = Formatter::new(config);
     let frag = format_source_file(&fmt, &prepared);
+    let unsupported = locate_unsupported(&prepared, fmt.take_unsupported());
+    if !unsupported.is_empty() && !config.allow_unsupported {
+        return Err(Error::Unsupported(unsupported));
+    }
 
     if config.dump_doc_tree {
         fmt.dump(&frag);
@@ -115,7 +159,10 @@ pub fn format_source_code(config: &Config, code: &str) -> Result<String> {
         }
     }
 
-    Ok(out)
+    Ok(Formatted {
+        code: out,
+        unsupported,
+    })
 }
 
 #[cfg(test)]
@@ -126,8 +173,48 @@ mod tests {
     fn very_long_line_does_not_overflow_badness() {
         let literal = format!("\"{}\"", "x".repeat(70_000));
         let code = format!("fn f() {{ g({literal}, 1); }}");
-        let out = format_source_code(&Config::default(), &code).unwrap();
-        assert_eq!(out, format!("fn f() {{\n    g(\n        {literal},\n        1,\n    );\n}}"));
+        let out = format_source_code(&Config::default(), &code).unwrap().code;
+        assert_eq!(
+            out,
+            format!("fn f() {{\n    g(\n        {literal},\n        1,\n    );\n}}")
+        );
+    }
+
+    const UNSUPPORTED: &str = "fn f() {\n    let   v = vec![1,   2];\n    try { 1 }\n}";
+
+    #[test]
+    fn unsupported_is_an_error_by_default() {
+        let Err(Error::Unsupported(unsupported)) =
+            format_source_code(&Config::default(), UNSUPPORTED)
+        else {
+            panic!("not reported");
+        };
+        let found = unsupported
+            .iter()
+            .map(|u| (u.line, u.column, u.what.as_str(), u.snippet.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            found,
+            [
+                (2, 15, "MACRO_EXPR", "vec![1,   2]"),
+                (3, 5, "a `try` block", "try { 1 }"),
+            ]
+        );
+    }
+
+    #[test]
+    fn unsupported_is_copied_when_allowed() {
+        let config = Config {
+            allow_unsupported: true,
+            check_result: true,
+            ..Config::default()
+        };
+        let formatted = format_source_code(&config, UNSUPPORTED).unwrap();
+        assert_eq!(
+            formatted.code,
+            "fn f() {\n    let v = vec![1,   2];\n    try { 1 }\n}"
+        );
+        assert_eq!(formatted.unsupported.len(), 2);
     }
 
     #[test]
@@ -135,7 +222,7 @@ mod tests {
         let code = "fn/*a*/f() { g(/**/ 1 /*  b  */, /** c*/ 2); }";
         let config = Config::default();
         assert_eq!(
-            format_source_code(&config, code).unwrap(),
+            format_source_code(&config, code).unwrap().code,
             "fn /* a */ f() {\n    g(/**/ 1 /* b */, /** c*/ 2);\n}"
         );
         let config = Config {
@@ -143,7 +230,7 @@ mod tests {
             ..Config::default()
         };
         assert_eq!(
-            format_source_code(&config, code).unwrap(),
+            format_source_code(&config, code).unwrap().code,
             "fn /*a*/ f() {\n    g(/**/ 1 /*  b  */, /** c*/ 2);\n}"
         );
     }

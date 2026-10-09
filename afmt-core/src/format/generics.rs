@@ -1,6 +1,7 @@
 //! Generic parameters, trait bounds and `where` clauses
 
 use super::expr::format_expr;
+use super::format_unsupported;
 use super::ty::format_type;
 use crate::format::common::{format_lifetime, format_name};
 use crate::formatter::Edge::{Comma, Operator, Tight};
@@ -99,7 +100,9 @@ fn format_type_bound(fmt: &Formatter, bound: TypeBound) -> Frag {
         || bound.const_token().is_some()
         || bound.async_token().is_some()
         || bound.l_brack_token().is_some();
-    assert!(!unsupported, "this bound is not supported yet: {bound:?}");
+    if unsupported {
+        return format_unsupported(fmt, bound.syntax(), "a bound modifier or binder");
+    }
     if let Some(lifetime) = bound.lifetime() {
         return format_lifetime(fmt, lifetime);
     }
@@ -125,10 +128,9 @@ pub(super) fn format_where_clause(fmt: &Formatter, clause: WhereClause, terminat
 
 /// `T: Clone + Copy` or `'a: 'b`
 fn format_where_pred(fmt: &Formatter, pred: WherePred) -> Frag {
-    assert!(
-        pred.for_binder().is_none(),
-        "`for<...>` is not supported yet: {pred:?}"
-    );
+    if pred.for_binder().is_some() {
+        return format_unsupported(fmt, pred.syntax(), "`for<...>` in a `where` predicate");
+    }
     let mut builder = Builder::new(fmt);
     match (pred.lifetime(), pred.ty()) {
         (Some(lifetime), _) => builder.push(format_lifetime(fmt, lifetime)),

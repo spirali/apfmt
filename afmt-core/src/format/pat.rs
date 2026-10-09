@@ -2,6 +2,7 @@
 
 use super::expr::{format_range, single_item_separator};
 use super::path::{format_name_ref, format_path};
+use super::{format_unsupported, format_unsupported_kind};
 use crate::comments::{has_comments, trivia_from};
 use crate::format::common::format_name;
 use crate::formatter::Edge::{Comma, Operator, Tight, Word};
@@ -114,12 +115,11 @@ fn format_or_pat(fmt: &Formatter, pat: OrPat) -> Frag {
         .syntax()
         .first_token()
         .filter(|t| t.kind() == SyntaxKind::PIPE);
-    assert!(
-        !leading.is_some_and(
-            |pipe| trivia_from(pipe.next_token()).any(|t| t.kind() == SyntaxKind::COMMENT)
-        ),
-        "not supported yet: a comment after a leading `|` in {pat:?}"
-    );
+    if leading
+        .is_some_and(|pipe| trivia_from(pipe.next_token()).any(|t| t.kind() == SyntaxKind::COMMENT))
+    {
+        return format_unsupported(fmt, pat.syntax(), "a comment after a leading `|`");
+    }
     let (first, rest) = operator_chain(fmt, pat.syntax(), SyntaxKind::PIPE, |node| {
         format_pat(fmt, Pat::cast(node).unwrap())
     });
@@ -217,6 +217,6 @@ pub(super) fn format_pat(fmt: &Formatter, pat: Pat) -> Frag {
         Pat::RecordPat(pat) => format_record_pat(fmt, pat),
         Pat::RestPat(pat) => format_rest_pat(fmt, pat),
         Pat::RangePat(pat) => format_range_pat(fmt, pat),
-        x => panic!("not supported yet: {x:?}"),
+        pat => format_unsupported_kind(fmt, pat.syntax()),
     }
 }

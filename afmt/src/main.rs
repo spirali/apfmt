@@ -2,8 +2,19 @@ use std::io::Read;
 use std::io::Write;
 use std::path::PathBuf;
 
-use afmt_core::Config;
-use clap::Parser;
+use afmt_core::{Config, UnsupportedSyntax};
+use clap::{Parser, ValueEnum};
+
+/// What to do with syntax that afmt cannot format yet
+#[derive(Clone, Copy, PartialEq, ValueEnum)]
+enum Unsupported {
+    /// Fail and list all of it on stderr, without output
+    Error,
+    /// Copy it unchanged into the output and list it on stderr
+    Warn,
+    /// Copy it unchanged into the output
+    Allow,
+}
 
 #[derive(Parser)]
 #[command(version, about = "TODO")]
@@ -27,9 +38,23 @@ struct Cli {
     /// whitespace, comments and trailing commas) and keep all comments; exits with code 1 otherwise
     #[clap(long)]
     result_check: bool,
+
+    /// What to do with syntax that afmt cannot format yet
+    #[clap(long, value_enum, default_value_t = Unsupported::Warn)]
+    unsupported: Unsupported,
 }
 
-fn process_error(error: afmt_core::Error) {
+/// Lists the syntax that afmt cannot format yet on stderr: `file:line:column: what: snippet`
+fn report_unsupported(file: &str, unsupported: &[UnsupportedSyntax], suffix: &str) {
+    for u in unsupported {
+        eprintln!(
+            "{file}:{}:{}: not supported yet: {}{suffix}: {}",
+            u.line, u.column, u.what, u.snippet
+        );
+    }
+}
+
+fn process_error(file: &str, error: afmt_core::Error) {
     let stderr = &mut std::io::stderr();
     let mut handle = stderr.lock();
     match error {
@@ -40,6 +65,9 @@ fn process_error(error: afmt_core::Error) {
         }
         afmt_core::Error::GenericError(error) => {
             writeln!(handle, "{}", error).unwrap();
+        }
+        afmt_core::Error::Unsupported(unsupported) => {
+            report_unsupported(file, &unsupported, "");
         }
     };
 }
@@ -68,17 +96,27 @@ fn main() {
         dump_parse_tree: cli.dump_parse_tree,
         dump_doc_tree: cli.dump_doc_tree,
         check_result: cli.result_check,
+        allow_unsupported: cli.unsupported != Unsupported::Error,
         ..Config::default()
     };
+    let file = cli
+        .file
+        .as_ref()
+        .map_or("<stdin>".to_string(), |path| path.display().to_string());
     let result = if cli.doc_graph_to_dot {
         afmt_core::doc_graph_to_dot(&cfg, &code)
     } else {
-        afmt_core::format_source_code(&cfg, &code)
+        afmt_core::format_source_code(&cfg, &code).map(|formatted| {
+            if cli.unsupported == Unsupported::Warn {
+                report_unsupported(&file, &formatted.unsupported, " (copied unchanged)");
+            }
+            formatted.code
+        })
     };
     let out = match result {
         Ok(out) => out,
         Err(e) => {
-            process_error(e);
+            process_error(&file, e);
             std::process::exit(1);
         }
     };

@@ -14,12 +14,21 @@ use crate::resolver::Resolver;
 pub(crate) use builder::Builder;
 use frag::{Branch, Branches};
 pub(crate) use frag::{Edge, Frag};
-use ra_ap_syntax::{SyntaxNode, SyntaxToken};
+use ra_ap_syntax::{SyntaxNode, SyntaxToken, TextRange};
 use std::cell::RefCell;
+
+/// Source text that afmt cannot format yet, copied unchanged (see `Formatter::unsupported`)
+pub(crate) struct Unsupported {
+    /// The copied source text
+    pub range: TextRange,
+    /// What is not supported, e.g. `MACRO_EXPR`
+    pub what: String,
+}
 
 pub(crate) struct Formatter<'a> {
     doc_arena: RefCell<DocArena>,
     config: &'a Config,
+    unsupported: RefCell<Vec<Unsupported>>,
 }
 
 impl<'a> Formatter<'a> {
@@ -27,6 +36,7 @@ impl<'a> Formatter<'a> {
         Formatter {
             config,
             doc_arena: RefCell::new(DocArena::new()),
+            unsupported: RefCell::new(Vec::new()),
         }
     }
 
@@ -93,6 +103,21 @@ impl<'a> Formatter<'a> {
             end,
             Some(last.clone()),
         )
+    }
+
+    /// The source text from `first` to `last` unchanged (see `verbatim_range`), recorded as text that
+    /// cannot be formatted yet because of `what` (see `take_unsupported`)
+    pub fn unsupported(&self, first: &SyntaxToken, last: &SyntaxToken, what: String) -> Frag {
+        let range = TextRange::new(first.text_range().start(), last.text_range().end());
+        self.unsupported
+            .borrow_mut()
+            .push(Unsupported { range, what });
+        self.verbatim_range(first, last, Word, Word)
+    }
+
+    /// The text recorded by `unsupported`, in the order it was copied
+    pub fn take_unsupported(&self) -> Vec<Unsupported> {
+        self.unsupported.take()
     }
 
     /// Just the token, without a cursor: the caller places the trivia (comments) that follow it

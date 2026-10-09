@@ -7,6 +7,7 @@ use super::pat::{format_pat, pat_layouts};
 use super::path::{format_generic_arg_list, format_name_ref, format_path};
 use super::stmt::{format_block_expr, format_block_expr_with_tail, push_block_prefix};
 use super::ty::{format_ret_type, format_type};
+use super::{format_unsupported, format_unsupported_kind};
 use crate::format::common::{format_lifetime, format_repeat, push_modifiers};
 use crate::formatter::Edge::{BraceClose, BraceOpen, Comma, Operator, Tight, Word};
 use crate::formatter::{Builder, Formatter, Frag};
@@ -555,6 +556,9 @@ fn collect_postfix_chain(expr: Expr, postfix: &mut Vec<Expr>) -> Expr {
 /// `block` broken, or on a single line if it holds just an expression (see `single_line_block_expr`):
 /// `unsafe { x }`
 pub(super) fn format_block_or_inline(fmt: &Formatter, block: BlockExpr) -> Frag {
+    if block.try_block_modifier().is_some() {
+        return format_unsupported(fmt, block.syntax(), "a `try` block");
+    }
     let Some(tail) = single_line_block_expr(&block) else {
         return format_block_expr(fmt, block);
     };
@@ -617,7 +621,13 @@ struct ClosureLayouts {
 /// on one line are aligned after `|` (see `closure_params_layouts`); a body in braces then keeps them,
 /// as in rustfmt.
 fn closure_layouts(fmt: &Formatter, expr: ClosureExpr) -> ClosureLayouts {
-    assert!(expr.for_binder().is_none(), "not supported yet: {expr:?}");
+    if expr.for_binder().is_some() {
+        let all = format_unsupported(fmt, expr.syntax(), "`for<...>` on a closure");
+        return ClosureLayouts {
+            all,
+            overflow: None,
+        };
+    }
     let mut prefix = Builder::new(fmt);
     push_modifiers(&mut prefix, expr.syntax());
     let (flat_params, broken_params) = closure_params_layouts(fmt, expr.param_list().unwrap());
@@ -933,13 +943,11 @@ pub(super) fn format_head_expr(fmt: &Formatter, expr: Expr) -> HeadLayouts {
 }
 
 pub(super) fn format_expr(fmt: &Formatter, expr: Expr) -> Frag {
-    if let Some(attr) = expr
-        .syntax()
-        .children()
-        .find(|c| c.kind() == SyntaxKind::ATTR)
-    {
-        // It would be lost
-        panic!("not supported yet: {attr:?}");
+    // Copied with the attributes, which would be lost otherwise
+    if let Some(attr) = expr.attrs().next() {
+        let first = attr.syntax().first_token().unwrap();
+        let last = expr.syntax().last_token().unwrap();
+        return fmt.unsupported(&first, &last, "an attribute on an expression".into());
     }
     match expr {
         Expr::Literal(expr) => format_literal(fmt, expr),
@@ -967,6 +975,6 @@ pub(super) fn format_expr(fmt: &Formatter, expr: Expr) -> Frag {
         Expr::LoopExpr(expr) => format_loop_expr(fmt, expr),
         Expr::WhileExpr(expr) => format_while_expr(fmt, expr),
         Expr::ForExpr(expr) => format_for_expr(fmt, expr),
-        x => panic!("not supported yet: {x:?}"),
+        expr => format_unsupported_kind(fmt, expr.syntax()),
     }
 }

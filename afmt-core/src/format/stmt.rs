@@ -2,6 +2,7 @@
 
 use super::attr::{format_attr, format_with_attrs};
 use super::expr::{format_expr, format_head_expr, format_head_followed_by, format_if_expr};
+use super::format_unsupported;
 use super::item::format_item;
 use super::pat::format_pat;
 use super::ty::format_type;
@@ -95,6 +96,9 @@ pub(super) fn format_block_expr_with_tail(
     body: BlockExpr,
     tail: Option<Frag>,
 ) -> Frag {
+    if body.try_block_modifier().is_some() {
+        return format_unsupported(fmt, body.syntax(), "a `try` block");
+    }
     let mut builder = Builder::new(fmt);
     push_block_prefix(fmt, &mut builder, &body);
     builder.push(format_stmt_list(fmt, body.stmt_list().unwrap(), tail));
@@ -104,8 +108,9 @@ pub(super) fn format_block_expr_with_tail(
 /// Pushes the label and the modifiers of a block in front of its `{`: `'a: `, `unsafe `, `async move `
 pub(super) fn push_block_prefix(fmt: &Formatter, builder: &mut Builder, body: &BlockExpr) {
     push_label(fmt, builder, body.label());
-    if let Some(modifier) = body.try_block_modifier() {
-        panic!("not supported yet: {modifier:?}");
-    }
+    debug_assert!(
+        body.try_block_modifier().is_none(),
+        "copied by `format_block_or_inline` and `format_block_expr_with_tail`"
+    );
     push_modifiers(builder, body.syntax());
 }

@@ -7,6 +7,7 @@ use super::pat::format_pat;
 use super::path::format_path;
 use super::stmt::format_block_expr;
 use super::ty::{format_ret_type, format_type};
+use super::{format_unsupported, format_unsupported_kind};
 use crate::format::common::{format_lifetime, format_name};
 use crate::formatter::Edge::{Comma, Operator, Tight, Word};
 use crate::formatter::{Builder, Formatter, Frag};
@@ -45,10 +46,9 @@ fn format_self_param(fmt: &Formatter, param: SelfParam) -> Frag {
 
 /// `pat: Type`, just `Type` in a function pointer type, or just `pat` in a closure
 fn format_param(fmt: &Formatter, param: Param) -> Frag {
-    assert!(
-        param.dotdotdot_token().is_none(),
-        "not supported yet: {param:?}"
-    );
+    if param.dotdotdot_token().is_some() {
+        return format_unsupported(fmt, param.syntax(), "a variadic parameter");
+    }
     let mut builder = Builder::new(fmt);
     if let Some(pat) = param.pat() {
         builder.push(format_pat(fmt, pat));
@@ -675,7 +675,7 @@ fn format_impl(fmt: &Formatter, item: Impl) -> Frag {
 /// `trait Name<T>: Bounds where ... { items }`
 fn format_trait(fmt: &Formatter, item: Trait) -> Frag {
     if item.eq_token().is_some() {
-        panic!("not supported yet: a trait alias {item:?}");
+        return format_unsupported(fmt, item.syntax(), "a trait alias");
     }
     let mut builder = Builder::new(fmt);
     builder.push(format_named_item_head(
@@ -837,6 +837,6 @@ pub(super) fn format_item(fmt: &Formatter, item: Item) -> Frag {
         Item::Static(item) => format_static(fmt, item),
         Item::TypeAlias(item) => format_type_alias(fmt, item),
         Item::ExternBlock(item) => format_extern_block(fmt, item),
-        x => panic!("not supported yet: {x:?}"),
+        item => format_unsupported_kind(fmt, item.syntax()),
     })
 }
