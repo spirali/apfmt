@@ -53,6 +53,17 @@ pub(crate) fn rest_of_line_is_comments(token: &SyntaxToken, separator: Option<Sy
     true
 }
 
+/// Whether only comments and the `separator` follow `token` up to the end of its line
+pub(crate) fn line_ends_after(token: &SyntaxToken, separator: Option<SyntaxKind>) -> bool {
+    std::iter::successors(token.next_token(), |t| t.next_token())
+        .find(|t| match t.kind() {
+            SyntaxKind::COMMENT => false,
+            SyntaxKind::WHITESPACE => count_newlines(t) > 0,
+            kind => Some(kind) != separator,
+        })
+        .is_none_or(|t| t.kind() == SyntaxKind::WHITESPACE)
+}
+
 /// Whether an own-line comment (one on a later line) follows `token` before the next code token
 pub(crate) fn own_line_comment_follows(token: &SyntaxToken) -> bool {
     let mut newlines = 0;

@@ -134,6 +134,7 @@ fn flat_list(
 fn fill_list(fmt: &Formatter, items: &[ListItem], open: Option<SyntaxToken>) -> Frag {
     let mut builder = Builder::with_cursor(fmt, open);
     let line_comments = builder.push_comments_ending_line();
+    builder.align_trailing_comments(fmt.align_group());
     for (i, item) in items.iter().enumerate() {
         builder.push_leading_comments();
         builder.push(item.frag.clone());
@@ -196,6 +197,7 @@ fn vertical_list(
     let mut builder = Builder::with_cursor(fmt, open);
     let line_comments = builder.push_comments_ending_line();
     builder.push_leading_comments();
+    builder.align_trailing_comments(fmt.align_group());
     for (item, is_last) in with_is_last(items) {
         let ends_line = match &mut lines {
             Some(lines) => {

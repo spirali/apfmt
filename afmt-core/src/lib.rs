@@ -217,6 +217,25 @@ mod tests {
     }
 
     #[test]
+    fn trailing_comment_align_threshold() {
+        let code = "struct S {\n    a: u8, // a\n    bb: u8, // b\n    cccccccccc: String, // c\n}";
+        let all = "struct S {\n    a: u8,              // a\n    bb: u8,             // b\n    cccccccccc: String, // c\n}";
+        let without_widest =
+            "struct S {\n    a: u8,  // a\n    bb: u8, // b\n    cccccccccc: String, // c\n}";
+        assert_eq!(
+            format_source_code(&Config::default(), code).unwrap().code,
+            all
+        );
+        for (threshold, expected) in [(12, all), (11, without_widest), (0, code)] {
+            let config = Config {
+                trailing_comment_align_threshold: threshold,
+                ..Config::default()
+            };
+            assert_eq!(format_source_code(&config, code).unwrap().code, expected);
+        }
+    }
+
+    #[test]
     fn normalize_comments() {
         let code = "fn/*a*/f() { g(/**/ 1 /*  b  */, /** c*/ 2); }";
         let config = Config::default();

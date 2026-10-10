@@ -1,8 +1,8 @@
 use super::Builder;
 use super::frag::{Edge, Frag};
 use crate::comments::{
-    TriviaStop, count_newlines, is_leading_block_comment, is_line_comment, next_code_token,
-    post_comments_stop, rest_of_line_is_comments, trivia_end, trivia_from,
+    TriviaStop, count_newlines, is_leading_block_comment, is_line_comment, line_ends_after,
+    next_code_token, post_comments_stop, rest_of_line_is_comments, trivia_end, trivia_from,
 };
 use crate::doc::{COMMA_DOC, DocId, EMPTY_DOC, EMPTYLINE_DOC, NEWLINE_DOC, SEMICOLON_DOC};
 use crate::formatter::Edge::{Break, Comma, Nothing, Word};
@@ -129,9 +129,15 @@ impl<'a> Builder<'a> {
     }
 
     /// Pushes the comment `token`; a line comment ends the line (`Break`)
-    fn push_comment(&mut self, token: &SyntaxToken) {
+    fn push_comment(&mut self, token: &SyntaxToken, trailing: bool) {
         let end = if is_line_comment(token) { Break } else { Word };
-        let doc_id = self.fmt.comment_doc(token);
+        let mut doc_id = self.fmt.comment_doc(token);
+        if let Some(group) = self.align_group
+            && trailing
+            && !token.text().contains('\n')
+        {
+            doc_id = self.fmt.concat(self.fmt.align_mark(group), doc_id);
+        }
         self.push(Frag::new(doc_id, Edge::Comment, end, None));
     }
 
@@ -142,7 +148,7 @@ impl<'a> Builder<'a> {
         let first_comment = trivia_from(token).find(|t| t.kind() == SyntaxKind::COMMENT);
         if let Some(comment) = first_comment {
             self.push_line_break_if(NEWLINE_DOC, |end| end != Nothing);
-            self.push_comment(&comment);
+            self.push_comment(&comment, false);
             self.frag.cursor = Some(comment);
             self.push_comments();
         }
@@ -176,11 +182,15 @@ impl<'a> Builder<'a> {
                     if newlines > 0 && !self.frag.is_empty() {
                         self.push_blank_lines(newlines);
                     }
+                    let trailing = newlines == 0
+                        && !pushed
+                        && !self.frag.is_empty()
+                        && line_ends_after(&token, separator.filter(|_| before_separator));
                     if newlines > 0 {
                         self.push_line_break_if(NEWLINE_DOC, |end| end != Nothing);
                     }
                     newlines = 0;
-                    self.push_comment(&token);
+                    self.push_comment(&token, trailing);
                     pushed = true;
                 }
                 // The separator is moved before the comments, so newlines in front of it do not count

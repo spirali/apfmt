@@ -2,7 +2,7 @@ use super::Formatter;
 use super::frag::{Branch, Branches, Edge, Frag, compute_space};
 use crate::comments::TriviaStop;
 use crate::comments::own_line_comment_follows;
-use crate::doc::{DocId, EMPTY_DOC, EMPTYLINE_DOC, NEWLINE_DOC, NEWLINE_OR_SPACE_DOC};
+use crate::doc::{AlignGroup, DocId, EMPTY_DOC, EMPTYLINE_DOC, NEWLINE_DOC, NEWLINE_OR_SPACE_DOC};
 use crate::formatter::Edge::{BraceClose, BraceOpen, Break, Close, LineStart, Nothing};
 use ra_ap_syntax::SyntaxToken;
 
@@ -16,6 +16,7 @@ fn is_continuation(edge: Edge) -> bool {
 pub(crate) struct Builder<'a> {
     pub(super) fmt: &'a Formatter<'a>,
     pub(super) frag: Frag,
+    pub(super) align_group: Option<AlignGroup>,
 }
 
 impl<'a> Builder<'a> {
@@ -23,13 +24,22 @@ impl<'a> Builder<'a> {
         Builder {
             fmt,
             frag: Frag::empty(),
+            align_group: None,
         }
     }
 
     pub fn with_cursor(fmt: &'a Formatter, cursor: Option<SyntaxToken>) -> Self {
         let mut frag = Frag::empty();
         frag.cursor = cursor;
-        Builder { fmt, frag }
+        Builder {
+            fmt,
+            frag,
+            align_group: None,
+        }
+    }
+
+    pub fn align_trailing_comments(&mut self, group: Option<AlignGroup>) {
+        self.align_group = group;
     }
 
     /// The fragments one after another, see `push`

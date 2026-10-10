@@ -27,6 +27,22 @@ impl Cost {
     }
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
+pub(crate) struct AlignGroup(u32);
+
+impl AlignGroup {
+    #[inline]
+    pub fn new(value: u32) -> Self {
+        AlignGroup(value)
+    }
+
+    pub fn bump(&mut self) -> AlignGroup {
+        let out = AlignGroup(self.0);
+        self.0 += 1;
+        out
+    }
+}
+
 pub(crate) enum DocNode {
     Empty,
     Token(SyntaxToken),
@@ -50,6 +66,8 @@ pub(crate) enum DocNode {
     /// Only layouts of the inner doc whose last line ends at most at the indentation of a nested line
     /// (`indent + indent_width`), e.g. a short chain root that the next element may follow: `x.baz?`
     ShortLastLine(DocId),
+    /// Padded by the renderer to align the trailing comments of a group
+    AlignMark(AlignGroup),
 }
 
 pub(crate) struct DocArena {
@@ -124,6 +142,9 @@ impl DocArena {
                 }
                 DocNode::ShortLastLine(_) => ("ShortLastLine".into(), "house", "lightpink"),
                 DocNode::Empty => ("<empty>".into(), "box", "lightyellow"),
+                DocNode::AlignMark(group) => {
+                    (format!("AlignMark {}", group.0), "box", "lightyellow")
+                }
             };
             let label = label
                 .replace('\\', "\\\\")
@@ -136,7 +157,11 @@ impl DocArena {
             )
             .unwrap();
             let children: Vec<(DocId, &str)> = match node {
-                DocNode::Token(_) | DocNode::Text(_) | DocNode::Newline | DocNode::Empty => vec![],
+                DocNode::Token(_)
+                | DocNode::Text(_)
+                | DocNode::Newline
+                | DocNode::Empty
+                | DocNode::AlignMark(_) => vec![],
                 DocNode::Concat(d1, d2) => vec![(*d1, "1"), (*d2, "2")],
                 DocNode::Alt(d1, d2) => vec![(*d1, ""), (*d2, "")],
                 DocNode::Nest(d)
@@ -171,6 +196,7 @@ impl DocArena {
         print!("#{} ", doc.0);
         match self.get_node(doc) {
             DocNode::Empty => println!("Empty"),
+            DocNode::AlignMark(group) => println!("AlignMark({})", group.0),
             DocNode::Token(token) => println!("Token({:?})", token.text()),
             DocNode::Text(text) => println!("Text({:?})", text),
             DocNode::Newline => println!("Newline"),

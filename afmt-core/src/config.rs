@@ -23,6 +23,8 @@ pub struct Config {
     /// (`a, b, c,` / `d, e,`) instead of one per line; every argument has to be simple (a literal, a name).
     /// 0 disables it.
     pub short_array_element_width_threshold: u32,
+    /// The gap after which the widest list items do not align their trailing comments; 0 disables it
+    pub trailing_comment_align_threshold: u32,
     /// Puts a single space inside single-line block comments: `/*a*/` -> `/* a */`
     pub normalize_comments: bool,
     pub edition: Edition,
@@ -48,6 +50,7 @@ impl Default for Config {
             struct_variant_width: 35,
             single_line_if_else_max_width: 50,
             short_array_element_width_threshold: 10,
+            trailing_comment_align_threshold: 40,
             normalize_comments: true,
             edition: Edition::CURRENT,
             dump_parse_tree: false,

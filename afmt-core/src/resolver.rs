@@ -1,5 +1,5 @@
 use crate::config::Config;
-use crate::doc::{Cost, DocArena, DocId, DocNode};
+use crate::doc::{AlignGroup, Cost, DocArena, DocId, DocNode};
 use smallvec::{SmallVec, smallvec};
 use std::cell::RefCell;
 use std::cmp::Ordering;
@@ -85,6 +85,7 @@ pub enum Content {
     Newline,
     Concat(Rc<Content>, Rc<Content>),
     Indent(u32, Rc<Content>),
+    Mark(AlignGroup),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -159,6 +160,8 @@ pub(crate) struct Renderer<'a> {
     out: String,
     indent: u32,
     fresh: bool,
+    paddings: Vec<u32>,
+    marks: usize,
 }
 
 impl<'a> Renderer<'a> {
@@ -197,8 +200,151 @@ impl<'a> Renderer<'a> {
                 self.render(c1);
                 self.render(c2);
             }
+            Content::Mark(_) => {
+                for _ in 0..self.paddings[self.marks] {
+                    self.out.push(' ');
+                }
+                self.marks += 1;
+            }
         }
     }
+}
+
+struct MarkedComment {
+    group: AlignGroup,
+    line: u32,
+    start: u32,
+    end: u32,
+}
+
+struct MarkCollector<'a> {
+    resolver: &'a Resolver<'a>,
+    indent: u32,
+    col: Option<u32>,
+    line: u32,
+    marks: Vec<MarkedComment>,
+    open: Vec<usize>,
+}
+
+impl MarkCollector<'_> {
+    fn collect(&mut self, content: &Content) {
+        match content {
+            Content::Text(t) => {
+                let s = match self.resolver.doc_arena.get_node(*t) {
+                    DocNode::Token(token) => token.text(),
+                    DocNode::Text(t) => t,
+                    DocNode::Empty => return,
+                    _ => unreachable!(),
+                };
+                if s.is_empty() {
+                    return;
+                }
+                let start = self.col.unwrap_or(self.indent);
+                let mut lines = s.split('\n');
+                let mut col = start + text_width(lines.next().unwrap());
+                for line in lines {
+                    self.end_line(col);
+                    col = text_width(line);
+                }
+                self.col = Some(col);
+            }
+            Content::Newline => {
+                self.end_line(self.col.unwrap_or(0));
+                self.col = None;
+            }
+            Content::Indent(indent, c) => {
+                let old = self.indent;
+                self.indent = *indent;
+                self.collect(c);
+                self.indent = old;
+            }
+            Content::Concat(c1, c2) => {
+                self.collect(c1);
+                self.collect(c2);
+            }
+            Content::Mark(group) => {
+                self.open.push(self.marks.len());
+                self.marks.push(MarkedComment {
+                    group: *group,
+                    line: self.line,
+                    start: self.col.unwrap_or(self.indent),
+                    end: 0,
+                });
+            }
+        }
+    }
+
+    fn end_line(&mut self, end: u32) {
+        for i in self.open.drain(..) {
+            self.marks[i].end = end;
+        }
+        self.line += 1;
+    }
+}
+
+fn text_width(text: &str) -> u32 {
+    unicode_width::UnicodeWidthStr::width(text) as u32
+}
+
+/// The padding of each mark, aligning the comments of each run of consecutive marked lines
+fn align_marks(resolver: &Resolver, content: &Content) -> Vec<u32> {
+    let mut collector = MarkCollector {
+        resolver,
+        indent: 0,
+        col: None,
+        line: 0,
+        marks: Vec::new(),
+        open: Vec::new(),
+    };
+    collector.collect(content);
+    collector.end_line(collector.col.unwrap_or(0));
+    let marks = collector.marks;
+    let config = resolver.config;
+    let mut paddings = vec![0; marks.len()];
+    let mut groups: HashMap<AlignGroup, Vec<Vec<usize>>> = HashMap::new();
+    for (i, mark) in marks.iter().enumerate() {
+        let runs = groups.entry(mark.group).or_default();
+        match runs.last_mut() {
+            Some(run) if marks[*run.last().unwrap()].line + 1 == mark.line => run.push(i),
+            _ => runs.push(vec![i]),
+        }
+    }
+    for mut members in groups.into_values().flatten() {
+        members.retain(|&i| marks[i].end <= config.max_width);
+        members.sort_by_key(|&i| marks[i].start);
+        let n = members.len();
+        if n < 2 {
+            continue;
+        }
+        // At most a quarter of the run (at least one line) is left out, keeping two lines
+        let few = (n / 4).max(1).min(n - 2);
+        let gap = |left_out: usize| {
+            marks[members[n - left_out]].start - marks[members[n - left_out - 1]].start
+        };
+        let outliers = (1..=few)
+            .find(|&left_out| gap(left_out) > config.trailing_comment_align_threshold)
+            .unwrap_or(0);
+        let mut aligned: Option<(Vec<usize>, u32)> = None;
+        for left_out in outliers..=few {
+            let set = &members[..n - left_out];
+            let column = marks[*set.last().unwrap()].start;
+            let fits = |&&i: &&usize| marks[i].end + (column - marks[i].start) <= config.max_width;
+            let set: Vec<usize> = set.iter().filter(fits).copied().collect();
+            if n - set.len() <= few
+                && aligned
+                    .as_ref()
+                    .is_none_or(|(best, _)| set.len() > best.len())
+            {
+                aligned = Some((set, column));
+            }
+        }
+        if let Some((set, column)) = aligned.filter(|(set, _)| set.len() >= 2) {
+            for i in set {
+                paddings[i] = column - marks[i].start;
+            }
+        }
+    }
+    paddings
 }
 
 pub(crate) struct Resolver<'a> {
@@ -238,6 +384,8 @@ impl<'a> Resolver<'a> {
             out: String::with_capacity(reserve_size),
             indent: 0,
             fresh: true,
+            paddings: align_marks(self, &best.content),
+            marks: 0,
         };
         renderer.render(&best.content);
         renderer.out
@@ -260,6 +408,10 @@ impl<'a> Resolver<'a> {
             DocNode::Token(token) => resolve_text(token.text()),
             DocNode::Text(text) => resolve_text(text),
             DocNode::Empty => resolve_text(""),
+            DocNode::AlignMark(group) => LayoutSet::single(Layout {
+                measure: Measure::empty(&ctx),
+                content: Rc::new(Content::Mark(*group)),
+            }),
             DocNode::Newline if ctx.flat => LayoutSet::empty(),
             DocNode::Newline => LayoutSet::single(Layout {
                 measure: Measure {

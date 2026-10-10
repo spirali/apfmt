@@ -9,6 +9,7 @@ use super::expr::{
 use super::pat::pat_layouts;
 use super::stmt::{format_block_expr, format_block_expr_with_tail};
 use crate::comments::has_comments;
+use crate::doc::AlignGroup;
 use crate::formatter::Edge::{Operator, Word};
 use crate::formatter::{Builder, Formatter, Frag};
 use crate::layout::head::HeadLayouts;
@@ -90,9 +91,10 @@ pub(super) fn format_for_expr(fmt: &Formatter, expr: ForExpr) -> Frag {
 pub(super) fn format_match_expr(fmt: &Formatter, expr: MatchExpr) -> Frag {
     let head = format_head_expr(fmt, expr.expr().unwrap());
     let list = expr.match_arm_list().unwrap();
+    let group = fmt.align_group();
     let lines = list.attrs().map(|attr| format_attr(fmt, attr)).chain(
         list.arms()
-            .map(|arm| format_with_attrs(fmt, &arm, false, || format_match_arm(fmt, &arm))),
+            .map(|arm| format_with_attrs(fmt, &arm, false, || format_match_arm(fmt, &arm, group))),
     );
     let arms = Delimiters::braces_of(list.syntax()).format_block(fmt, lines);
     format_head_with_block(fmt, expr.match_token().unwrap(), &head, arms)
@@ -160,7 +162,7 @@ fn arm_body_layouts(fmt: &Formatter, body: Expr) -> (Option<Frag>, Frag) {
 /// `pat if guard => body,` (Style Guide "Match"): the body on the line of `=>` with a comma, or in a
 /// block without one (see `arm_body_layouts`). A broken left-hand side costs a split; with a guard, it
 /// breaks before `if`, and the block starts on its own line: `pat` / `    if guard =>` / `{`.
-fn format_match_arm(fmt: &Formatter, arm: &MatchArm) -> Frag {
+fn format_match_arm(fmt: &Formatter, arm: &MatchArm, group: Option<AlignGroup>) -> Frag {
     let pat = pat_layouts(fmt, arm.pat().unwrap());
     let all_pat = pat.clone().all(fmt);
     let guard = arm.guard().map(|guard| {
@@ -190,6 +192,7 @@ fn format_match_arm(fmt: &Formatter, arm: &MatchArm) -> Frag {
     lhs.push(arrow.clone());
     let with_body = |mut builder: Builder, body: Frag, comma: bool| {
         builder.push(body);
+        builder.align_trailing_comments(group);
         if comma {
             builder.push_separator(SyntaxKind::COMMA);
         } else {

@@ -7,14 +7,16 @@ mod trivia;
 
 use crate::config::Config;
 use crate::doc::DocNode::Newline;
-use crate::doc::{Cost, DocArena, DocId, DocNode, EMPTY_DOC, NEWLINE_DOC, NEWLINE_OR_SPACE_DOC};
+use crate::doc::{
+    AlignGroup, Cost, DocArena, DocId, DocNode, EMPTY_DOC, NEWLINE_DOC, NEWLINE_OR_SPACE_DOC,
+};
 use crate::formatter::Edge::{Keyword, LineStart, Nothing, Word};
 use crate::resolver::Resolver;
 pub(crate) use builder::Builder;
 use frag::{Branch, Branches};
 pub(crate) use frag::{Edge, Frag};
 use ra_ap_syntax::{SyntaxNode, SyntaxToken, TextRange};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use trivia::{multiline_comment_lines, normalize_block_comment};
 
 /// Source text that afmt cannot format yet, copied unchanged (see `Formatter::unsupported`)
@@ -29,6 +31,7 @@ pub(crate) struct Formatter<'a> {
     doc_arena: RefCell<DocArena>,
     config: &'a Config,
     unsupported: RefCell<Vec<Unsupported>>,
+    align_group_id_counter: Cell<AlignGroup>,
 }
 
 impl<'a> Formatter<'a> {
@@ -37,7 +40,19 @@ impl<'a> Formatter<'a> {
             config,
             doc_arena: RefCell::new(DocArena::new()),
             unsupported: RefCell::new(Vec::new()),
+            align_group_id_counter: Cell::new(AlignGroup::new(0)),
         }
+    }
+
+    /// `None` if the alignment of trailing comments is disabled
+    pub fn align_group(&self) -> Option<AlignGroup> {
+        if self.config.trailing_comment_align_threshold == 0 {
+            return None;
+        }
+        let mut counter = self.align_group_id_counter.get();
+        let new_id = counter.bump();
+        self.align_group_id_counter.set(counter);
+        Some(new_id)
     }
 
     #[inline]
@@ -371,6 +386,10 @@ impl<'a> Formatter<'a> {
         Resolver::new(self.doc_arena.into_inner(), self.config, root)
     }
 
+    fn align_mark(&self, group: AlignGroup) -> DocId {
+        self.make_node(DocNode::AlignMark(group))
+    }
+
     fn comment_doc(&self, token: &SyntaxToken) -> DocId {
         if let Some(lines) = multiline_comment_lines(token) {
             // The lines are aligned to the column of the comment start
@@ -404,7 +423,7 @@ impl<'a> Formatter<'a> {
         match self.doc_arena.borrow().get_node(doc_id) {
             DocNode::Token(token) => text_width(token.text()),
             DocNode::Text(t) => text_width(t),
-            DocNode::Empty => Some(0),
+            DocNode::Empty | DocNode::AlignMark(_) => Some(0),
             Newline | DocNode::Nest(_) | DocNode::Align(_) => None,
             DocNode::Flat(d) => self.flat_width_doc(*d),
             DocNode::MultiLine(_) => None,
