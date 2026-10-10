@@ -6,6 +6,7 @@ mod control;
 mod expr;
 mod generics;
 mod item;
+mod macros;
 mod pat;
 mod path;
 mod stmt;
@@ -13,7 +14,7 @@ mod ty;
 
 use self::attr::format_attr;
 use self::item::format_item;
-use crate::comments::{count_newlines, next_code_token, trivia_from};
+use crate::comments::{count_newlines, first_code_token, next_code_token, trivia_from};
 use crate::formatter::Edge::Word;
 use crate::formatter::{Builder, Formatter, Frag};
 use ra_ap_syntax::ast::{HasAttrs, HasModuleItem};
@@ -68,6 +69,19 @@ pub(super) fn format_unsupported(
         })
         .unwrap();
     fmt.unsupported(&first, &node.last_token().unwrap(), what.into())
+}
+
+/// `format_unsupported` with the attributes of `node`, which are lost otherwise
+pub(super) fn format_unsupported_with_attrs(
+    fmt: &Formatter,
+    node: &SyntaxNode,
+    what: impl Into<String>,
+) -> Frag {
+    fmt.unsupported(
+        &first_code_token(node),
+        &node.last_token().unwrap(),
+        what.into(),
+    )
 }
 
 /// `format_unsupported` for a node not supported because of its kind, e.g. `MACRO_EXPR`

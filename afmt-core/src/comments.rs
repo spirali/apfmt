@@ -72,7 +72,10 @@ pub(crate) fn is_leading_block_comment(token: &SyntaxToken) -> bool {
     let after_opener = std::iter::successors(token.prev_token(), |t| t.prev_token())
         .find(|t| !t.kind().is_trivia())
         .is_some_and(|t| {
-            matches!(t.kind(), SyntaxKind::L_CURLY | SyntaxKind::L_PAREN | SyntaxKind::L_BRACK)
+            matches!(
+                t.kind(),
+                SyntaxKind::L_CURLY | SyntaxKind::L_PAREN | SyntaxKind::L_BRACK
+            )
         });
     token.kind() == SyntaxKind::COMMENT
         && token.text().starts_with("/*")
@@ -132,6 +135,11 @@ pub(crate) fn first_code_token(node: &SyntaxNode) -> SyntaxToken {
 /// The first token after `token` that is not trivia
 pub(crate) fn next_code_token(token: &SyntaxToken) -> Option<SyntaxToken> {
     std::iter::successors(token.next_token(), |t| t.next_token()).find(|t| !t.kind().is_trivia())
+}
+
+/// The first token before `token` that is not trivia
+pub(crate) fn prev_code_token(token: &SyntaxToken) -> Option<SyntaxToken> {
+    std::iter::successors(token.prev_token(), |t| t.prev_token()).find(|t| !t.kind().is_trivia())
 }
 
 /// Where taking the trivia after a token stops at the latest (see `trivia_end`)

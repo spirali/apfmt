@@ -59,6 +59,14 @@ impl Frag {
         Frag::new(EMPTY_DOC, Nothing, Nothing, None)
     }
 
+    /// The fragment with `cursor` as its last source token instead of its own, for a fragment built
+    /// from a copy of the source text that ends where `cursor` does (e.g. a macro's arguments parsed
+    /// again): the trivia after `cursor` is placed after the fragment
+    pub fn with_cursor(mut self, cursor: SyntaxToken) -> Self {
+        self.cursor = Some(cursor);
+        self
+    }
+
     /// Whether a layout of the fragment may end with a closing delimiter, e.g. a call `f(...)`
     pub fn may_end_with_delimiter(&self) -> bool {
         self.branches

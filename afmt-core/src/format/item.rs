@@ -3,6 +3,7 @@
 use super::attr::{attach_attrs, format_attr, format_with_attrs};
 use super::expr::format_expr;
 use super::generics::{format_generic_param_list, format_type_bound_list, format_where_clause};
+use super::macros::format_macro_call;
 use super::pat::format_pat;
 use super::path::format_path;
 use super::stmt::format_block_expr;
@@ -837,6 +838,7 @@ pub(super) fn format_item(fmt: &Formatter, item: Item) -> Frag {
         Item::Static(item) => format_static(fmt, item),
         Item::TypeAlias(item) => format_type_alias(fmt, item),
         Item::ExternBlock(item) => format_extern_block(fmt, item),
+        Item::MacroCall(item) => format_macro_call(fmt, &item),
         item => format_unsupported_kind(fmt, item.syntax()),
     })
 }

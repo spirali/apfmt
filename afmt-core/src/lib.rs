@@ -15,6 +15,7 @@ pub use crate::config::Config;
 use crate::format::format_source_file;
 use crate::formatter::{Formatter, Unsupported};
 use crate::rewrite::rewrite_source;
+use crate::utils::line_column;
 pub use error::{Error, Result, UnsupportedSyntax};
 use ra_ap_syntax::{AstNode, WalkEvent};
 use ra_ap_syntax::{NodeOrToken, SourceFile};
@@ -112,14 +113,12 @@ fn locate_unsupported(
     unsupported
         .into_iter()
         .map(|u| {
-            let start = usize::from(u.range.start());
-            let before = &source[..start];
-            let line_start = before.rfind('\n').map_or(0, |i| i + 1);
+            let (line, column) = line_column(&source, u.range.start());
             UnsupportedSyntax {
-                line: before.matches('\n').count() + 1,
-                column: before[line_start..].chars().count() + 1,
+                line,
+                column,
                 what: u.what,
-                snippet: source[start..usize::from(u.range.end())]
+                snippet: source[u.range]
                     .lines()
                     .next()
                     .unwrap_or_default()
@@ -180,7 +179,7 @@ mod tests {
         );
     }
 
-    const UNSUPPORTED: &str = "fn f() {\n    let   v = vec![1,   2];\n    try { 1 }\n}";
+    const UNSUPPORTED: &str = "fn f() {\n    let   v: m!() = 1;\n    try { 1 }\n}";
 
     #[test]
     fn unsupported_is_an_error_by_default() {
@@ -196,7 +195,7 @@ mod tests {
         assert_eq!(
             found,
             [
-                (2, 15, "MACRO_EXPR", "vec![1,   2]"),
+                (2, 14, "MACRO_TYPE", "m!()"),
                 (3, 5, "a `try` block", "try { 1 }"),
             ]
         );
@@ -212,7 +211,7 @@ mod tests {
         let formatted = format_source_code(&config, UNSUPPORTED).unwrap();
         assert_eq!(
             formatted.code,
-            "fn f() {\n    let v = vec![1,   2];\n    try { 1 }\n}"
+            "fn f() {\n    let v: m!() = 1;\n    try { 1 }\n}"
         );
         assert_eq!(formatted.unsupported.len(), 2);
     }

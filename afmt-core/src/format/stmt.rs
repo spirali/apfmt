@@ -108,9 +108,5 @@ pub(super) fn format_block_expr_with_tail(
 /// Pushes the label and the modifiers of a block in front of its `{`: `'a: `, `unsafe `, `async move `
 pub(super) fn push_block_prefix(fmt: &Formatter, builder: &mut Builder, body: &BlockExpr) {
     push_label(fmt, builder, body.label());
-    debug_assert!(
-        body.try_block_modifier().is_none(),
-        "copied by `format_block_or_inline` and `format_block_expr_with_tail`"
-    );
     push_modifiers(builder, body.syntax());
 }

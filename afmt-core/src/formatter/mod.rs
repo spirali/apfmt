@@ -393,9 +393,9 @@ impl<'a> Formatter<'a> {
             Newline | DocNode::Nest(_) | DocNode::Align(_) => None,
             DocNode::Flat(d) => self.flat_width_doc(*d),
             DocNode::MultiLine(_) => None,
-            DocNode::KeepTogether(d, _) | DocNode::Dispreferred(d, _) | DocNode::ShortLastLine(d) => {
-                self.flat_width_doc(*d)
-            }
+            DocNode::KeepTogether(d, _)
+            | DocNode::Dispreferred(d, _)
+            | DocNode::ShortLastLine(d) => self.flat_width_doc(*d),
             DocNode::Concat(a, b) => self
                 .flat_width_doc(*a)
                 .and_then(|size1| self.flat_width_doc(*b).map(|size2| size1 + size2)),

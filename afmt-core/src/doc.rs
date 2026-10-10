@@ -114,8 +114,12 @@ impl DocArena {
                 DocNode::Align(_) => ("Align".into(), "parallelogram", "aquamarine"),
                 DocNode::Flat(_) => ("Flat".into(), "hexagon", "pink"),
                 DocNode::MultiLine(_) => ("MultiLine".into(), "octagon", "plum"),
-                DocNode::KeepTogether(_, cost) => (format!("KeepTogether {}", cost.0), "doubleoctagon", "khaki"),
-                DocNode::Dispreferred(_, cost) => (format!("Dispreferred {}", cost.0), "tripleoctagon", "khaki"),
+                DocNode::KeepTogether(_, cost) => {
+                    (format!("KeepTogether {}", cost.0), "doubleoctagon", "khaki")
+                }
+                DocNode::Dispreferred(_, cost) => {
+                    (format!("Dispreferred {}", cost.0), "tripleoctagon", "khaki")
+                }
                 DocNode::ShortLastLine(_) => ("ShortLastLine".into(), "house", "lightpink"),
             };
             let label = label

@@ -180,19 +180,38 @@ fn aligned_list(fmt: &Formatter, items: &[ListItem], open: Option<SyntaxToken>) 
 
 /// One item per line with a trailing comma (unless it is `Never` or `Omitted`), indented; `open` is the opening
 /// delimiter and the comments following it are part of the list. With `keep_blank_lines`, blank lines between items are kept
-/// (up to `blank_lines_upper_bound`), e.g. between struct fields.
+/// (up to `blank_lines_upper_bound`), e.g. between struct fields. With `lines`, the lines have these
+/// numbers of items, each line on a single line (see `ListLayout::lines_if`).
 fn vertical_list(
     fmt: &Formatter,
     items: &[ListItem],
     open: Option<SyntaxToken>,
     keep_blank_lines: bool,
     trailing: TrailingSeparator,
+    lines: Option<&[usize]>,
 ) -> Frag {
+    let mut lines = lines.map(|lines| lines.iter().copied());
+    // The items left on the current line
+    let mut left = 0;
     let mut builder = Builder::with_cursor(fmt, open);
     let line_comments = builder.push_comments_ending_line();
     builder.push_leading_comments();
     for (item, is_last) in with_is_last(items) {
-        builder.push(item.frag.clone());
+        let ends_line = match &mut lines {
+            Some(lines) => {
+                if left == 0 {
+                    left = lines.next().unwrap();
+                }
+                left -= 1;
+                left == 0
+            }
+            None => true,
+        };
+        builder.push(if lines.is_some() {
+            fmt.flat(item.frag.clone())
+        } else {
+            item.frag.clone()
+        });
         let skip = matches!(
             trailing,
             TrailingSeparator::Never | TrailingSeparator::Omitted
@@ -205,6 +224,9 @@ fn vertical_list(
         if is_last && trailing == TrailingSeparator::Never {
             // The token after the list follows the last item on its line: `T: Clone;`
             break;
+        }
+        if !ends_line {
+            continue;
         }
         // Blank lines in front of the closing delimiter are dropped
         if keep_blank_lines && !is_last {
@@ -426,6 +448,8 @@ pub(crate) struct ListLayout {
     flat: Option<FlatLimit>,
     broken: BrokenList,
     trailing: TrailingSeparator,
+    /// The numbers of items on the lines of another broken layout, see `lines_if`
+    lines: Option<Vec<usize>>,
 }
 
 impl ListLayout {
@@ -437,6 +461,7 @@ impl ListLayout {
                 keep_blank_lines: false,
             },
             trailing: TrailingSeparator::IfVertical,
+            lines: None,
         }
     }
 
@@ -448,6 +473,7 @@ impl ListLayout {
                 keep_blank_lines: true,
             },
             trailing: TrailingSeparator::IfVertical,
+            lines: None,
         }
     }
 
@@ -475,6 +501,19 @@ impl ListLayout {
 
     pub fn trailing_separator(mut self, trailing: TrailingSeparator) -> Self {
         self.trailing = trailing;
+        self
+    }
+
+    /// With `lines`, the list may also be broken with these numbers of items on its lines, each line
+    /// on a single line, e.g. the arguments of a format-string macro: `x, y,` / `"{} {}",` / `a, b`;
+    /// the items must have no comments between them
+    pub fn lines_if(mut self, lines: Option<Vec<usize>>) -> Self {
+        debug_assert!(
+            lines
+                .as_ref()
+                .is_none_or(|lines| lines.iter().all(|&n| n > 0))
+        );
+        self.lines = lines;
         self
     }
 }
@@ -552,7 +591,14 @@ pub(crate) fn keyword_list(
 ) -> Frag {
     let mut builder = Builder::new(fmt);
     builder.push(fmt.token_without_cursor(keyword.clone(), Word));
-    builder.push(vertical_list(fmt, items, Some(keyword), false, trailing));
+    builder.push(vertical_list(
+        fmt,
+        items,
+        Some(keyword),
+        false,
+        trailing,
+        None,
+    ));
     builder.into_frag()
 }
 
@@ -599,9 +645,14 @@ pub(crate) fn delimited_list(
     }
     let open = Some(delims.open.clone());
     let mut broken = match layout.broken {
-        BrokenList::Vertical { keep_blank_lines } => {
-            vertical_list(fmt, items, open.clone(), keep_blank_lines, layout.trailing)
-        }
+        BrokenList::Vertical { keep_blank_lines } => vertical_list(
+            fmt,
+            items,
+            open.clone(),
+            keep_blank_lines,
+            layout.trailing,
+            None,
+        ),
         BrokenList::Fill => fill_list(fmt, items, open.clone()),
         BrokenList::Aligned => aligned_list(fmt, items, open.clone()),
     };
@@ -628,5 +679,13 @@ pub(crate) fn delimited_list(
             flat_layout(fmt, delims, items, limit, layout.trailing),
         );
     }
-    delims.wrap_body(fmt, layouts)
+    let layouts = delims.wrap_body(fmt, layouts);
+    match &layout.lines {
+        Some(lines) => {
+            debug_assert_eq!(lines.iter().sum::<usize>(), items.len());
+            let grouped = vertical_list(fmt, items, open, false, layout.trailing, Some(lines));
+            fmt.alt_frag(layouts, delims.wrap_body(fmt, grouped))
+        }
+        None => layouts,
+    }
 }

@@ -3,11 +3,12 @@
 use super::attr::format_with_attrs;
 use super::control::{format_for_expr, format_loop_expr, format_match_expr, format_while_expr};
 use super::item::closure_params_layouts;
+use super::macros::{format_macro_call, is_list_macro};
 use super::pat::{format_pat, pat_layouts};
 use super::path::{format_generic_arg_list, format_name_ref, format_path};
 use super::stmt::{format_block_expr, format_block_expr_with_tail, push_block_prefix};
 use super::ty::{format_ret_type, format_type};
-use super::{format_unsupported, format_unsupported_kind};
+use super::{format_unsupported, format_unsupported_kind, format_unsupported_with_attrs};
 use crate::format::common::{format_lifetime, format_repeat, push_modifiers};
 use crate::formatter::Edge::{BraceClose, BraceOpen, Comma, Operator, Tight, Word};
 use crate::formatter::{Builder, Formatter, Frag};
@@ -32,7 +33,6 @@ fn format_path_expr(fmt: &Formatter, path_expr: PathExpr) -> Frag {
 
 /// Whether a single argument can overflow, i.e. start on the line of `(` and end on the line of `)`:
 /// `f(if a {\n ...\n})`. Follows the combinable expressions of the style guide.
-// TODO: macros once they are supported
 fn is_combinable_expr(expr: &Expr) -> bool {
     match expr {
         Expr::CallExpr(_)
@@ -44,6 +44,7 @@ fn is_combinable_expr(expr: &Expr) -> bool {
         | Expr::ClosureExpr(_)
         | Expr::RecordExpr(_)
         | Expr::MatchExpr(_) => true,
+        expr if is_list_macro(expr) => true,
         // `f(!g(\n...\n))`, `f(&[\n...\n])`
         Expr::PrefixExpr(expr) => expr.expr().is_some_and(|e| is_combinable_expr(&e)),
         Expr::RefExpr(expr) => expr.expr().is_some_and(|e| is_combinable_expr(&e)),
@@ -52,9 +53,28 @@ fn is_combinable_expr(expr: &Expr) -> bool {
     }
 }
 
-/// Simple expressions in the sense of rustfmt's `is_simple_expr`: literals, plain names and unary
-/// operators applied to them
-fn is_simple_expr(expr: &Expr) -> bool {
+/// Simple expressions in the sense of rustfmt's `is_simple_expr`: literals, plain names, and simple
+/// expressions after a unary operator, `&` or `&mut`, followed by a field, `?` or `as Type`, indexed by
+/// a simple expression (`a[i]`) or repeated (`[a; n]`)
+pub(super) fn is_simple_expr(expr: &Expr) -> bool {
+    let is_simple = |expr: Option<Expr>| expr.is_some_and(|e| is_simple_expr(&e));
+    match expr {
+        Expr::Literal(_) | Expr::PathExpr(_) => is_literal_or_name(expr),
+        Expr::PrefixExpr(expr) => is_simple(expr.expr()),
+        Expr::RefExpr(expr) => is_simple(expr.expr()),
+        Expr::CastExpr(expr) => is_simple(expr.expr()),
+        Expr::FieldExpr(expr) => is_simple(expr.expr()),
+        Expr::TryExpr(expr) => is_simple(expr.expr()),
+        Expr::IndexExpr(expr) => is_simple(expr.base()) && is_simple(expr.index()),
+        Expr::ArrayExpr(expr) if expr.semicolon_token().is_some() => {
+            expr.exprs().all(|e| is_simple_expr(&e))
+        }
+        _ => false,
+    }
+}
+
+/// A literal or a plain name, optionally after unary operators: `x`, `!x`, `-1`
+fn is_literal_or_name(expr: &Expr) -> bool {
     match expr {
         Expr::Literal(_) => true,
         Expr::PathExpr(expr) => expr.path().is_some_and(|path| {
@@ -63,7 +83,7 @@ fn is_simple_expr(expr: &Expr) -> bool {
                     .segment()
                     .is_some_and(|s| s.type_anchor().is_none() && s.coloncolon_token().is_none())
         }),
-        Expr::PrefixExpr(expr) => expr.expr().is_some_and(|e| is_simple_expr(&e)),
+        Expr::PrefixExpr(expr) => expr.expr().is_some_and(|e| is_literal_or_name(&e)),
         _ => false,
     }
 }
@@ -129,13 +149,14 @@ fn format_expr_item(fmt: &Formatter, expr: Expr) -> (Frag, Overflow) {
 /// on a single line if they fit within `width`, otherwise one per line, or filled on lines if they
 /// are short (see `is_fillable_list`). A single combinable expression may overflow (see
 /// `is_combinable_expr`), and so may a closure after other arguments (`f(a, |x| {` / `...` / `})`);
-/// a single other expression is limited only by `max_width`.
-fn format_expr_list(
+/// a single other expression is limited only by `max_width`. `refine` adjusts the layouts, e.g. the
+/// trailing separator.
+pub(super) fn format_expr_list(
     fmt: &Formatter,
     node: &SyntaxNode,
     delims: &Delimiters,
     width: u32,
-    trailing: TrailingSeparator,
+    refine: impl FnOnce(ListLayout) -> ListLayout,
 ) -> Frag {
     let exprs = node.children().filter_map(Expr::cast).collect::<Vec<_>>();
     let single = match exprs.as_slice() {
@@ -166,10 +187,8 @@ fn format_expr_list(
     } else {
         FlatLimit::Within(width)
     };
-    let layout = ListLayout::tall(flat)
-        .fill_if(is_fillable_list(fmt, &exprs, &items))
-        .trailing_separator(trailing);
-    delimited_list(fmt, delims, &items, layout)
+    let layout = ListLayout::tall(flat).fill_if(is_fillable_list(fmt, &exprs, &items));
+    delimited_list(fmt, delims, &items, refine(layout))
 }
 
 fn format_arg_list(fmt: &Formatter, arg_list: ArgList) -> Frag {
@@ -178,7 +197,7 @@ fn format_arg_list(fmt: &Formatter, arg_list: ArgList) -> Frag {
         arg_list.syntax(),
         &Delimiters::parens_of(arg_list.syntax()),
         fmt.config().fn_call_width,
-        TrailingSeparator::IfVertical,
+        |layout| layout,
     )
 }
 
@@ -189,7 +208,7 @@ fn format_tuple_expr(fmt: &Formatter, expr: TupleExpr) -> Frag {
         expr.syntax(),
         &Delimiters::parens_of(expr.syntax()),
         fmt.config().fn_call_width,
-        single_item_separator(expr.fields().count()),
+        |layout| layout.trailing_separator(single_item_separator(expr.fields().count())),
     )
 }
 
@@ -203,14 +222,14 @@ pub(super) fn single_item_separator(items: usize) -> TrailingSeparator {
 }
 
 /// `[a, b, c]` laid out as call arguments within `array_width`, or `[value; len]`
-fn format_array_expr(fmt: &Formatter, expr: ArrayExpr) -> Frag {
+pub(super) fn format_array_expr(fmt: &Formatter, expr: ArrayExpr) -> Frag {
     let Some(semicolon) = expr.semicolon_token() else {
         return format_expr_list(
             fmt,
             expr.syntax(),
             &Delimiters::brackets_of(expr.syntax()),
             fmt.config().array_width,
-            TrailingSeparator::IfVertical,
+            |layout| layout,
         );
     };
     let mut exprs = expr.exprs();
@@ -442,7 +461,8 @@ pub(super) fn plain_stmt_list(block: &BlockExpr) -> Option<StmtList> {
     (block.syntax().first_token() == stmt_list.l_curly_token()).then_some(stmt_list)
 }
 
-/// The expression of a block that can be written as `{ expr }`: no statements and no comments
+/// The expression of a block that can be written as `{ expr }`: no statements and no comments; not
+/// a `try` block, which is copied (see `format_block_expr_with_tail`)
 pub(super) fn single_line_block_expr(block: &BlockExpr) -> Option<Expr> {
     let stmt_list = block.stmt_list()?;
     let has_comment = stmt_list
@@ -453,6 +473,7 @@ pub(super) fn single_line_block_expr(block: &BlockExpr) -> Option<Expr> {
         || stmt_list.attrs().next().is_some()
         || has_comment
         || block.label().is_some()
+        || block.try_block_modifier().is_some()
     {
         return None;
     }
@@ -556,9 +577,6 @@ fn collect_postfix_chain(expr: Expr, postfix: &mut Vec<Expr>) -> Expr {
 /// `block` broken, or on a single line if it holds just an expression (see `single_line_block_expr`):
 /// `unsafe { x }`
 pub(super) fn format_block_or_inline(fmt: &Formatter, block: BlockExpr) -> Frag {
-    if block.try_block_modifier().is_some() {
-        return format_unsupported(fmt, block.syntax(), "a `try` block");
-    }
     let Some(tail) = single_line_block_expr(&block) else {
         return format_block_expr(fmt, block);
     };
@@ -894,7 +912,7 @@ fn is_broken_let_chain(expr: &Expr) -> bool {
     if !is_let(&first) && !rest.iter().any(|(_, e)| is_let(e)) {
         return false;
     }
-    !matches!(rest.as_slice(), [(_, second)] if is_simple_expr(&first) && is_let(second))
+    !matches!(rest.as_slice(), [(_, second)] if is_literal_or_name(&first) && is_let(second))
 }
 
 pub(super) fn format_head_expr(fmt: &Formatter, expr: Expr) -> HeadLayouts {
@@ -943,11 +961,8 @@ pub(super) fn format_head_expr(fmt: &Formatter, expr: Expr) -> HeadLayouts {
 }
 
 pub(super) fn format_expr(fmt: &Formatter, expr: Expr) -> Frag {
-    // Copied with the attributes, which would be lost otherwise
-    if let Some(attr) = expr.attrs().next() {
-        let first = attr.syntax().first_token().unwrap();
-        let last = expr.syntax().last_token().unwrap();
-        return fmt.unsupported(&first, &last, "an attribute on an expression".into());
+    if expr.attrs().next().is_some() {
+        return format_unsupported_with_attrs(fmt, expr.syntax(), "an attribute on an expression");
     }
     match expr {
         Expr::Literal(expr) => format_literal(fmt, expr),
@@ -975,6 +990,7 @@ pub(super) fn format_expr(fmt: &Formatter, expr: Expr) -> Frag {
         Expr::LoopExpr(expr) => format_loop_expr(fmt, expr),
         Expr::WhileExpr(expr) => format_while_expr(fmt, expr),
         Expr::ForExpr(expr) => format_for_expr(fmt, expr),
+        Expr::MacroExpr(expr) => format_macro_call(fmt, &expr.macro_call().unwrap()),
         expr => format_unsupported_kind(fmt, expr.syntax()),
     }
 }

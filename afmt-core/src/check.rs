@@ -1,3 +1,4 @@
+use crate::utils::line_column;
 use ra_ap_syntax::ast::{self, HasAttrs, HasVisibility, Use, UseTree};
 use ra_ap_syntax::{
     AstNode, Direction, NodeOrToken, SourceFile, SyntaxKind, SyntaxNode, SyntaxToken, TextSize,
@@ -238,9 +239,7 @@ fn comments(file: &SourceFile) -> Vec<String> {
 }
 
 fn position(code: &str, offset: TextSize) -> String {
-    let before = &code[..usize::from(offset).min(code.len())];
-    let line = before.matches('\n').count() + 1;
-    let column = before.len() - before.rfind('\n').map_or(0, |i| i + 1) + 1;
+    let (line, column) = line_column(code, offset);
     format!("{line}:{column}")
 }
 

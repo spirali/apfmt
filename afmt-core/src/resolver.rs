@@ -289,7 +289,8 @@ impl<'a> Resolver<'a> {
                             .measure
                             .badness
                             .saturating_add(layout1.measure.badness);
-                        layout2.measure.cost = layout2.measure.cost.saturating_add(layout1.measure.cost);
+                        layout2.measure.cost =
+                            layout2.measure.cost.saturating_add(layout1.measure.cost);
                         layout2.measure.height += layout1.measure.height;
                         layout2.content = Rc::new(Content::Concat(
                             layout1.content.clone(),

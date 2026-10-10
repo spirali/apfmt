@@ -1,11 +1,11 @@
 use super::Builder;
 use super::frag::{Edge, Frag};
+use crate::comments::{
+    TriviaStop, count_newlines, is_leading_block_comment, is_line_comment, next_code_token,
+    post_comments_stop, rest_of_line_is_comments, trivia_end, trivia_from,
+};
 use crate::doc::{COMMA_DOC, DocId, EMPTY_DOC, EMPTYLINE_DOC, NEWLINE_DOC, SEMICOLON_DOC};
 use crate::formatter::Edge::{Break, Comma, Nothing, Word};
-use crate::comments::{
-    TriviaStop, count_newlines, is_leading_block_comment, is_line_comment, next_code_token, post_comments_stop,
-    rest_of_line_is_comments, trivia_end, trivia_from,
-};
 use ra_ap_syntax::{SyntaxKind, SyntaxToken};
 
 fn separator_doc(kind: SyntaxKind) -> DocId {
@@ -82,11 +82,7 @@ impl<'a> Builder<'a> {
 
     /// Pushes the comment `token`; a line comment ends the line (`Break`)
     fn push_comment(&mut self, token: &SyntaxToken) {
-        let end = if is_line_comment(token) {
-            Break
-        } else {
-            Word
-        };
+        let end = if is_line_comment(token) { Break } else { Word };
         let doc_id = self.fmt.comment_doc(token);
         self.push(Frag::new(doc_id, Edge::Comment, end, None));
     }
@@ -238,7 +234,11 @@ impl<'a> Builder<'a> {
     /// pushed any; the code after them starts on a new line. Used at the start of a block or a broken
     /// list, placed with `Formatter::body_after_opener`.
     pub fn push_comments_ending_line(&mut self) -> bool {
-        let ends_line = self.frag.cursor.as_ref().is_some_and(|c| rest_of_line_is_comments(c, None));
+        let ends_line = self
+            .frag
+            .cursor
+            .as_ref()
+            .is_some_and(|c| rest_of_line_is_comments(c, None));
         ends_line && self.push_trivia(None, TriviaStop::OwnLine)
     }
 }
