@@ -1,10 +1,10 @@
 use crate::config::Config;
+use crate::content::{Content, ContentArena, ContentId};
 use crate::doc::{AlignGroup, Cost, DocArena, DocId, DocNode};
 use smallvec::{SmallVec, smallvec};
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::HashMap;
-use std::rc::Rc;
 
 #[derive(Clone)]
 struct Measure {
@@ -79,15 +79,6 @@ impl Measure {
     }
 }
 
-#[derive(Clone)]
-pub enum Content {
-    Text(DocId),
-    Newline,
-    Concat(Rc<Content>, Rc<Content>),
-    Indent(u32, Rc<Content>),
-    Mark(AlignGroup),
-}
-
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Context {
     /// `None` at the start of a line, before its indentation (see `Measure::last`)
@@ -107,7 +98,7 @@ impl Context {
 #[derive(Clone)]
 pub(crate) struct Layout {
     measure: Measure,
-    content: Rc<Content>,
+    content: Content,
 }
 
 type LayoutVec = SmallVec<[Layout; 1]>;
@@ -165,10 +156,10 @@ pub(crate) struct Renderer<'a> {
 }
 
 impl<'a> Renderer<'a> {
-    pub fn render(&mut self, content: &Content) {
+    pub fn render(&mut self, content: Content) {
         match content {
             Content::Text(t) => {
-                let s = match self.resolver.doc_arena.get_node(*t) {
+                let s = match self.resolver.doc_arena.get_node(t) {
                     DocNode::Token(token) => token.text(),
                     DocNode::Text(t) => t,
                     DocNode::Empty => return,
@@ -192,11 +183,16 @@ impl<'a> Renderer<'a> {
             }
             Content::Indent(indent, d) => {
                 let old = self.indent;
-                self.indent = *indent;
-                self.render(d);
+                self.indent = indent;
+                let c = self.resolver.content_arena.borrow().get(d);
+                self.render(c);
                 self.indent = old;
             }
             Content::Concat(c1, c2) => {
+                let (c1, c2) = {
+                    let ca = self.resolver.content_arena.borrow();
+                    (ca.get(c1), ca.get(c2))
+                };
                 self.render(c1);
                 self.render(c2);
             }
@@ -227,10 +223,10 @@ struct MarkCollector<'a> {
 }
 
 impl MarkCollector<'_> {
-    fn collect(&mut self, content: &Content) {
+    fn collect(&mut self, content: Content) {
         match content {
             Content::Text(t) => {
-                let s = match self.resolver.doc_arena.get_node(*t) {
+                let s = match self.resolver.doc_arena.get_node(t) {
                     DocNode::Token(token) => token.text(),
                     DocNode::Text(t) => t,
                     DocNode::Empty => return,
@@ -254,18 +250,19 @@ impl MarkCollector<'_> {
             }
             Content::Indent(indent, c) => {
                 let old = self.indent;
-                self.indent = *indent;
+                self.indent = indent;
+                let c = self.resolver.content_arena.borrow().get(c);
                 self.collect(c);
                 self.indent = old;
             }
             Content::Concat(c1, c2) => {
-                self.collect(c1);
-                self.collect(c2);
+                self.collect(self.resolver.get_content(c1));
+                self.collect(self.resolver.get_content(c2));
             }
             Content::Mark(group) => {
                 self.open.push(self.marks.len());
                 self.marks.push(MarkedComment {
-                    group: *group,
+                    group,
                     line: self.line,
                     start: self.col.unwrap_or(self.indent),
                     end: 0,
@@ -287,7 +284,7 @@ fn text_width(text: &str) -> u32 {
 }
 
 /// The padding of each mark, aligning the comments of each run of consecutive marked lines
-fn align_marks(resolver: &Resolver, content: &Content) -> Vec<u32> {
+fn align_marks(resolver: &Resolver, content: Content) -> Vec<u32> {
     let mut collector = MarkCollector {
         resolver,
         indent: 0,
@@ -349,9 +346,9 @@ fn align_marks(resolver: &Resolver, content: &Content) -> Vec<u32> {
 
 pub(crate) struct Resolver<'a> {
     doc_arena: DocArena,
+    content_arena: RefCell<ContentArena>,
     config: &'a Config,
     root: DocId,
-    new_line: Rc<Content>,
     /// The layouts of the docs that are shared by more alternatives (`Alt` nodes), by context; the
     /// doc is a DAG, so without it a shared doc is resolved again in every alternative containing it
     memo: RefCell<HashMap<(DocId, Context), LayoutSet>>,
@@ -363,9 +360,13 @@ impl<'a> Resolver<'a> {
             doc_arena,
             config,
             root,
-            new_line: Rc::new(Content::Newline),
+            content_arena: RefCell::new(ContentArena::new()),
             memo: RefCell::new(HashMap::new()),
         }
+    }
+
+    fn get_content(&self, content_id: ContentId) -> Content {
+        self.content_arena.borrow().get(content_id)
     }
 
     pub fn render(&self, reserve_size: usize) -> String {
@@ -384,10 +385,10 @@ impl<'a> Resolver<'a> {
             out: String::with_capacity(reserve_size),
             indent: 0,
             fresh: true,
-            paddings: align_marks(self, &best.content),
+            paddings: align_marks(self, best.content),
             marks: 0,
         };
-        renderer.render(&best.content);
+        renderer.render(best.content);
         renderer.out
     }
 
@@ -401,7 +402,7 @@ impl<'a> Resolver<'a> {
             };
             LayoutSet::single(Layout {
                 measure,
-                content: Rc::new(Content::Text(doc)),
+                content: Content::Text(doc),
             })
         };
         match self.doc_arena.get_node(doc) {
@@ -410,7 +411,7 @@ impl<'a> Resolver<'a> {
             DocNode::Empty => resolve_text(""),
             DocNode::AlignMark(group) => LayoutSet::single(Layout {
                 measure: Measure::empty(&ctx),
-                content: Rc::new(Content::Mark(*group)),
+                content: Content::Mark(*group),
             }),
             DocNode::Newline if ctx.flat => LayoutSet::empty(),
             DocNode::Newline => LayoutSet::single(Layout {
@@ -420,12 +421,12 @@ impl<'a> Resolver<'a> {
                     cost: Cost::new(0),
                     height: 1,
                 },
-                content: self.new_line.clone(),
+                content: Content::Newline,
             }),
             DocNode::Nest(d) => {
                 let indent = ctx.indent + self.config.indent_width;
                 let layout_set = self.resolve(Context { indent, ..ctx }, *d);
-                indented(indent, layout_set)
+                indented(&mut self.content_arena.borrow_mut(), indent, layout_set)
             }
             DocNode::Concat(doc1, doc2) => {
                 let la = self.resolve(ctx, *doc1);
@@ -446,10 +447,9 @@ impl<'a> Resolver<'a> {
                         layout2.measure.cost =
                             layout2.measure.cost.saturating_add(layout1.measure.cost);
                         layout2.measure.height += layout1.measure.height;
-                        layout2.content = Rc::new(Content::Concat(
-                            layout1.content.clone(),
-                            layout2.content.clone(),
-                        ));
+                        let c1 = self.content_arena.borrow_mut().make(layout1.content);
+                        let c2 = self.content_arena.borrow_mut().make(layout2.content);
+                        layout2.content = Content::Concat(c1, c2);
                     }
                     out = merge_layout_sets(out, sub);
                 }
@@ -502,7 +502,7 @@ impl<'a> Resolver<'a> {
             DocNode::Align(doc) => {
                 let indent = ctx.text_col();
                 let layout_set = self.resolve(Context { indent, ..ctx }, *doc);
-                indented(indent, layout_set)
+                indented(&mut self.content_arena.borrow_mut(), indent, layout_set)
             }
         }
     }
@@ -510,9 +510,9 @@ impl<'a> Resolver<'a> {
 
 /// The layouts rendered with `indent`; a layout ending with a line break keeps `last: None`, the next
 /// text after it is indented by the indentation current there
-fn indented(indent: u32, mut layout_set: LayoutSet) -> LayoutSet {
+fn indented(content_arena: &mut ContentArena, indent: u32, mut layout_set: LayoutSet) -> LayoutSet {
     for layout in &mut layout_set.layouts {
-        layout.content = Rc::new(Content::Indent(indent, layout.content.clone()));
+        layout.content = Content::Indent(indent, content_arena.make(layout.content));
     }
     layout_set
 }

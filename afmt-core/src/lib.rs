@@ -1,6 +1,7 @@
 mod check;
 mod comments;
 mod config;
+mod content;
 mod doc;
 mod error;
 mod format;

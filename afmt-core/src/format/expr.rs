@@ -194,10 +194,12 @@ pub(super) fn format_expr_list(
     // expressions followed by `?`, see `is_combinable_expr`; the others, e.g. `a.b`, cannot).
     // Another one that can (e.g. a call) is: when it does not fit, it is broken instead. All as
     // rustfmt does; the Style Guide leaves what a small call is to the tool.
-    let unlimited =
-        single.is_some_and(|e| {
-            !hug || matches!(without_try(e), Expr::ClosureExpr(_) | Expr::MethodCallExpr(_))
-        });
+    let unlimited = single.is_some_and(|e| {
+        !hug || matches!(
+            without_try(e),
+            Expr::ClosureExpr(_) | Expr::MethodCallExpr(_)
+        )
+    });
     let flat = if unlimited {
         FlatLimit::MaxWidth
     } else {
