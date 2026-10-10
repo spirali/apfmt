@@ -28,8 +28,10 @@ impl Cost {
 }
 
 pub(crate) enum DocNode {
+    Empty,
     Token(SyntaxToken),
-    Text(String),
+    // TODO: Move into a container that is just usize length (ThinBox on nightly?)
+    Text(Box<str>),
     Newline,
     Concat(DocId, DocId),
     Alt(DocId, DocId),
@@ -67,7 +69,7 @@ impl DocArena {
         DocArena {
             nodes: vec![
                 DocNode::Newline,
-                DocNode::Text(String::new()),
+                DocNode::Empty,
                 DocNode::Text(" ".into()),
                 DocNode::Alt(NEWLINE_DOC, SPACE_DOC),
                 DocNode::Concat(NEWLINE_DOC, NEWLINE_DOC),
@@ -121,6 +123,7 @@ impl DocArena {
                     (format!("Dispreferred {}", cost.0), "tripleoctagon", "khaki")
                 }
                 DocNode::ShortLastLine(_) => ("ShortLastLine".into(), "house", "lightpink"),
+                DocNode::Empty => ("<empty>".into(), "box", "lightyellow"),
             };
             let label = label
                 .replace('\\', "\\\\")
@@ -133,7 +136,7 @@ impl DocArena {
             )
             .unwrap();
             let children: Vec<(DocId, &str)> = match node {
-                DocNode::Token(_) | DocNode::Text(_) | DocNode::Newline => vec![],
+                DocNode::Token(_) | DocNode::Text(_) | DocNode::Newline | DocNode::Empty => vec![],
                 DocNode::Concat(d1, d2) => vec![(*d1, "1"), (*d2, "2")],
                 DocNode::Alt(d1, d2) => vec![(*d1, ""), (*d2, "")],
                 DocNode::Nest(d)
@@ -167,6 +170,7 @@ impl DocArena {
         make_ident();
         print!("#{} ", doc.0);
         match self.get_node(doc) {
+            DocNode::Empty => println!("Empty"),
             DocNode::Token(token) => println!("Token({:?})", token.text()),
             DocNode::Text(text) => println!("Text({:?})", text),
             DocNode::Newline => println!("Newline"),

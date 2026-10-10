@@ -167,7 +167,8 @@ impl<'a> Renderer<'a> {
             Content::Text(t) => {
                 let s = match self.resolver.doc_arena.get_node(*t) {
                     DocNode::Token(token) => token.text(),
-                    DocNode::Text(t) => t.as_str(),
+                    DocNode::Text(t) => t,
+                    DocNode::Empty => return,
                     _ => unreachable!(),
                 };
                 if s.is_empty() {
@@ -257,7 +258,8 @@ impl<'a> Resolver<'a> {
         };
         match self.doc_arena.get_node(doc) {
             DocNode::Token(token) => resolve_text(token.text()),
-            DocNode::Text(text) => resolve_text(text.as_str()),
+            DocNode::Text(text) => resolve_text(text),
+            DocNode::Empty => resolve_text(""),
             DocNode::Newline if ctx.flat => LayoutSet::empty(),
             DocNode::Newline => LayoutSet::single(Layout {
                 measure: Measure {

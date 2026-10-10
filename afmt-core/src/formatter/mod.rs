@@ -5,7 +5,6 @@ mod builder;
 mod frag;
 mod trivia;
 
-use crate::comments::{multiline_comment_lines, normalize_block_comment};
 use crate::config::Config;
 use crate::doc::DocNode::Newline;
 use crate::doc::{Cost, DocArena, DocId, DocNode, EMPTY_DOC, NEWLINE_DOC, NEWLINE_OR_SPACE_DOC};
@@ -16,6 +15,7 @@ use frag::{Branch, Branches};
 pub(crate) use frag::{Edge, Frag};
 use ra_ap_syntax::{SyntaxNode, SyntaxToken, TextRange};
 use std::cell::RefCell;
+use trivia::{multiline_comment_lines, normalize_block_comment};
 
 /// Source text that afmt cannot format yet, copied unchanged (see `Formatter::unsupported`)
 pub(crate) struct Unsupported {
@@ -70,7 +70,7 @@ impl<'a> Formatter<'a> {
 
     /// Text that is not in the source (e.g. an inserted `"C"`), without a cursor
     pub fn text(&self, text: &str, edge: Edge) -> Frag {
-        Frag::new_simple(self.make_node(DocNode::Text(text.to_string())), edge, None)
+        Frag::new_simple(self.make_node(DocNode::Text(text.into())), edge, None)
     }
 
     /// The source text of `node` unchanged, comments included, with the edges of
@@ -98,7 +98,7 @@ impl<'a> Formatter<'a> {
             token = t.next_token();
         }
         Frag::new(
-            self.make_node(DocNode::Text(text)),
+            self.make_node(DocNode::Text(text.into())),
             start,
             end,
             Some(last.clone()),
@@ -375,11 +375,11 @@ impl<'a> Formatter<'a> {
         if let Some(lines) = multiline_comment_lines(token) {
             // The lines are aligned to the column of the comment start
             let mut lines = lines.into_iter();
-            let mut doc_id = self.make_node(DocNode::Text(lines.next().unwrap().to_string()));
+            let mut doc_id = self.make_node(DocNode::Text(lines.next().unwrap().into()));
             for line in lines {
                 doc_id = self.concat(doc_id, NEWLINE_DOC);
                 if !line.is_empty() {
-                    doc_id = self.concat(doc_id, self.make_node(DocNode::Text(line.to_string())));
+                    doc_id = self.concat(doc_id, self.make_node(DocNode::Text(line.into())));
                 }
             }
             return self.make_node(DocNode::Align(doc_id));
@@ -390,7 +390,7 @@ impl<'a> Formatter<'a> {
             .then(|| normalize_block_comment(token.text()))
             .flatten();
         self.make_node(match normalized {
-            Some(text) => DocNode::Text(text),
+            Some(text) => DocNode::Text(text.into()),
             None => DocNode::Token(token.clone()),
         })
     }
@@ -404,6 +404,7 @@ impl<'a> Formatter<'a> {
         match self.doc_arena.borrow().get_node(doc_id) {
             DocNode::Token(token) => text_width(token.text()),
             DocNode::Text(t) => text_width(t),
+            DocNode::Empty => Some(0),
             Newline | DocNode::Nest(_) | DocNode::Align(_) => None,
             DocNode::Flat(d) => self.flat_width_doc(*d),
             DocNode::MultiLine(_) => None,
