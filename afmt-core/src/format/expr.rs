@@ -49,7 +49,17 @@ fn is_combinable_expr(expr: &Expr) -> bool {
         Expr::PrefixExpr(expr) => expr.expr().is_some_and(|e| is_combinable_expr(&e)),
         Expr::RefExpr(expr) => expr.expr().is_some_and(|e| is_combinable_expr(&e)),
         Expr::CastExpr(expr) => expr.expr().is_some_and(|e| is_combinable_expr(&e)),
+        // `f(g(\n...\n)?)`, as rustfmt does
+        Expr::TryExpr(expr) => expr.expr().is_some_and(|e| is_combinable_expr(&e)),
         _ => false,
+    }
+}
+
+/// The expression without the `?` that follow it: `a` of `a??`
+fn without_try(expr: &Expr) -> Expr {
+    match expr {
+        Expr::TryExpr(e) => e.expr().map_or_else(|| expr.clone(), |e| without_try(&e)),
+        _ => expr.clone(),
     }
 }
 
@@ -116,8 +126,11 @@ fn is_overflowing_closure(exprs: &[Expr]) -> bool {
 fn format_expr_item(fmt: &Formatter, expr: Expr) -> (Frag, Overflow) {
     match expr {
         // On the line of `(` only with its elements on one line, the arguments of the last one may
-        // break: `f(a.b(|x| {` / `...` / `}))`, not the chain broken before every `.`
-        Expr::MethodCallExpr(ref call) if call.attrs().next().is_none() => {
+        // break: `f(a.b(|x| {` / `...` / `}))`, `f(a.b(` / `...` / `)?)`, not the chain broken
+        // before every `.`; `f(g(` / `...` / `)?)` is the root of a chain without elements
+        Expr::MethodCallExpr(_) | Expr::TryExpr(_)
+            if expr.attrs().next().is_none() && is_combinable_expr(&expr) =>
+        {
             let layouts = postfix_chain_parts(fmt, expr);
             let overflow = layouts
                 .other
@@ -177,11 +190,14 @@ pub(super) fn format_expr_list(
         })
         .collect::<Vec<ListItem>>();
     // A single argument that cannot overflow is not limited by `fn_call_width`, nor is a closure or
-    // a method call (the only postfix chain that can overflow; the others, e.g. `a.b()?`, cannot).
+    // a method call (the only postfix chains that can overflow are method calls and combinable
+    // expressions followed by `?`, see `is_combinable_expr`; the others, e.g. `a.b`, cannot).
     // Another one that can (e.g. a call) is: when it does not fit, it is broken instead. All as
     // rustfmt does; the Style Guide leaves what a small call is to the tool.
     let unlimited =
-        single.is_some_and(|e| !hug || matches!(e, Expr::ClosureExpr(_) | Expr::MethodCallExpr(_)));
+        single.is_some_and(|e| {
+            !hug || matches!(without_try(e), Expr::ClosureExpr(_) | Expr::MethodCallExpr(_))
+        });
     let flat = if unlimited {
         FlatLimit::MaxWidth
     } else {
