@@ -415,21 +415,15 @@ pub(super) fn format_head_with_block(
 ) -> Frag {
     let mut builder = Builder::new(fmt);
     builder.push_keyword(keyword);
-    builder.push(format_head_followed_by(fmt, head, block, |frag| frag));
+    builder.push(format_head_followed_by(fmt, head, block));
     builder.into_frag()
 }
 
-/// `head` followed by `block` (`{ ... }`, `else { ... }`), with `place` applied to each layout of the
-/// head (e.g. the right-hand side of `=`). The block follows a head without a hanging indent on its
+/// `head` followed by `block` (`{ ... }`, `else { ... }`). The block follows a head without a hanging indent on its
 /// last line if it fits; otherwise the control line is broken and `{` goes on its own line (Style
 /// Guide). Below a head broken with a hanging indent, it is always on its own line, so `{` is not
 /// mistaken for a part of the head.
-pub(super) fn format_head_followed_by(
-    fmt: &Formatter,
-    head: &HeadLayouts,
-    block: Frag,
-    place: impl Fn(Frag) -> Frag,
-) -> Frag {
+pub(super) fn format_head_followed_by(fmt: &Formatter, head: &HeadLayouts, block: Frag) -> Frag {
     let next_line = |head: Frag| {
         let mut builder = Builder::new(fmt);
         builder.push(head);
@@ -438,18 +432,17 @@ pub(super) fn format_head_followed_by(
     };
     let mut layouts = None;
     if let Some(other) = &head.other {
-        let other = place(other.clone());
         let mut same_line = Builder::new(fmt);
         same_line.push(other.clone());
         same_line.push(block.clone());
         // `{` on its own line breaks the control line, so only when it does not fit otherwise: it
         // costs a split, which outweighs any number of lines (e.g. moving a comment from `{`'s line
         // into the block)
-        let broken = fmt.dispreferred(next_line(other));
+        let broken = fmt.dispreferred(next_line(other.clone()));
         layouts = Some(fmt.alt_frag(same_line.into_frag(), broken));
     }
     if let Some(hanging) = &head.hanging {
-        layouts = Some(fmt.alt_opt(next_line(place(hanging.clone())), layouts));
+        layouts = Some(fmt.alt_opt(next_line(hanging.clone()), layouts));
     }
     layouts.unwrap()
 }

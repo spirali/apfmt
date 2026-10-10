@@ -9,6 +9,7 @@ use super::ty::format_type;
 use crate::format::common::{push_label, push_modifiers};
 use crate::formatter::Edge::{Comma, Operator, Word};
 use crate::formatter::{Builder, Formatter, Frag};
+use crate::layout::head::HeadLayouts;
 use crate::layout::list::Delimiters;
 use ra_ap_syntax::ast::{BlockExpr, Expr, HasAttrs, LetStmt, Stmt, StmtList};
 use ra_ap_syntax::{AstNode, SyntaxKind};
@@ -16,7 +17,8 @@ use ra_ap_syntax::{AstNode, SyntaxKind};
 fn format_let_stmt(fmt: &Formatter, stmt: LetStmt) -> Frag {
     let mut builder = Builder::new(fmt);
     builder.push_keyword(stmt.let_token().unwrap());
-    builder.push(format_pat(fmt, stmt.pat().unwrap()));
+    // Broken only when nothing else helps (Style Guide: break after `=`, then before `else`)
+    builder.push(fmt.keep_together(format_pat(fmt, stmt.pat().unwrap())));
     if let Some(ty) = stmt.ty() {
         builder.push_token(stmt.colon_token().unwrap(), Comma);
         builder.push(format_type(fmt, ty));
@@ -37,14 +39,32 @@ fn format_let_stmt(fmt: &Formatter, stmt: LetStmt) -> Frag {
     builder.into_frag()
 }
 
-/// `init else {` of `let pat = init else { ... };`, `init` after `=`. `else {`
-/// follows the initializer on its line unless the initializer ends with an indented continuation line
-/// (a broken chain); then it goes on its own line (Style Guide "else blocks (let-else statements)").
+/// `init else {` of `let pat = init else { ... };`, `init` after `=` (Style Guide "else blocks
+/// (let-else statements)"). `else {` follows the initializer on its line unless the initializer ends
+/// with an indented continuation line (a broken chain, or the initializer moved to the line after
+/// `=`); then it goes on its own line. It also goes there, at no cost, after an initializer on a
+/// single line on the line of `=`: "If the let statement components preceding the else can be
+/// formatted on a single line, but the else { does not fit on the same line, break the line before
+/// the else."
 fn format_init_with_else(fmt: &Formatter, init: Expr, else_block: Frag) -> Frag {
     let init = format_head_expr(fmt, init);
-    format_head_followed_by(fmt, &init, else_block, |init| {
-        fmt.same_or_indented_line(init)
-    })
+    let (same_line, next_line) = match init.other {
+        Some(other) => {
+            let (same_line, next_line) = fmt.same_and_indented_line(other);
+            (Some(same_line), Some(next_line))
+        }
+        None => (None, None),
+    };
+    let hanging = init.hanging.map(|h| fmt.same_or_indented_line(h));
+    let flat = same_line.clone().map(|same_line| fmt.flat(same_line));
+    let placed = HeadLayouts {
+        hanging: [hanging, next_line, flat]
+            .into_iter()
+            .flatten()
+            .reduce(|a, b| fmt.alt_frag(a, b)),
+        other: same_line,
+    };
+    format_head_followed_by(fmt, &placed, else_block)
 }
 
 fn format_stmt(fmt: &Formatter, stmt: Stmt) -> Frag {

@@ -205,9 +205,15 @@ impl<'a> Formatter<'a> {
     /// declaration fits on two lines"): on a single line on the current line, on a single line on the
     /// next line, broken on the current line (a split), broken on the next line (two splits).
     pub fn same_or_indented_line(&self, frag: Frag) -> Frag {
+        let (same, next) = self.same_and_indented_line(frag);
+        self.alt_frag(same, next)
+    }
+
+    /// The two layouts of `same_or_indented_line`: on the current line, and on the next line
+    pub fn same_and_indented_line(&self, frag: Frag) -> (Frag, Frag) {
         let same = self.keep_together_with_cost(frag.clone(), Cost::new(1));
         let next = self.keep_together_with_cost(frag, Cost::new(2));
-        self.alt_frag(same, self.indented_line(next))
+        (same, self.indented_line(next))
     }
 
     /// The fragment is always followed by a space, e.g. an attribute in front of a parameter:
