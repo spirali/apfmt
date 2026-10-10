@@ -72,12 +72,7 @@ fn format_stmt(fmt: &Formatter, stmt: Stmt) -> Frag {
         Stmt::ExprStmt(expr) => {
             let mut builder = Builder::new(fmt);
 
-            let inner = match expr.expr().unwrap() {
-                // A standalone `if` is never put on a single line
-                Expr::IfExpr(if_expr) => format_if_expr(fmt, if_expr, false),
-                e => format_expr(fmt, e),
-            };
-            builder.push(inner);
+            builder.push(format_stmt_expr(fmt, expr.expr().unwrap()));
             // Block-like expressions (`if`, ...) may stand without `;`
             if expr.semicolon_token().is_some() {
                 builder.push_separator(SyntaxKind::SEMICOLON);
@@ -88,6 +83,18 @@ fn format_stmt(fmt: &Formatter, stmt: Stmt) -> Frag {
         Stmt::LetStmt(stmt) => {
             format_with_attrs(fmt, &stmt, false, || format_let_stmt(fmt, stmt.clone()))
         }
+    }
+}
+
+/// The expression of an expression statement. A standalone `if` is never on a single line, nor is a
+/// block other than `unsafe { ... }` (Style Guide "Blocks": a single-line block is "either used in
+/// expression position (not statement position) or is an unsafe block in statement position"). The
+/// tail expression of a block is its value, so it is in expression position, as in rustfmt.
+fn format_stmt_expr(fmt: &Formatter, expr: Expr) -> Frag {
+    match expr {
+        Expr::IfExpr(expr) => format_if_expr(fmt, expr, false),
+        Expr::BlockExpr(block) if block.unsafe_token().is_none() => format_block_expr(fmt, block),
+        expr => format_expr(fmt, expr),
     }
 }
 

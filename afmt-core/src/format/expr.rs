@@ -465,7 +465,6 @@ pub(super) fn single_line_block_expr(block: &BlockExpr) -> Option<Expr> {
     if stmt_list.statements().next().is_some()
         || stmt_list.attrs().next().is_some()
         || has_comment
-        || block.label().is_some()
         || block.try_block_modifier().is_some()
     {
         return None;
@@ -568,7 +567,8 @@ fn collect_postfix_chain(expr: Expr, postfix: &mut Vec<Expr>) -> Expr {
 }
 
 /// `block` broken, or on a single line if it holds just an expression (see `single_line_block_expr`):
-/// `unsafe { x }`
+/// `unsafe { x }`; a block in expression position (Style Guide "Blocks", see `format_stmt_expr` for
+/// statement position)
 pub(super) fn format_block_or_inline(fmt: &Formatter, block: BlockExpr) -> Frag {
     let Some(tail) = single_line_block_expr(&block) else {
         return format_block_expr(fmt, block);
@@ -966,7 +966,7 @@ pub(super) fn format_expr(fmt: &Formatter, expr: Expr) -> Frag {
         Expr::ParenExpr(expr) => format_paren_expr(fmt, expr),
         Expr::LetExpr(expr) => format_let_expr(fmt, expr),
         Expr::IfExpr(expr) => format_if_expr(fmt, expr, true),
-        Expr::BlockExpr(expr) => format_block_expr(fmt, expr),
+        Expr::BlockExpr(expr) => format_block_or_inline(fmt, expr),
         Expr::RefExpr(expr) => format_ref_expr(fmt, expr),
         Expr::CastExpr(expr) => format_cast_expr(fmt, expr),
         Expr::RangeExpr(expr) => format_range_expr(fmt, expr),
