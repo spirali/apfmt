@@ -200,11 +200,14 @@ impl<'a> Formatter<'a> {
         })
     }
 
-    /// The fragment continues the current line, or starts an indented next line,
-    /// e.g. the right-hand side of `=`; broken over more lines on the next line, it costs a split,
-    /// so it is broken there only if it does not fit on the current line either
+    /// The fragment continues the current line, or starts an indented next line, e.g. the right-hand
+    /// side of `=`. In the order of preference (Style Guide `let`: "try splitting after the `=`, if the
+    /// declaration fits on two lines"): on a single line on the current line, on a single line on the
+    /// next line, broken on the current line (a split), broken on the next line (two splits).
     pub fn same_or_indented_line(&self, frag: Frag) -> Frag {
-        self.alt_frag(frag.clone(), self.indented_line(self.keep_together(frag)))
+        let same = self.keep_together_with_cost(frag.clone(), Cost::new(1));
+        let next = self.keep_together_with_cost(frag, Cost::new(2));
+        self.alt_frag(same, self.indented_line(next))
     }
 
     /// The fragment is always followed by a space, e.g. an attribute in front of a parameter:
@@ -233,8 +236,13 @@ impl<'a> Formatter<'a> {
     /// The fragment should stay on one line if possible: a layout spanning more lines is used only when
     /// all single-line layouts overflow, e.g. a type
     pub fn keep_together(&self, frag: Frag) -> Frag {
+        self.keep_together_with_cost(frag, Cost::new(1))
+    }
+
+    /// `keep_together` with a layout spanning more lines costing `cost`
+    fn keep_together_with_cost(&self, frag: Frag, cost: Cost) -> Frag {
         self.map_branches(frag, |b| Branch {
-            doc_id: self.make_node(DocNode::KeepTogether(b.doc_id, Cost::new(1))),
+            doc_id: self.make_node(DocNode::KeepTogether(b.doc_id, cost)),
             ..b
         })
     }
