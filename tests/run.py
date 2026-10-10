@@ -34,8 +34,11 @@ Usage:
   (tests in tests/sources/benchmarks when no filter is given). Every file is formatted
   --warmup times without measuring, then --runs times; the report shows the mean,
   standard deviation, min, median and max of the wall time and the mean CPU time
-  (user + sys) per file and for all files together. With --compare, rustfmt formats
-  the same files the same number of times and the report compares the two.
+  (user + sys) per file and for all files together. After the timed runs, every file is
+  formatted once more under GNU time (`time` in PATH) to measure the peak memory (the
+  maximum resident set size; for all files together, the largest of the files); without
+  GNU time, the memory is not reported. With --compare, rustfmt formats the same files
+  the same number of times and the report compares the two.
 
   uv run tests/run.py bench                 # benchmark tests/sources/benchmarks
   uv run tests/run.py bench -n 20 calls     # 20 runs over tests whose path contains "calls"
@@ -55,6 +58,7 @@ import shutil
 import statistics
 import subprocess
 import sys
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -579,6 +583,8 @@ class BenchFile:
     name: str
     code: str
     samples: dict[str, Samples] = field(default_factory=dict)
+    # the peak memory of every tool in bytes, None if it was not measured
+    peak_rss: dict[str, int | None] = field(default_factory=dict)
 
     @property
     def bytes(self) -> int:
@@ -630,6 +636,51 @@ def timed_run(cmd: list[str], code: bytes, timeout: float) -> tuple[float, float
     return wall, cpu
 
 
+def find_gnu_time() -> str | None:
+    """The GNU time binary, if there is one in PATH. The peak memory is measured with it
+    and not by Python: on Linux, a child's maximum resident set size includes the memory
+    of the process it was forked from (Python's) before `exec`, while GNU time is small."""
+    path = shutil.which("time")
+    if path is None or "GNU" not in (tool_version([path, "--version"]) or ""):
+        return None
+    return path
+
+
+def peak_memory(gnu_time: str, cmd: list[str], code: bytes, timeout: float) -> int:
+    """Runs `cmd` with `code` on stdin under GNU time; returns its peak memory (maximum
+    resident set size) in bytes."""
+    with tempfile.NamedTemporaryFile(mode="r") as report:
+        try:
+            proc = subprocess.run(
+                [gnu_time, "--format=%M", f"--output={report.name}", *cmd],
+                input=code,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                timeout=timeout,
+                cwd=ROOT_DIR,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            raise CommandError(f"`{' '.join(cmd)}` timed out after {timeout}s")
+        if proc.returncode != 0:
+            raise CommandError(
+                f"`{' '.join(cmd)}` exited with code {proc.returncode}\n"
+                f"{proc.stderr.decode(errors='replace').rstrip()}"
+            )
+        # in KiB
+        return int(report.read().split()[-1]) * 1024
+
+
+def format_bytes(size: int | None) -> str:
+    if size is None:
+        return "–"
+    if size >= 1024**3:
+        return f"{size / 1024**3:.2f} GiB"
+    if size >= 1024**2:
+        return f"{size / 1024**2:.1f} MiB"
+    return f"{size / 1024:.0f} KiB"
+
+
 def format_seconds(seconds: float) -> str:
     if seconds >= 1:
         return f"{seconds:.3f} s"
@@ -638,11 +689,19 @@ def format_seconds(seconds: float) -> str:
     return f"{seconds * 1e6:.0f} µs"
 
 
-def format_ratio(ratio: float) -> Text:
-    """`ratio` is afmt time / rustfmt time; below 1 afmt is faster."""
+def format_ratio(ratio: float, better: str = "faster", worse: str = "slower") -> Text:
+    """`ratio` is afmt / rustfmt (time or memory); below 1 afmt is `better`."""
     if ratio <= 1:
-        return Text(f"{ratio:.2f}× ({1 / ratio:.2f}× faster)", style="green")
-    return Text(f"{ratio:.2f}× ({ratio:.2f}× slower)", style="red")
+        return Text(f"{ratio:.2f}× ({1 / ratio:.2f}× {better})", style="green")
+    return Text(f"{ratio:.2f}× ({ratio:.2f}× {worse})", style="red")
+
+
+def format_memory_ratio(ratio: float | None) -> Text:
+    return Text("–") if ratio is None else format_ratio(ratio, "less", "more")
+
+
+def geometric_mean(values: list[float]) -> float:
+    return math.exp(statistics.fmean(math.log(v) for v in values))
 
 
 def stats_row(stats: Stats) -> list[str]:
@@ -657,15 +716,21 @@ def stats_row(stats: Stats) -> list[str]:
     ]
 
 
-def stats_table(title: str, rows: list[tuple[str, str, Stats]]) -> Table:
+def stats_table(title: str, rows: list[tuple[str, str, Stats, int | None]]) -> Table:
+    """`rows` are the test, the tool, its time statistics and its peak memory."""
     table = Table(title=title, title_justify="left", title_style="bold")
     table.add_column("test", overflow="fold", min_width=16)
     table.add_column("tool", no_wrap=True)
-    for column in ("mean", "σ", "σ %", "min", "median", "max", "CPU"):
+    for column in ("mean", "σ", "σ %", "min", "median", "max", "CPU", "peak mem"):
         table.add_column(column, justify="right", no_wrap=True)
     previous = None
-    for name, tool, stats in rows:
-        table.add_row(name if name != previous else "", tool, *stats_row(stats))
+    for name, tool, stats, peak_rss in rows:
+        table.add_row(
+            name if name != previous else "",
+            tool,
+            *stats_row(stats),
+            format_bytes(peak_rss),
+        )
         previous = name
     return table
 
@@ -706,7 +771,11 @@ def stats_json(stats: Stats) -> dict[str, float]:
 
 
 def write_bench_results(
-    path: Path, args, files: list[BenchFile], totals: dict[str, Samples]
+    path: Path,
+    args,
+    files: list[BenchFile],
+    totals: dict[str, Samples],
+    total_peak_rss: dict[str, int | None],
 ) -> None:
     commands = bench_commands(args)
     tools = {"afmt": {"command": commands["afmt"]}}
@@ -726,6 +795,7 @@ def write_bench_results(
         "runs": args.runs,
         "warmup": args.warmup,
         "unit": "seconds",
+        "memory_unit": "bytes",
         "tools": tools,
         "files": [
             {
@@ -737,6 +807,7 @@ def write_bench_results(
                         "wall": s.wall,
                         "cpu": s.cpu,
                         "stats": stats_json(Stats.of(s)),
+                        "peak_rss": f.peak_rss[tool],
                     }
                     for tool, s in f.samples.items()
                 },
@@ -744,7 +815,12 @@ def write_bench_results(
             for f in files
         ],
         "total": {
-            tool: {"wall": s.wall, "cpu": s.cpu, "stats": stats_json(Stats.of(s))}
+            tool: {
+                "wall": s.wall,
+                "cpu": s.cpu,
+                "stats": stats_json(Stats.of(s)),
+                "peak_rss": total_peak_rss[tool],
+            }
             for tool, s in totals.items()
         },
     }
@@ -759,6 +835,12 @@ def cmd_bench(args, sources: list[Path]) -> None:
     ]
     for f in files:
         f.samples = {tool: Samples() for tool in commands}
+        f.peak_rss = {tool: None for tool in commands}
+    gnu_time = find_gnu_time()
+    if gnu_time is None:
+        console.print(
+            "[yellow]GNU time not found in PATH, the peak memory is not measured[/yellow]"
+        )
 
     console.print(
         f"[bold]Benchmarking[/bold] {len(files)} files, {args.warmup} warmup + {args.runs} runs, "
@@ -774,8 +856,9 @@ def cmd_bench(args, sources: list[Path]) -> None:
         console=console,
         transient=True,
     ) as progress:
+        memory_runs = 1 if gnu_time else 0
         task = progress.add_task(
-            "Running", total=(args.warmup + args.runs) * len(files)
+            "Running", total=(args.warmup + args.runs + memory_runs) * len(files)
         )
         # run by run over all files, and the tools one after another on each file,
         # so that a drift of the machine affects all files and tools alike
@@ -801,6 +884,21 @@ def cmd_bench(args, sources: list[Path]) -> None:
                         f.samples[tool].wall.append(wall)
                         f.samples[tool].cpu.append(cpu)
                 progress.advance(task)
+        # separately, so that GNU time does not take part in the measured times
+        if gnu_time:
+            progress.update(task, description="Memory")
+            for f in files:
+                code = f.code.encode()
+                for tool, cmd in commands.items():
+                    if f.name in failed:
+                        break
+                    try:
+                        f.peak_rss[tool] = peak_memory(
+                            gnu_time, cmd, code, args.timeout
+                        )
+                    except CommandError as e:
+                        failed[f.name] = f"{tool}: {e}"
+                progress.advance(task)
 
     for name, error in failed.items():
         console.print(f"[bold red]FAIL[/bold red] {name}: {error}", highlight=False)
@@ -809,8 +907,16 @@ def cmd_bench(args, sources: list[Path]) -> None:
         console.print("[bold red]No file was formatted successfully[/bold red]")
         sys.exit(1)
 
-    rows = [(f.name, tool, Stats.of(s)) for f in files for tool, s in f.samples.items()]
-    console.print(stats_table("Per file (wall time, CPU time = user + sys)", rows))
+    rows = [
+        (f.name, tool, Stats.of(s), f.peak_rss[tool])
+        for f in files
+        for tool, s in f.samples.items()
+    ]
+    console.print(
+        stats_table(
+            "Per file (wall time, CPU time = user + sys, peak mem = max RSS)", rows
+        )
+    )
 
     totals: dict[str, Samples] = {}
     for tool in commands:
@@ -819,10 +925,19 @@ def cmd_bench(args, sources: list[Path]) -> None:
             total = total.add(f.samples[tool])
         totals[tool] = total
     total_stats = {tool: Stats.of(s) for tool, s in totals.items()}
+    # the files are formatted one by one, so the peak is the largest of them
+    total_peak_rss = {
+        tool: max(peaks) if None not in peaks else None
+        for tool in commands
+        for peaks in [[f.peak_rss[tool] for f in files]]
+    }
     console.print(
         stats_table(
             f"All {len(files)} files per run",
-            [("total", tool, stats) for tool, stats in total_stats.items()],
+            [
+                ("total", tool, stats, total_peak_rss[tool])
+                for tool, stats in total_stats.items()
+            ],
         )
     )
 
@@ -837,7 +952,7 @@ def cmd_bench(args, sources: list[Path]) -> None:
 
     if "rustfmt" in commands:
         table = Table(
-            title="afmt / rustfmt (mean wall time)",
+            title="afmt / rustfmt (mean wall time, peak memory)",
             title_justify="left",
             title_style="bold",
         )
@@ -845,31 +960,51 @@ def cmd_bench(args, sources: list[Path]) -> None:
         table.add_column("afmt", justify="right")
         table.add_column("rustfmt", justify="right")
         table.add_column("ratio")
-        ratios = []
-        for f in files:
-            afmt, rustfmt = Stats.of(f.samples["afmt"]), Stats.of(f.samples["rustfmt"])
-            ratio = afmt.mean / rustfmt.mean
-            ratios.append(ratio)
+        table.add_column("afmt mem", justify="right")
+        table.add_column("rustfmt mem", justify="right")
+        table.add_column("mem ratio")
+        time_ratios: list[float] = []
+        memory_ratios: list[float] = []
+
+        def add_row(
+            name: str, stats: dict[str, Stats], peak_rss: dict[str, int | None]
+        ) -> None:
+            time_ratio = stats["afmt"].mean / stats["rustfmt"].mean
+            memory_ratio = None
+            if peak_rss["afmt"] is not None and peak_rss["rustfmt"] is not None:
+                memory_ratio = peak_rss["afmt"] / peak_rss["rustfmt"]
+                memory_ratios.append(memory_ratio)
+            time_ratios.append(time_ratio)
             table.add_row(
-                f.name,
-                format_seconds(afmt.mean),
-                format_seconds(rustfmt.mean),
-                format_ratio(ratio),
+                name,
+                format_seconds(stats["afmt"].mean),
+                format_seconds(stats["rustfmt"].mean),
+                format_ratio(time_ratio),
+                format_bytes(peak_rss["afmt"]),
+                format_bytes(peak_rss["rustfmt"]),
+                format_memory_ratio(memory_ratio),
             )
+
+        for f in files:
+            stats = {tool: Stats.of(s) for tool, s in f.samples.items()}
+            add_row(f.name, stats, f.peak_rss)
+        time_geomean = geometric_mean(time_ratios)
+        memory_geomean = geometric_mean(memory_ratios) if memory_ratios else None
         table.add_section()
-        rustfmt_mean = total_stats["rustfmt"].mean
+        add_row("total", total_stats, total_peak_rss)
         table.add_row(
-            "total",
-            format_seconds(afmt_mean),
-            format_seconds(rustfmt_mean),
-            format_ratio(afmt_mean / rustfmt_mean),
+            "geometric mean of ratios",
+            "",
+            "",
+            format_ratio(time_geomean),
+            "",
+            "",
+            format_memory_ratio(memory_geomean),
         )
-        geomean = math.exp(statistics.fmean(math.log(r) for r in ratios))
-        table.add_row("geometric mean of ratios", "", "", format_ratio(geomean))
         console.print(table)
 
     if args.output:
-        write_bench_results(args.output, args, files, totals)
+        write_bench_results(args.output, args, files, totals, total_peak_rss)
     if failed:
         sys.exit(1)
 
