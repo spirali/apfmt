@@ -314,9 +314,20 @@ fn format_assignment(fmt: &Formatter, expr: BinExpr) -> Frag {
     builder.into_frag()
 }
 
+/// The operator of a prefix expression; not `PrefixExpr::op_token`, the first child, which is an
+/// attribute in `#[cfg(x)] -1`
+fn prefix_op_token(expr: &PrefixExpr) -> SyntaxToken {
+    use SyntaxKind::{BANG, MINUS, STAR};
+    expr.syntax()
+        .children_with_tokens()
+        .filter_map(|e| e.into_token())
+        .find(|t| matches!(t.kind(), MINUS | BANG | STAR))
+        .unwrap()
+}
+
 fn format_prefix_expr(fmt: &Formatter, expr: PrefixExpr) -> Frag {
     let mut builder = Builder::new(fmt);
-    builder.push_token(expr.op_token().unwrap(), Tight);
+    builder.push_token(prefix_op_token(&expr), Tight);
     builder.push(format_expr(fmt, expr.expr().unwrap()));
     builder.into_frag()
 }
@@ -477,22 +488,26 @@ pub(super) fn plain_stmt_list(block: &BlockExpr) -> Option<StmtList> {
     (block.syntax().first_token() == stmt_list.l_curly_token()).then_some(stmt_list)
 }
 
-/// The expression of a block that can be written as `{ expr }`: no statements and no comments; not
-/// a `try` block, which is copied (see `format_block_expr_with_tail`)
+/// The expression of a block that can be written as `{ expr }`: no statements, no comments and no
+/// attributes (`{` / `    #[cfg(x)]` / `    expr` / `}`); not a `try` block, which is copied (see `format_block_expr_with_tail`)
 pub(super) fn single_line_block_expr(block: &BlockExpr) -> Option<Expr> {
     let stmt_list = block.stmt_list()?;
     let has_comment = stmt_list
         .syntax()
         .children_with_tokens()
         .any(|e| e.kind() == SyntaxKind::COMMENT);
+    let tail = stmt_list.tail_expr();
     if stmt_list.statements().next().is_some()
         || stmt_list.attrs().next().is_some()
+        || tail
+            .as_ref()
+            .is_some_and(|tail| tail.attrs().next().is_some())
         || has_comment
         || block.try_block_modifier().is_some()
     {
         return None;
     }
-    stmt_list.tail_expr()
+    tail
 }
 
 /// `{ inner }`, where `inner` is the expression from `single_line_block_expr`; the caller restricts it
@@ -696,6 +711,11 @@ fn closure_body_layouts(
     keep_braces: bool,
 ) -> (Frag, Option<Frag>) {
     let body = expr.body().unwrap();
+    // A body with attributes (`|x| #[allow(a)] {`) is copied unchanged with them, see `format_expr`
+    if body.attrs().next().is_some() {
+        let body = format_expr(fmt, body);
+        return (body.clone(), Some(body));
+    }
     let inner = match unbraced_closure_body(expr) {
         // Braces required, or the body is a block itself: `unsafe {`
         Some(inner) if inner.syntax() != body.syntax() || !matches!(inner, Expr::BlockExpr(_)) => {
@@ -938,7 +958,7 @@ pub(super) fn format_head_expr(fmt: &Formatter, expr: Expr) -> HeadLayouts {
     if let Expr::PrefixExpr(prefix) = &expr
         && let Some(operand) = prefix.expr().filter(is_postfix_expr)
     {
-        let op = fmt.token(prefix.op_token().unwrap(), Tight);
+        let op = fmt.token(prefix_op_token(prefix), Tight);
         let head = format_head_expr(fmt, operand);
         let with_op = |frag: Frag| Builder::concat(fmt, [op.clone(), frag]);
         return HeadLayouts {
@@ -972,10 +992,17 @@ pub(super) fn format_head_expr(fmt: &Formatter, expr: Expr) -> HeadLayouts {
     }
 }
 
+/// An expression; with outer attributes, it is copied unchanged (attributes are formatted only in
+/// front of a statement or the tail expression of a block, see `format_stmt_expr`)
 pub(super) fn format_expr(fmt: &Formatter, expr: Expr) -> Frag {
     if expr.attrs().next().is_some() {
         return format_unsupported_with_attrs(fmt, expr.syntax(), "an attribute on an expression");
     }
+    format_expr_without_attrs(fmt, expr)
+}
+
+/// An expression without its outer attributes, which the caller formats
+pub(super) fn format_expr_without_attrs(fmt: &Formatter, expr: Expr) -> Frag {
     match expr {
         Expr::Literal(expr) => format_literal(fmt, expr),
         Expr::CallExpr(expr) => format_call_expr(fmt, expr),

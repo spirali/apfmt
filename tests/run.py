@@ -12,6 +12,10 @@ Test harness for afmt.
      afmt intentionally differs from rustfmt)
   2. format it with `afmt` and compare with the reference
   3. format the afmt output again with `afmt` and check idempotency
+  Unsupported syntax fails a test, except in `<name>.unsupported.rs`: there afmt runs with
+  `--unsupported warn`, must report some unsupported syntax (otherwise the test should be
+  renamed), and `<name>.unsupported.expected.rs` is required as the reference (it checks what
+  afmt keeps, e.g. attributes that rustfmt would drop).
 
 `compare`: show afmt and rustfmt output side by side for selected tests.
   The comparison is always against rustfmt; `<name>.expected.rs` files are ignored.
@@ -77,6 +81,8 @@ from rich.table import Table
 from rich.text import Text
 
 EXPECTED_SUFFIX = ".expected.rs"
+# Tests of syntax that afmt copies unchanged (see `run_test`)
+UNSUPPORTED_SUFFIX = ".unsupported.rs"
 
 TESTS_DIR = Path(__file__).resolve().parent
 ROOT_DIR = TESTS_DIR.parent
@@ -113,6 +119,13 @@ class CommandError(Exception):
 def run_cmd(
     cmd: list[str], stdin: str | None, timeout: float, cwd: Path | None = None
 ) -> str:
+    return run_cmd_with_stderr(cmd, stdin, timeout, cwd)[0]
+
+
+def run_cmd_with_stderr(
+    cmd: list[str], stdin: str | None, timeout: float, cwd: Path | None = None
+) -> tuple[str, str]:
+    """The standard output and the standard error of a successful command"""
     try:
         proc = subprocess.run(
             cmd,
@@ -129,7 +142,7 @@ def run_cmd(
         raise CommandError(
             f"`{' '.join(cmd)}` exited with code {proc.returncode}\n{proc.stderr.rstrip()}"
         )
-    return proc.stdout
+    return proc.stdout, proc.stderr
 
 
 def run_rustfmt(code: str, args) -> str:
@@ -146,11 +159,24 @@ def run_rustfmt(code: str, args) -> str:
 
 # Unsupported syntax fails a test instead of being copied unchanged (afmt's default is `warn`)
 AFMT_OPTIONS = ["--unsupported", "error"]
+# What afmt reports on stderr for each piece of syntax it copies unchanged
+UNSUPPORTED_MESSAGE = "not supported yet"
 
 
-def run_afmt(code: str, args) -> str:
-    return run_cmd(
-        [str(args.afmt), *AFMT_OPTIONS, "--result-check"],
+def is_unsupported_test(source: Path) -> bool:
+    return source.name.endswith(UNSUPPORTED_SUFFIX)
+
+
+def run_afmt(code: str, args, unsupported: bool = False) -> str:
+    return run_afmt_with_stderr(code, args, unsupported)[0]
+
+
+def run_afmt_with_stderr(code: str, args, unsupported: bool) -> tuple[str, str]:
+    """afmt's output and stderr; with `unsupported`, unsupported syntax is copied unchanged
+    and reported on stderr instead of failing"""
+    options = ["--unsupported", "warn"] if unsupported else AFMT_OPTIONS
+    return run_cmd_with_stderr(
+        [str(args.afmt), *options, "--result-check"],
         stdin=code,
         timeout=args.timeout,
     )
@@ -176,7 +202,16 @@ def run_test(source: Path, args) -> Result:
     result = Result(name, CURRENT_DIR / name.removesuffix(".rs"))
     result.outputs["input.rs"] = code = source.read_text()
 
+    unsupported = is_unsupported_test(source)
     expected_path = expected_path_for(source)
+    if unsupported and not expected_path.exists():
+        result.failures.append(
+            Failure(
+                "missing reference",
+                f"{expected_path.name} is required next to a {UNSUPPORTED_SUFFIX} test",
+            )
+        )
+        return result
     if expected_path.exists():
         expected_name = "expected.rs"
         expected = expected_path.read_text()
@@ -190,11 +225,21 @@ def run_test(source: Path, args) -> Result:
     result.outputs[expected_name] = expected
 
     try:
-        actual = run_afmt(code, args)
+        actual, stderr = run_afmt_with_stderr(code, args, unsupported)
     except CommandError as e:
         result.failures.append(Failure("afmt error", str(e)))
         return result
     result.outputs["afmt.rs"] = actual
+
+    if unsupported and UNSUPPORTED_MESSAGE not in stderr:
+        result.failures.append(
+            Failure(
+                "no unsupported syntax",
+                f"afmt supports all of it now: rename the test to drop "
+                f"`{UNSUPPORTED_SUFFIX.removesuffix('.rs')}`",
+            )
+        )
+        return result
 
     if actual != expected:
         result.failures.append(
@@ -207,7 +252,7 @@ def run_test(source: Path, args) -> Result:
         return result
 
     try:
-        second = run_afmt(actual, args)
+        second = run_afmt(actual, args, unsupported)
     except CommandError as e:
         result.failures.append(Failure("afmt error (2nd pass)", str(e)))
         return result
@@ -506,7 +551,7 @@ def cmd_compare(args, sources: list[Path]) -> None:
         code = source.read_text()
         errors = []
         try:
-            afmt_out = run_afmt(code, args)
+            afmt_out = run_afmt(code, args, is_unsupported_test(source))
         except CommandError as e:
             afmt_out = ""
             errors.append(f"afmt error: {e}")

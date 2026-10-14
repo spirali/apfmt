@@ -1,7 +1,10 @@
 //! Statements and blocks
 
-use super::attr::{format_attr, format_with_attrs};
-use super::expr::{format_expr, format_head_expr, format_head_followed_by, format_if_expr};
+use super::attr::{format_attr, format_skippable_with_attrs};
+use super::expr::{
+    format_expr, format_expr_without_attrs, format_head_expr, format_head_followed_by,
+    format_if_expr,
+};
 use super::format_unsupported;
 use super::item::format_item;
 use super::pat::format_pat;
@@ -81,21 +84,38 @@ fn format_stmt(fmt: &Formatter, stmt: Stmt) -> Frag {
         }
         Stmt::Item(item) => format_item(fmt, item),
         Stmt::LetStmt(stmt) => {
-            format_with_attrs(fmt, &stmt, false, || format_let_stmt(fmt, stmt.clone()))
+            format_skippable_with_attrs(fmt, &stmt, || format_let_stmt(fmt, stmt.clone()))
         }
     }
 }
 
-/// The expression of an expression statement. A standalone `if` is never on a single line, nor is a
-/// block other than `unsafe { ... }` (Style Guide "Blocks": a single-line block is "either used in
-/// expression position (not statement position) or is an unsafe block in statement position"). The
-/// tail expression of a block is its value, so it is in expression position, as in rustfmt.
+/// The expression of an expression statement, its attributes on their own lines as on a `let`
+/// statement (`#[cfg(x)]` / `if a {`, see `format_skippable_with_attrs`). A standalone `if` is never
+/// on a single line, nor is a block other than `unsafe { ... }` (Style Guide "Blocks": a single-line
+/// block is "either used in expression position (not statement position) or is an unsafe block in
+/// statement position"), nor a block after attributes (as rustfmt does). The tail expression of a
+/// block is its value, so it is in expression position, as in rustfmt.
 fn format_stmt_expr(fmt: &Formatter, expr: Expr) -> Frag {
-    match expr {
+    let has_attrs = expr.attrs().next().is_some();
+    format_skippable_with_attrs(fmt, &expr, || match expr.clone() {
         Expr::IfExpr(expr) => format_if_expr(fmt, expr, false),
-        Expr::BlockExpr(block) if block.unsafe_token().is_none() => format_block_expr(fmt, block),
-        expr => format_expr(fmt, expr),
+        Expr::BlockExpr(block) if block.unsafe_token().is_none() || has_attrs => {
+            format_block_expr(fmt, block)
+        }
+        expr => format_expr_without_attrs(fmt, expr),
+    })
+}
+
+/// The tail expression of a block; with attributes, they are on their own lines and a block after
+/// them is broken (`#[cfg(x)]` / `{` / `    a` / `}`), as rustfmt does
+fn format_tail_expr(fmt: &Formatter, expr: Expr) -> Frag {
+    if expr.attrs().next().is_none() {
+        return format_expr(fmt, expr);
     }
+    format_skippable_with_attrs(fmt, &expr, || match expr.clone() {
+        Expr::BlockExpr(block) => format_block_expr(fmt, block),
+        expr => format_expr_without_attrs(fmt, expr),
+    })
 }
 
 /// `tail` is the already formatted tail expression, when it is shared with another layout
@@ -103,7 +123,7 @@ fn format_stmt_list(fmt: &Formatter, stmt_list: StmtList, tail: Option<Frag>) ->
     let delims = Delimiters::braces_of(stmt_list.syntax());
     let tail = stmt_list
         .tail_expr()
-        .map(|expr| tail.unwrap_or_else(|| format_expr(fmt, expr)));
+        .map(|expr| tail.unwrap_or_else(|| format_tail_expr(fmt, expr)));
     let lines = stmt_list
         .attrs()
         .map(|attr| format_attr(fmt, attr))

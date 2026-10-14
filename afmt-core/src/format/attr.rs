@@ -43,6 +43,28 @@ pub(super) fn format_with_attrs(
     attach_attrs(fmt, attrs, inline, format())
 }
 
+/// Whether the attribute is `#[rustfmt::skip]`
+fn is_rustfmt_skip(attr: &Attr) -> bool {
+    matches!(attr.meta(), Some(Meta::PathMeta(meta)) if meta.path().is_some_and(|p| p.syntax().text() == "rustfmt::skip"))
+}
+
+/// `format_with_attrs` with each attribute on its own line, for a node that `#[rustfmt::skip]`
+/// keeps as it is in the source, from its first attribute on (an item, a statement)
+pub(super) fn format_skippable_with_attrs(
+    fmt: &Formatter,
+    node: &impl HasAttrs,
+    format: impl FnOnce() -> Frag,
+) -> Frag {
+    if let Some(attr) = node.attrs().next()
+        && node.attrs().any(|attr| is_rustfmt_skip(&attr))
+    {
+        let first = attr.syntax().first_token().unwrap();
+        let last = node.syntax().last_token().unwrap();
+        return fmt.verbatim_range(&first, &last, Word, Word);
+    }
+    format_with_attrs(fmt, node, false, format)
+}
+
 /// `rest` preceded by the formatted attributes `attrs`, see `format_with_attrs`
 pub(super) fn attach_attrs(
     fmt: &Formatter,

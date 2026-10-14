@@ -1,5 +1,6 @@
 //! Patterns
 
+use super::attr::format_with_attrs;
 use super::expr::{format_range, single_item_separator};
 use super::path::{format_name_ref, format_path};
 use super::{format_unsupported, format_unsupported_kind};
@@ -174,10 +175,13 @@ fn format_record_pat(fmt: &Formatter, pat: RecordPat) -> Frag {
     builder.push(format_path(fmt, pat.path().unwrap()));
     let list = pat.record_pat_field_list().unwrap();
     let fields = list_items(list.syntax(), |node| match node.kind() {
-        SyntaxKind::RECORD_PAT_FIELD => Some(format_record_pat_field(
-            fmt,
-            RecordPatField::cast(node).unwrap(),
-        )),
+        SyntaxKind::RECORD_PAT_FIELD => {
+            let field = RecordPatField::cast(node).unwrap();
+            // `#[cfg(x)]` / `field,`, as in struct literals
+            Some(format_with_attrs(fmt, &field, false, || {
+                format_record_pat_field(fmt, field.clone())
+            }))
+        }
         SyntaxKind::REST_PAT => Some(format_rest_pat(fmt, RestPat::cast(node).unwrap())),
         _ => None,
     });

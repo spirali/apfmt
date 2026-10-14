@@ -1,6 +1,6 @@
 //! Items: functions, structs, enums, use declarations, impls, traits, modules, constants, type aliases
 
-use super::attr::{attach_attrs, format_attr, format_with_attrs};
+use super::attr::{attach_attrs, format_attr, format_skippable_with_attrs, format_with_attrs};
 use super::expr::format_expr;
 use super::generics::{format_generic_param_list, format_type_bound_list, format_where_clause};
 use super::macros::format_macro_call;
@@ -13,15 +13,15 @@ use crate::format::common::{format_lifetime, format_name};
 use crate::formatter::Edge::{Comma, Operator, Tight, Word};
 use crate::formatter::{Builder, Formatter, Frag};
 use crate::layout::list::{
-    Delimiters, FlatLimit, ListItem, ListLayout, TrailingSeparator, delimited_list, flat_layout,
-    list_items, list_items_cast,
+    Delimiters, FlatLimit, ListItem, ListLayout, Overflow, TrailingSeparator, delimited_list,
+    flat_layout, list_items, list_items_cast,
 };
 use ra_ap_syntax::ast::{
-    Abi, AssocItemList, Attr, Const, Enum, Expr, ExternBlock, FieldList, Fn as AstFn,
-    GenericParamList, HasAttrs, HasGenericParams, HasModuleItem, HasName, HasTypeBounds,
-    HasVisibility, Impl, Item, ItemList, Meta, Module, Param, ParamList, RecordField,
-    RecordFieldList, Rename, SelfParam, Static, Struct, Trait, TupleField, TupleFieldList, Type,
-    TypeAlias, TypeBoundList, Use, UseTree, UseTreeList, Variant, Visibility, WhereClause,
+    Abi, AssocItemList, Const, Enum, Expr, ExternBlock, FieldList, Fn as AstFn, GenericParamList,
+    HasAttrs, HasGenericParams, HasModuleItem, HasName, HasTypeBounds, HasVisibility, Impl, Item,
+    ItemList, Module, Param, ParamList, Pat, RecordField, RecordFieldList, Rename, SelfParam,
+    Static, Struct, Trait, TupleField, TupleFieldList, Type, TypeAlias, TypeBoundList, Use,
+    UseTree, UseTreeList, Variant, Visibility, WhereClause,
 };
 use ra_ap_syntax::{AstNode, NodeOrToken, SyntaxKind, SyntaxNode, SyntaxToken};
 
@@ -73,16 +73,28 @@ pub(super) fn format_param_list(fmt: &Formatter, param_list: ParamList) -> Frag 
 /// `|a, b: B|` of a closure on a single line (`None` if a comment prevents it), and broken (`None`
 /// without parameters, or with a single one that fits on a single line): aligned after `|` as rustfmt
 /// does (`|a: A,` / ` b: B|`), an explicit exception to the Style Guide's "function definition syntax"
-/// (see CLAUDE.md)
+/// (see CLAUDE.md). A single tuple-like parameter is hugged instead (see `is_hugged_closure_param`).
 pub(super) fn closure_params_layouts(
     fmt: &Formatter,
     param_list: ParamList,
 ) -> (Option<Frag>, Option<Frag>) {
-    let params = param_items(fmt, &param_list);
+    let hugged = match param_list.params().collect::<Vec<_>>().as_slice() {
+        [param] => param_list.self_param().is_none() && is_hugged_closure_param(param),
+        _ => false,
+    };
+    let mut params = param_items(fmt, &param_list);
     let delims = Delimiters::pipes_of(param_list.syntax());
     if params.is_empty() {
         return (Some(delims.format_empty(fmt)), None);
     }
+    if hugged {
+        let frag = params[0].frag.clone();
+        params[0] = params[0].clone().with_overflow(Overflow::Preferred(frag));
+    }
+    // A single parameter that can be on one line is the same broken, unless a comment forces a line
+    // break or it is hugged; one that cannot (`|S {` / `    long_field,` / `}|`) has only broken
+    // layouts
+    let single_flat = params.len() == 1 && fmt.flat_width(&params[0].frag).is_some();
     let flat = flat_layout(
         fmt,
         &delims,
@@ -91,14 +103,29 @@ pub(super) fn closure_params_layouts(
         TrailingSeparator::IfVertical,
     )
     .map(|flat| delims.wrap_body(fmt, flat));
-    // A single parameter is the same broken, unless a comment forces a line break
-    if params.len() == 1 && flat.is_some() {
+    if single_flat && !hugged && flat.is_some() {
         return (flat, None);
     }
     let layout = ListLayout::tall(FlatLimit::MaxWidth)
         .broken_if(true)
         .aligned();
     (flat, Some(delimited_list(fmt, &delims, &params, layout)))
+}
+
+/// Whether the single parameter of a closure is hugged by the pipes when it does not fit on one
+/// line, its elements block indented, as rustfmt does: a tuple, slice or tuple struct pattern, also
+/// after `&` or followed by a type (`|(` / `    a,` / `    b,` / `)| body`); a struct pattern is
+/// aligned after `|` like other parameters (`|S {` / `     a,` / ` }|`)
+fn is_hugged_closure_param(param: &Param) -> bool {
+    let mut pat = param.pat();
+    while let Some(Pat::RefPat(ref_pat)) = &pat {
+        pat = ref_pat.pat();
+    }
+    param.attrs().next().is_none()
+        && matches!(
+            pat,
+            Some(Pat::TuplePat(_) | Pat::SlicePat(_) | Pat::TupleStructPat(_))
+        )
 }
 
 fn param_items(fmt: &Formatter, param_list: &ParamList) -> Vec<ListItem> {
@@ -811,22 +838,9 @@ fn format_type_alias(fmt: &Formatter, item: TypeAlias) -> Frag {
     builder.into_frag()
 }
 
-/// Whether the attribute is `#[rustfmt::skip]`
-fn is_rustfmt_skip(attr: &Attr) -> bool {
-    matches!(attr.meta(), Some(Meta::PathMeta(meta)) if meta.path().is_some_and(|p| p.syntax().text() == "rustfmt::skip"))
-}
-
-/// An item preceded by its attributes, each on its own line; an item with `#[rustfmt::skip]` is kept
-/// as it is in the source, from its first attribute on
+/// An item preceded by its attributes, each on its own line (see `format_skippable_with_attrs`)
 pub(super) fn format_item(fmt: &Formatter, item: Item) -> Frag {
-    if let Some(attr) = item.attrs().next()
-        && item.attrs().any(|attr| is_rustfmt_skip(&attr))
-    {
-        let first = attr.syntax().first_token().unwrap();
-        let last = item.syntax().last_token().unwrap();
-        return fmt.verbatim_range(&first, &last, Word, Word);
-    }
-    format_with_attrs(fmt, &item, false, || match item.clone() {
+    format_skippable_with_attrs(fmt, &item, || match item.clone() {
         Item::Fn(item) => format_fn(fmt, item),
         Item::Struct(item) => format_struct(fmt, item),
         Item::Enum(item) => format_enum(fmt, item),

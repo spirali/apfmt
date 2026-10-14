@@ -138,6 +138,8 @@ fn arm_body_layouts(fmt: &Formatter, body: Expr) -> (Option<Frag>, Frag) {
     };
     let control_flow = is_control_flow(&expr);
     let inner = match expr {
+        // With attributes: copied unchanged with them, see `format_expr`
+        expr if expr.attrs().next().is_some() => format_expr(fmt, expr),
         // As a statement: never on a single line
         Expr::IfExpr(expr) => format_if_expr(fmt, expr, false),
         Expr::BlockExpr(block) => format_block_or_inline(fmt, block),
