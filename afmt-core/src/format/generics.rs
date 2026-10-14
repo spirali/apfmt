@@ -17,6 +17,7 @@ use ra_ap_syntax::ast::{
     WherePred,
 };
 use ra_ap_syntax::{AstNode, SyntaxKind, SyntaxNode};
+use std::convert::identity;
 
 /// `<'a, T: Clone, const N: usize>`; kept on one line if possible, the Style Guide prefers breaking
 /// other parts of an item declaration
@@ -61,7 +62,7 @@ fn format_generic_param(fmt: &Formatter, param: GenericParam) -> Frag {
 fn format_type_param(fmt: &Formatter, param: TypeParam) -> Frag {
     let mut builder = Builder::new(fmt);
     builder.push(format_name(fmt, param.name().unwrap()));
-    push_bounds(fmt, &mut builder, &param);
+    push_bounds(fmt, &mut builder, &param, identity);
     if let Some(eq_token) = param.eq_token() {
         builder.push_token(eq_token, Operator);
         builder.push(format_type(fmt, param.default_type().unwrap()));
@@ -73,7 +74,7 @@ fn format_type_param(fmt: &Formatter, param: TypeParam) -> Frag {
 fn format_lifetime_param(fmt: &Formatter, param: LifetimeParam) -> Frag {
     let mut builder = Builder::new(fmt);
     builder.push(format_lifetime(fmt, param.lifetime().unwrap()));
-    push_bounds(fmt, &mut builder, &param);
+    push_bounds(fmt, &mut builder, &param, identity);
     builder.into_frag()
 }
 
@@ -95,8 +96,8 @@ fn format_const_param(fmt: &Formatter, param: ConstParam) -> Frag {
 }
 
 /// `: A + B` of a node with bounds, if it has them, or only `:` if the list is empty (`T:`);
-/// `place` places the bounds after `:`
-fn push_bounds_with(
+/// `place` places the bounds after `:` (`identity`: right after it)
+fn push_bounds(
     fmt: &Formatter,
     builder: &mut Builder,
     node: &impl HasTypeBounds,
@@ -111,11 +112,6 @@ fn push_bounds_with(
     }
 }
 
-/// `push_bounds_with` with the bounds right after `:`
-fn push_bounds(fmt: &Formatter, builder: &mut Builder, node: &impl HasTypeBounds) {
-    push_bounds_with(fmt, builder, node, |bounds| bounds);
-}
-
 /// `A + B + 'a`: on one line, or broken before every `+`; a type, so kept on
 /// one line if possible
 pub(super) fn format_type_bound_list(fmt: &Formatter, list: TypeBoundList) -> Frag {
@@ -125,19 +121,29 @@ pub(super) fn format_type_bound_list(fmt: &Formatter, list: TypeBoundList) -> Fr
     fmt.keep_together(infix_chain(fmt, first, &rest))
 }
 
-/// `'a`, `use<'a, T>`, or a trait with its binder and modifiers: `Trait`, `?Sized`,
-/// `for<'a> Fn(&'a T)`, `~const Trait`, `[const] Trait`, `async Fn()`
+/// `'a`, `use<'a, T>` or a trait bound (see `push_trait_bound`), in the parentheses of the source
+/// if it has them: `(FnOnce() -> R) + Send`, where they are required (without them, `+ Send` would
+/// be part of the return type)
 fn format_type_bound(fmt: &Formatter, bound: TypeBound) -> Frag {
+    let mut builder = Builder::new(fmt);
     if let Some(lifetime) = bound.lifetime() {
-        return format_lifetime(fmt, lifetime);
-    }
-    if let Some(args) = bound.use_bound_generic_args() {
-        let mut builder = Builder::new(fmt);
+        builder.push(format_lifetime(fmt, lifetime));
+    } else if let Some(args) = bound.use_bound_generic_args() {
         builder.push_token(bound.use_token().unwrap(), Word);
         builder.push(format_use_bound_generic_args(fmt, args));
-        return builder.into_frag();
+    } else {
+        push_trait_bound(fmt, &mut builder, &bound);
     }
-    let mut builder = Builder::new(fmt);
+    let inner = builder.into_frag();
+    match Delimiters::try_parens_of(bound.syntax()) {
+        Some(parens) => parens.enclose(fmt, inner),
+        None => inner,
+    }
+}
+
+/// A trait with its binder and modifiers: `Trait`, `?Sized`, `for<'a> Fn(&'a T)`, `~const Trait`,
+/// `[const] Trait`, `async Fn()`
+fn push_trait_bound(fmt: &Formatter, builder: &mut Builder, bound: &TypeBound) {
     if let Some(binder) = bound.for_binder() {
         builder.push(format_for_binder(fmt, binder));
     }
@@ -160,7 +166,6 @@ fn format_type_bound(fmt: &Formatter, bound: TypeBound) -> Frag {
         builder.push_token(token, Tight);
     }
     builder.push(format_type(fmt, bound.ty().unwrap()));
-    builder.into_frag()
 }
 
 /// `<'a, T>` of a `use` bound
@@ -197,7 +202,7 @@ fn format_where_pred(fmt: &Formatter, pred: WherePred) -> Frag {
     }
     // Bounds that do not fit move to the next line, indented (as rustfmt does): `F:` /
     // `    Fn(&'a u8) -> u8,`
-    push_bounds_with(fmt, &mut builder, &pred, |bounds| {
+    push_bounds(fmt, &mut builder, &pred, |bounds| {
         fmt.same_or_indented_line(bounds)
     });
     builder.into_frag()

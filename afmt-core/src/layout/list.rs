@@ -31,6 +31,9 @@ pub(crate) enum Overflow {
     /// With these layouts of the item, preferred whenever it fits: the broken layouts of the list
     /// cost a split (Style Guide: closures)
     Preferred(Frag),
+    /// With these layouts of the item, the only broken layout of the list unless a comment rules
+    /// the overflow out (a single closure parameter hugged by the pipes: `|(` / `    a,` / `)|`)
+    Only(Frag),
 }
 
 impl<T> ListItem<T> {
@@ -111,19 +114,24 @@ fn flat_list(
     for (item, is_last) in with_is_last(items) {
         builder.push(item.frag.clone());
         let comma = !is_last || trailing == TrailingSeparator::Required;
-        match &item.comma {
-            // The source separator, so comments in front of it stay there: `a /* c */, b`
-            Some(source) if comma => builder.push_token(source.clone(), Comma),
-            // A required trailing comma missing in the source
-            None if comma => builder.push_separator(SyntaxKind::COMMA),
-            // No trailing comma, but the source one and its comments still have to be consumed
-            _ => builder.skip_separator(SyntaxKind::COMMA),
-        }
+        push_or_skip_comma(&mut builder, item, comma);
     }
     builder.flush_trivia();
     // A line comment ends the line inside the list, so `Flat` rejects such a layout
     builder.end_line_after_line_comment();
     builder.into_frag()
+}
+
+/// The comma after `item` if `comma`, otherwise only its source comma (if any) is consumed
+fn push_or_skip_comma(builder: &mut Builder, item: &ListItem, comma: bool) {
+    match &item.comma {
+        // The source separator, so comments in front of it stay there: `a /* c */, b`
+        Some(source) if comma => builder.push_token(source.clone(), Comma),
+        // A required trailing comma missing in the source
+        None if comma => builder.push_separator(SyntaxKind::COMMA),
+        // No trailing comma, but the source one and its comments still have to be consumed
+        _ => builder.skip_separator(SyntaxKind::COMMA),
+    }
 }
 
 /// Items filled on lines, as many on each line as fit: `a, b, c,` / `d, e,`; with a line break after `open`,
@@ -277,6 +285,16 @@ impl Delimiters {
         )
     }
 
+    /// The `(` and `)` among the children of `node`, if it has them (a parenthesized bound)
+    pub fn try_parens_of(node: &SyntaxNode) -> Option<Self> {
+        Self::try_of(
+            node,
+            SyntaxKind::L_PAREN,
+            SyntaxKind::R_PAREN,
+            DelimiterKind::Parens,
+        )
+    }
+
     /// The `<` and `>` of the list `node` (generic arguments, `<T as Trait>`)
     pub fn angles_of(node: &SyntaxNode) -> Self {
         Self::of(
@@ -330,16 +348,26 @@ impl Delimiters {
 
     /// The first `open` and the last `close` token among the children of `node`
     fn of(node: &SyntaxNode, open: SyntaxKind, close: SyntaxKind, kind: DelimiterKind) -> Self {
+        Self::try_of(node, open, close, kind).unwrap()
+    }
+
+    /// The delimiters among the children of `node`, if it has them
+    fn try_of(
+        node: &SyntaxNode,
+        open: SyntaxKind,
+        close: SyntaxKind,
+        kind: DelimiterKind,
+    ) -> Option<Self> {
         let token = |kind: SyntaxKind| {
             node.children_with_tokens()
                 .filter_map(SyntaxElement::into_token)
                 .filter(move |t| t.kind() == kind)
         };
-        Delimiters {
-            open: token(open).next().unwrap(),
-            close: token(close).last().unwrap(),
+        Some(Delimiters {
+            open: token(open).next()?,
+            close: token(close).last()?,
             kind,
-        }
+        })
     }
 
     fn edges(&self) -> (Edge, Edge) {
@@ -605,13 +633,15 @@ pub(crate) fn keyword_list(
 }
 
 /// The last item overflows with its layouts `last_layouts` (see `Overflow`); the items in front of it
-/// are on the line of the opening delimiter, within the width of `limit` (as rustfmt does)
+/// are on the line of the opening delimiter, within the width of `limit` (as rustfmt does). The last
+/// item has a comma only if it is `Required` (`(match a {` / `...` / `},)`).
 fn overflow_layout(
     fmt: &Formatter,
     delims: &Delimiters,
     items: &[ListItem],
     last_layouts: &Frag,
     limit: FlatLimit,
+    trailing: TrailingSeparator,
 ) -> Option<Frag> {
     let rest = &items[..items.len() - 1];
     let mut overflow = if rest.is_empty() {
@@ -629,7 +659,8 @@ fn overflow_layout(
     };
     overflow.flush_trivia();
     overflow.push(last_layouts.clone());
-    overflow.skip_separator(SyntaxKind::COMMA);
+    let last = items.last().unwrap();
+    push_or_skip_comma(&mut overflow, last, trailing == TrailingSeparator::Required);
     overflow.flush_trivia();
     // Only an item that is broken overflows; on a single line, it is the flat layout
     Some(fmt.multi_line(overflow.into_frag()))
@@ -646,35 +677,42 @@ pub(crate) fn delimited_list(
         return delims.format_empty(fmt);
     }
     let open = Some(delims.open.clone());
-    let mut broken = match layout.broken {
-        BrokenList::Vertical { keep_blank_lines } => vertical_list(
-            fmt,
-            items,
-            open.clone(),
-            keep_blank_lines,
-            layout.trailing,
-            None,
-        ),
-        BrokenList::Fill => fill_list(fmt, items, open.clone()),
-        BrokenList::Aligned => aligned_list(fmt, items, open.clone()),
-    };
-    let (last_layouts, broken_is_fallback) = match &items.last().unwrap().overflow {
-        Overflow::Never => (None, false),
-        Overflow::With(layouts) => (Some(layouts), false),
-        Overflow::Preferred(layouts) => (Some(layouts), true),
+    let (last_layouts, broken_is_fallback, overflow_only) = match &items.last().unwrap().overflow {
+        Overflow::Never => (None, false, false),
+        Overflow::With(layouts) => (Some(layouts), false, false),
+        Overflow::Preferred(layouts) => (Some(layouts), true, false),
+        Overflow::Only(layouts) => (Some(layouts), true, true),
     };
     // A line comment after the last item would end the line in front of the closing delimiter
     let overflow = last_layouts
         .filter(|_| !delims.has_own_line_comment() && !delims.has_line_comment_before_close())
         .and_then(|last_layouts| {
             let limit = layout.flat.unwrap_or(FlatLimit::MaxWidth);
-            overflow_layout(fmt, delims, items, last_layouts, limit)
+            overflow_layout(fmt, delims, items, last_layouts, limit, layout.trailing)
         });
-    // With a preferred overflow, the broken layouts are used only when it does not fit
-    if overflow.is_some() && broken_is_fallback {
-        broken = fmt.dispreferred(broken);
-    }
-    let mut layouts = fmt.alt_opt(broken, overflow);
+    let broken = (overflow.is_none() || !overflow_only).then(|| {
+        let broken = match layout.broken {
+            BrokenList::Vertical { keep_blank_lines } => vertical_list(
+                fmt,
+                items,
+                open.clone(),
+                keep_blank_lines,
+                layout.trailing,
+                None,
+            ),
+            BrokenList::Fill => fill_list(fmt, items, open.clone()),
+            BrokenList::Aligned => aligned_list(fmt, items, open.clone()),
+        };
+        // With a preferred overflow, the broken layouts are used only when it does not fit
+        if overflow.is_some() && broken_is_fallback {
+            fmt.dispreferred(broken)
+        } else {
+            broken
+        }
+    });
+    let mut layouts = fmt
+        .alt_some(broken, overflow)
+        .expect("a broken or an overflow layout");
     if let Some(limit) = layout.flat {
         layouts = fmt.alt_opt(
             layouts,

@@ -314,14 +314,12 @@ fn format_assignment(fmt: &Formatter, expr: BinExpr) -> Frag {
     builder.into_frag()
 }
 
-/// The operator of a prefix expression; not `PrefixExpr::op_token`, the first child, which is an
-/// attribute in `#[cfg(x)] -1`
+/// The operator of a prefix expression, its first token child; not `PrefixExpr::op_token`, its
+/// first child, which is an attribute in `#[cfg(x)] -1`
 fn prefix_op_token(expr: &PrefixExpr) -> SyntaxToken {
-    use SyntaxKind::{BANG, MINUS, STAR};
     expr.syntax()
         .children_with_tokens()
-        .filter_map(|e| e.into_token())
-        .find(|t| matches!(t.kind(), MINUS | BANG | STAR))
+        .find_map(|e| e.into_token().filter(|t| !t.kind().is_trivia()))
         .unwrap()
 }
 
@@ -370,9 +368,14 @@ pub(super) fn format_range<R: RangeItem>(
     if let Some(start) = range.start() {
         builder.push(format_bound(start));
     }
-    builder.push_token(range.op_token().unwrap(), Tight);
-    if let Some(end) = range.end() {
-        builder.push(format_bound(end));
+    let op = range.op_token().unwrap();
+    match range.end() {
+        Some(end) => {
+            builder.push_token(op, Tight);
+            builder.push(format_bound(end));
+        }
+        // Spaced from an operator after it like a word: `2.. =>`, not `2..=>` (`..=` `>`)
+        None => builder.push(fmt.token_with_edges(op, Tight, Word)),
     }
     builder.into_frag()
 }

@@ -55,10 +55,11 @@ pub(super) fn format_skippable_with_attrs(
     node: &impl HasAttrs,
     format: impl FnOnce() -> Frag,
 ) -> Frag {
-    if let Some(attr) = node.attrs().next()
-        && node.attrs().any(|attr| is_rustfmt_skip(&attr))
-    {
-        let first = attr.syntax().first_token().unwrap();
+    let Some(first_attr) = node.attrs().next() else {
+        return format();
+    };
+    if node.attrs().any(|attr| is_rustfmt_skip(&attr)) {
+        let first = first_attr.syntax().first_token().unwrap();
         let last = node.syntax().last_token().unwrap();
         return fmt.verbatim_range(&first, &last, Word, Word);
     }

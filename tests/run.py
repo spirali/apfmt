@@ -118,12 +118,6 @@ class CommandError(Exception):
 
 def run_cmd(
     cmd: list[str], stdin: str | None, timeout: float, cwd: Path | None = None
-) -> str:
-    return run_cmd_with_stderr(cmd, stdin, timeout, cwd)[0]
-
-
-def run_cmd_with_stderr(
-    cmd: list[str], stdin: str | None, timeout: float, cwd: Path | None = None
 ) -> tuple[str, str]:
     """The standard output and the standard error of a successful command"""
     try:
@@ -149,16 +143,15 @@ def run_rustfmt(code: str, args) -> str:
     # stdin mode prints only the formatted code to stdout; in stdin mode rustfmt looks
     # up its config from the cwd, so run it from the repo root to never pick up
     # tests/sources/rustfmt.toml (which disables formatting)
-    return run_cmd(
+    stdout, _ = run_cmd(
         [args.rustfmt, "--edition", args.edition],
         stdin=code,
         timeout=args.timeout,
         cwd=ROOT_DIR,
     )
+    return stdout
 
 
-# Unsupported syntax fails a test instead of being copied unchanged (afmt's default is `warn`)
-AFMT_OPTIONS = ["--unsupported", "error"]
 # What afmt reports on stderr for each piece of syntax it copies unchanged
 UNSUPPORTED_MESSAGE = "not supported yet"
 
@@ -167,16 +160,16 @@ def is_unsupported_test(source: Path) -> bool:
     return source.name.endswith(UNSUPPORTED_SUFFIX)
 
 
-def run_afmt(code: str, args, unsupported: bool = False) -> str:
-    return run_afmt_with_stderr(code, args, unsupported)[0]
+def afmt_options(unsupported: bool) -> list[str]:
+    """Unsupported syntax fails a test instead of being copied unchanged (afmt's default is
+    `warn`), except with `unsupported`: then it is copied and reported on stderr"""
+    return ["--unsupported", "warn" if unsupported else "error"]
 
 
-def run_afmt_with_stderr(code: str, args, unsupported: bool) -> tuple[str, str]:
-    """afmt's output and stderr; with `unsupported`, unsupported syntax is copied unchanged
-    and reported on stderr instead of failing"""
-    options = ["--unsupported", "warn"] if unsupported else AFMT_OPTIONS
-    return run_cmd_with_stderr(
-        [str(args.afmt), *options, "--result-check"],
+def run_afmt(code: str, args, unsupported: bool) -> tuple[str, str]:
+    """afmt's output and stderr, see `afmt_options`"""
+    return run_cmd(
+        [str(args.afmt), *afmt_options(unsupported), "--result-check"],
         stdin=code,
         timeout=args.timeout,
     )
@@ -204,7 +197,10 @@ def run_test(source: Path, args) -> Result:
 
     unsupported = is_unsupported_test(source)
     expected_path = expected_path_for(source)
-    if unsupported and not expected_path.exists():
+    if expected_path.exists():
+        expected_name = "expected.rs"
+        expected = expected_path.read_text()
+    elif unsupported:
         result.failures.append(
             Failure(
                 "missing reference",
@@ -212,9 +208,6 @@ def run_test(source: Path, args) -> Result:
             )
         )
         return result
-    if expected_path.exists():
-        expected_name = "expected.rs"
-        expected = expected_path.read_text()
     else:
         expected_name = "rustfmt.rs"
         try:
@@ -225,7 +218,7 @@ def run_test(source: Path, args) -> Result:
     result.outputs[expected_name] = expected
 
     try:
-        actual, stderr = run_afmt_with_stderr(code, args, unsupported)
+        actual, stderr = run_afmt(code, args, unsupported)
     except CommandError as e:
         result.failures.append(Failure("afmt error", str(e)))
         return result
@@ -252,7 +245,7 @@ def run_test(source: Path, args) -> Result:
         return result
 
     try:
-        second = run_afmt(actual, args, unsupported)
+        second, _ = run_afmt(actual, args, unsupported)
     except CommandError as e:
         result.failures.append(Failure("afmt error (2nd pass)", str(e)))
         return result
@@ -551,7 +544,7 @@ def cmd_compare(args, sources: list[Path]) -> None:
         code = source.read_text()
         errors = []
         try:
-            afmt_out = run_afmt(code, args, is_unsupported_test(source))
+            afmt_out, _ = run_afmt(code, args, is_unsupported_test(source))
         except CommandError as e:
             afmt_out = ""
             errors.append(f"afmt error: {e}")
@@ -643,7 +636,7 @@ class BenchFile:
 def bench_commands(args) -> dict[str, list[str]]:
     """The measured command of every tool; the same commands as `test` uses, without
     afmt's --result-check unless it is asked for."""
-    afmt = [str(args.afmt), *AFMT_OPTIONS]
+    afmt = [str(args.afmt), *afmt_options(False)]
     if args.result_check:
         afmt.append("--result-check")
     commands = {"afmt": afmt}

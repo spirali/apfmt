@@ -114,12 +114,13 @@ pub(super) fn format_type(fmt: &Formatter, ty: Type) -> Frag {
         Type::FnPtrType(ty) => format_fn_ptr_type(fmt, ty),
         Type::NeverType(ty) => fmt.token(ty.excl_token().unwrap(), Word),
         Type::InferType(ty) => fmt.token(ty.underscore_token().unwrap(), Word),
-        Type::ForType(ty) => {
-            let mut builder = Builder::new(fmt);
-            builder.push(format_for_binder(fmt, ty.for_binder().unwrap()));
-            builder.push(format_type(fmt, ty.ty().unwrap()));
-            builder.into_frag()
-        }
+        Type::ForType(ty) => Builder::concat(
+            fmt,
+            [
+                format_for_binder(fmt, ty.for_binder().unwrap()),
+                format_type(fmt, ty.ty().unwrap()),
+            ],
+        ),
         ty => format_unsupported_kind(fmt, ty.syntax()),
     }
 }

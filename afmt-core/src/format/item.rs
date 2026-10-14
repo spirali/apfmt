@@ -78,23 +78,17 @@ pub(super) fn closure_params_layouts(
     fmt: &Formatter,
     param_list: ParamList,
 ) -> (Option<Frag>, Option<Frag>) {
-    let hugged = match param_list.params().collect::<Vec<_>>().as_slice() {
-        [param] => param_list.self_param().is_none() && is_hugged_closure_param(param),
-        _ => false,
-    };
+    let mut param_nodes = param_list.params();
+    let single = param_nodes.next().filter(|_| param_nodes.next().is_none());
+    let hugged = single.as_ref().is_some_and(is_hugged_closure_param);
     let mut params = param_items(fmt, &param_list);
     let delims = Delimiters::pipes_of(param_list.syntax());
     if params.is_empty() {
         return (Some(delims.format_empty(fmt)), None);
     }
     if hugged {
-        let frag = params[0].frag.clone();
-        params[0] = params[0].clone().with_overflow(Overflow::Preferred(frag));
+        params[0].overflow = Overflow::Only(params[0].frag.clone());
     }
-    // A single parameter that can be on one line is the same broken, unless a comment forces a line
-    // break or it is hugged; one that cannot (`|S {` / `    long_field,` / `}|`) has only broken
-    // layouts
-    let single_flat = params.len() == 1 && fmt.flat_width(&params[0].frag).is_some();
     let flat = flat_layout(
         fmt,
         &delims,
@@ -103,7 +97,12 @@ pub(super) fn closure_params_layouts(
         TrailingSeparator::IfVertical,
     )
     .map(|flat| delims.wrap_body(fmt, flat));
-    if single_flat && !hugged && flat.is_some() {
+    // A single parameter that can be on one line is the same broken, unless a comment forces a line
+    // break or it is hugged; one that cannot (`|S {` / `    long_field,` / `}|`) has only broken
+    // layouts
+    let same_broken =
+        single.is_some() && !hugged && fmt.flat_width(&params[0].frag).is_some() && flat.is_some();
+    if same_broken {
         return (flat, None);
     }
     let layout = ListLayout::tall(FlatLimit::MaxWidth)
