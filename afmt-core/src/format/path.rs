@@ -2,6 +2,7 @@
 
 use super::expr::format_expr;
 use super::format_unsupported;
+use super::generics::format_angle_list;
 use super::ty::{format_ret_type, format_type};
 use crate::format::common::format_lifetime;
 use crate::formatter::Edge::{Operator, Tight, Word};
@@ -81,10 +82,7 @@ pub(super) fn format_generic_arg_list(fmt: &Formatter, args: GenericArgList) -> 
         builder.push_token(token, Tight);
     }
     let items = list_items_cast(args.syntax(), |a| format_generic_arg(fmt, a));
-    let delims = Delimiters::angles_of(args.syntax());
-    let list = delimited_list(fmt, &delims, &items, ListLayout::tall(FlatLimit::MaxWidth));
-    // "Avoid breaking lines in types where possible" (Style Guide)
-    builder.push(fmt.keep_together(list));
+    builder.push(format_angle_list(fmt, args.syntax(), &items));
     builder.into_frag()
 }
 

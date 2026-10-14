@@ -2,13 +2,14 @@
 
 use super::attr::format_with_attrs;
 use super::control::{format_for_expr, format_loop_expr, format_match_expr, format_while_expr};
+use super::generics::format_for_binder;
 use super::item::closure_params_layouts;
 use super::macros::{format_macro_call, is_list_macro};
 use super::pat::{format_pat, pat_layouts};
 use super::path::{format_generic_arg_list, format_name_ref, format_path};
 use super::stmt::{format_block_expr, format_block_expr_with_tail, push_block_prefix};
 use super::ty::{format_ret_type, format_type};
-use super::{format_unsupported, format_unsupported_kind, format_unsupported_with_attrs};
+use super::{format_unsupported_kind, format_unsupported_with_attrs};
 use crate::format::common::{format_lifetime, format_repeat, push_modifiers};
 use crate::formatter::Edge::{BraceClose, BraceOpen, Comma, Operator, Tight, Word};
 use crate::formatter::{Builder, Formatter, Frag};
@@ -650,18 +651,14 @@ struct ClosureLayouts {
     overflow: Option<Frag>,
 }
 
-/// `move |a, b| body` (Style Guide "Closures"), see `closure_body_layouts`. Parameters that do not fit
+/// `move |a, b| body` or `for<'a> |a: &'a T| body` (Style Guide "Closures"), see `closure_body_layouts`. Parameters that do not fit
 /// on one line are aligned after `|` (see `closure_params_layouts`); a body in braces then keeps them,
 /// as in rustfmt.
 fn closure_layouts(fmt: &Formatter, expr: ClosureExpr) -> ClosureLayouts {
-    if expr.for_binder().is_some() {
-        let all = format_unsupported(fmt, expr.syntax(), "`for<...>` on a closure");
-        return ClosureLayouts {
-            all,
-            overflow: None,
-        };
-    }
     let mut prefix = Builder::new(fmt);
+    if let Some(binder) = expr.for_binder() {
+        prefix.push(format_for_binder(fmt, binder));
+    }
     push_modifiers(&mut prefix, expr.syntax());
     let (flat_params, broken_params) = closure_params_layouts(fmt, expr.param_list().unwrap());
     let ret_type = expr

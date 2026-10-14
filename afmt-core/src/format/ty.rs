@@ -3,7 +3,7 @@
 use super::expr::format_expr;
 use super::expr::single_item_separator;
 use super::format_unsupported_kind;
-use super::generics::format_type_bound_list;
+use super::generics::{format_for_binder, format_type_bound_list};
 use super::item::{format_param_list, push_qualifiers};
 use super::path::format_path;
 use crate::format::common::{format_lifetime, format_repeat};
@@ -114,6 +114,12 @@ pub(super) fn format_type(fmt: &Formatter, ty: Type) -> Frag {
         Type::FnPtrType(ty) => format_fn_ptr_type(fmt, ty),
         Type::NeverType(ty) => fmt.token(ty.excl_token().unwrap(), Word),
         Type::InferType(ty) => fmt.token(ty.underscore_token().unwrap(), Word),
+        Type::ForType(ty) => {
+            let mut builder = Builder::new(fmt);
+            builder.push(format_for_binder(fmt, ty.for_binder().unwrap()));
+            builder.push(format_type(fmt, ty.ty().unwrap()));
+            builder.into_frag()
+        }
         ty => format_unsupported_kind(fmt, ty.syntax()),
     }
 }
