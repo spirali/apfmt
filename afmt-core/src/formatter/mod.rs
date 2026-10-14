@@ -8,7 +8,8 @@ mod trivia;
 use crate::config::Config;
 use crate::doc::DocNode::Newline;
 use crate::doc::{
-    AlignGroup, Cost, DocArena, DocId, DocNode, EMPTY_DOC, NEWLINE_DOC, NEWLINE_OR_SPACE_DOC,
+    AlignGroup, AltFlatInfo, Cost, DocArena, DocId, DocNode, EMPTY_DOC, NEWLINE_DOC,
+    NEWLINE_OR_SPACE_DOC,
 };
 use crate::formatter::Edge::{Keyword, LineStart, Nothing, Word};
 use crate::resolver::Resolver;
@@ -311,6 +312,36 @@ impl<'a> Formatter<'a> {
         })
     }
 
+    /// Single-line layout of `frag`, if it has one (see `has_flat_layout`)
+    pub fn flat_if_possible(&self, frag: Frag) -> Option<Frag> {
+        self.has_flat_layout(&frag).then(|| self.flat(frag))
+    }
+
+    /// Whether a branch of the fragment may have a layout under `Flat`: false only if a line break
+    /// is forced in all of them (unlike `flat_width`, a multi-line token, e.g. a string literal, is
+    /// allowed, as the resolver allows it)
+    pub fn has_flat_layout(&self, frag: &Frag) -> bool {
+        frag.branches
+            .iter()
+            .any(|b| self.has_flat_layout_doc(b.doc_id))
+    }
+
+    fn has_flat_layout_doc(&self, doc_id: DocId) -> bool {
+        match self.doc_arena.borrow().get_node(doc_id) {
+            DocNode::Newline => false,
+            DocNode::Token(_) | DocNode::Text(_) | DocNode::Empty | DocNode::AlignMark(_) => true,
+            DocNode::Nest(d)
+            | DocNode::Align(d)
+            | DocNode::Flat(d)
+            | DocNode::MultiLine(d)
+            | DocNode::KeepTogether(d, _)
+            | DocNode::Dispreferred(d, _)
+            | DocNode::ShortLastLine(d) => self.has_flat_layout_doc(*d),
+            DocNode::Concat(a, b) => self.has_flat_layout_doc(*a) && self.has_flat_layout_doc(*b),
+            DocNode::Alt(_, _, info) => info.has_flat_layout(),
+        }
+    }
+
     /// Single-line layout of `frag`, if its width is at most `max_width`
     pub fn flat_within(&self, frag: Frag, max_width: u32) -> Option<Frag> {
         self.flat_width(&frag)
@@ -318,11 +349,20 @@ impl<'a> Formatter<'a> {
             .then(|| self.flat(frag))
     }
 
+    /// The alternative of two docs, with what the single-line walks need to know about it
+    /// (`AltFlatInfo`); the walks stop at the `Alt` nodes of the children, which already have it
     fn alt_doc(&self, doc1: DocId, doc2: DocId) -> DocId {
         if doc1 == doc2 {
             return doc1;
         }
-        self.make_node(DocNode::Alt(doc1, doc2))
+        // Width of the narrowest single-line branch
+        let width = match (self.flat_width_doc(doc1), self.flat_width_doc(doc2)) {
+            (Some(width1), Some(width2)) => Some(width1.min(width2)),
+            (width1, width2) => width1.or(width2),
+        };
+        let has_flat_layout = self.has_flat_layout_doc(doc1) || self.has_flat_layout_doc(doc2);
+        let info = AltFlatInfo::new(width, has_flat_layout);
+        self.make_node(DocNode::Alt(doc1, doc2, info))
     }
 
     pub fn alt_opt(&self, frag: Frag, other: Option<Frag>) -> Frag {
@@ -449,11 +489,8 @@ impl<'a> Formatter<'a> {
             DocNode::Concat(a, b) => self
                 .flat_width_doc(*a)
                 .and_then(|size1| self.flat_width_doc(*b).map(|size2| size1 + size2)),
-            // Width of the narrowest single-line branch
-            DocNode::Alt(a, b) => match (self.flat_width_doc(*a), self.flat_width_doc(*b)) {
-                (Some(size1), Some(size2)) => Some(size1.min(size2)),
-                (size1, size2) => size1.or(size2),
-            },
+            // Width of the narrowest single-line branch, see `alt_doc`
+            DocNode::Alt(_, _, info) => info.width(),
         }
     }
 

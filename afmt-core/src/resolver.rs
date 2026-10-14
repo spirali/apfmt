@@ -487,7 +487,7 @@ impl<'a> Resolver<'a> {
                     .retain(|layout| layout.measure.last.is_none_or(|last| last <= max));
                 layout_set
             }
-            DocNode::Alt(doc1, doc2) => {
+            DocNode::Alt(doc1, doc2, _) => {
                 if let Some(layout_set) = self.memo.borrow().get(&(doc, ctx)) {
                     return layout_set.clone();
                 }

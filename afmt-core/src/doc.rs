@@ -50,7 +50,7 @@ pub(crate) enum DocNode {
     Text(Box<str>),
     Newline,
     Concat(DocId, DocId),
-    Alt(DocId, DocId),
+    Alt(DocId, DocId, AltFlatInfo),
     Nest(DocId),
     Align(DocId),
     /// Only layouts of the inner doc that fit on a single line
@@ -68,6 +68,43 @@ pub(crate) enum DocNode {
     ShortLastLine(DocId),
     /// Padded by the renderer to align the trailing comments of a group
     AlignMark(AlignGroup),
+}
+
+// On 64-bit targets, the payload of `Alt` with its `AltFlatInfo` fits in the space of the largest
+// variant, `Text(Box<str>)`, so the cache makes no node larger; on 32-bit targets, where a
+// `Box<str>` is 8 bytes, it does
+#[cfg(target_pointer_width = "64")]
+const _: () =
+    assert!(std::mem::size_of::<(DocId, DocId, AltFlatInfo)>() <= std::mem::size_of::<Box<str>>());
+
+/// What the single-line walks of the formatter (`Formatter::flat_width`, `Formatter::has_flat_layout`)
+/// need to know about an `Alt` node, computed when it is created: a doc shared by many alternatives is
+/// then walked once, not once per path to it (exponential in the nesting)
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct AltFlatInfo {
+    /// The width of the narrowest single-line branch, `u32::MAX` if no branch has one
+    width: u32,
+    /// Whether a branch may have a layout under `Flat`
+    has_flat_layout: bool,
+}
+
+impl AltFlatInfo {
+    pub fn new(width: Option<usize>, has_flat_layout: bool) -> Self {
+        // A width that does not fit in `u32` (never in practice) is saturated, not lost
+        let width = width.map_or(u32::MAX, |w| u32::try_from(w).unwrap_or(u32::MAX - 1));
+        AltFlatInfo {
+            width,
+            has_flat_layout,
+        }
+    }
+
+    pub fn width(self) -> Option<usize> {
+        (self.width != u32::MAX).then_some(self.width as usize)
+    }
+
+    pub fn has_flat_layout(self) -> bool {
+        self.has_flat_layout
+    }
 }
 
 pub(crate) struct DocArena {
@@ -89,7 +126,7 @@ impl DocArena {
                 DocNode::Newline,
                 DocNode::Empty,
                 DocNode::Text(" ".into()),
-                DocNode::Alt(NEWLINE_DOC, SPACE_DOC),
+                DocNode::Alt(NEWLINE_DOC, SPACE_DOC, AltFlatInfo::new(Some(1), true)),
                 DocNode::Concat(NEWLINE_DOC, NEWLINE_DOC),
                 DocNode::Text(",".into()),
                 DocNode::Text(";".into()),
@@ -163,7 +200,7 @@ impl DocArena {
                 | DocNode::Empty
                 | DocNode::AlignMark(_) => vec![],
                 DocNode::Concat(d1, d2) => vec![(*d1, "1"), (*d2, "2")],
-                DocNode::Alt(d1, d2) => vec![(*d1, ""), (*d2, "")],
+                DocNode::Alt(d1, d2, _) => vec![(*d1, ""), (*d2, "")],
                 DocNode::Nest(d)
                 | DocNode::Align(d)
                 | DocNode::Flat(d)
@@ -213,7 +250,7 @@ impl DocArena {
                 make_ident();
                 println!(")");
             }
-            DocNode::Alt(d1, d2) => {
+            DocNode::Alt(d1, d2, _) => {
                 println!("Alt(");
                 self.dump_helper(*d1, indent + 1);
                 self.dump_helper(*d2, indent + 1);

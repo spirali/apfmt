@@ -98,12 +98,10 @@ pub(super) fn closure_params_layouts(
         TrailingSeparator::IfVertical,
     )
     .map(|flat| delims.wrap_body(fmt, flat));
-    // A single parameter that can be on one line is the same broken, unless a comment forces a line
-    // break or it is hugged; one that cannot (`|S {` / `    long_field,` / `}|`) has only broken
-    // layouts
-    let same_broken =
-        single.is_some() && !hugged && fmt.flat_width(&params[0].frag).is_some() && flat.is_some();
-    if same_broken {
+    // A single parameter on one line is the same broken, unless it is hugged; one that cannot be on
+    // one line (`|S {` / `    long_field,` / `}|`, or a comment forcing a line break) has only
+    // broken layouts
+    if single.is_some() && !hugged && flat.is_some() {
         return (flat, None);
     }
     let layout = ListLayout::tall(FlatLimit::MaxWidth)

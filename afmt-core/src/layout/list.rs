@@ -574,10 +574,10 @@ pub(crate) enum FlatLimit {
 }
 
 impl FlatLimit {
-    /// `frag` restricted to a single line, if its width allows it
+    /// `frag` restricted to a single line, if it has a single-line layout and its width allows it
     pub fn apply(self, fmt: &Formatter, frag: Frag) -> Option<Frag> {
         match self {
-            FlatLimit::MaxWidth => Some(fmt.flat(frag)),
+            FlatLimit::MaxWidth => fmt.flat_if_possible(frag),
             FlatLimit::Within(width) => fmt.flat_within(frag, width),
         }
     }
