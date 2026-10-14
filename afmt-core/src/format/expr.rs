@@ -111,12 +111,15 @@ fn is_fillable_list(fmt: &Formatter, exprs: &[Expr], items: &[ListItem]) -> bool
             .all(|i| fmt.flat_width(&i.frag).is_some_and(|w| w <= threshold))
 }
 
-/// Whether the last of more expressions may overflow (Style Guide): it is a closure and no other one is
-fn is_overflowing_closure(exprs: &[Expr]) -> bool {
+/// Whether the last of more expressions may overflow: a closure if no other one is (Style Guide), or
+/// a block, also `unsafe`, `async` or labelled (`f(a, unsafe {` / `...` / `})`, as rustfmt does)
+fn is_overflowing_last(exprs: &[Expr]) -> bool {
     let is_closure = |e: &Expr| matches!(e, Expr::ClosureExpr(_));
     match exprs {
-        [rest @ .., last] => !rest.is_empty() && is_closure(last) && !rest.iter().any(is_closure),
-        [] => false,
+        [rest @ .., last] if !rest.is_empty() => {
+            matches!(last, Expr::BlockExpr(_)) || is_closure(last) && !rest.iter().any(is_closure)
+        }
+        _ => false,
     }
 }
 
@@ -161,7 +164,8 @@ fn format_expr_item(fmt: &Formatter, expr: Expr) -> (Frag, Overflow) {
 /// The expressions of the comma-separated list `node` (call arguments, tuple fields, array elements)
 /// on a single line if they fit within `width`, otherwise one per line, or filled on lines if they
 /// are short (see `is_fillable_list`). A single combinable expression may overflow (see
-/// `is_combinable_expr`), and so may a closure after other arguments (`f(a, |x| {` / `...` / `})`);
+/// `is_combinable_expr`), and so may a closure or a block after other arguments (`f(a, |x| {` /
+/// `...` / `})`, see `is_overflowing_last`);
 /// a single other expression is limited only by `max_width`. `refine` adjusts the layouts, e.g. the
 /// trailing separator.
 pub(super) fn format_expr_list(
@@ -176,7 +180,7 @@ pub(super) fn format_expr_list(
         [single] => Some(single),
         _ => None,
     };
-    let hug = single.is_some_and(is_combinable_expr) || is_overflowing_closure(&exprs);
+    let hug = single.is_some_and(is_combinable_expr) || is_overflowing_last(&exprs);
     let items = list_items_cast(node, |e| format_expr_item(fmt, e));
     let items = with_is_last(&items)
         .map(|(item, is_last)| {
