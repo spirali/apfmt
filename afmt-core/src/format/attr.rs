@@ -16,6 +16,7 @@ use ra_ap_syntax::{AstNode, SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken};
 
 /// `#[meta]` or `#![meta]`
 pub(super) fn format_attr(fmt: &Formatter, attr: Attr) -> Frag {
+    fmt.mark_placed(attr.syntax());
     let mut builder = Builder::new(fmt);
     // Spaced as a word in front, e.g. after a block comment: `/* c */ #[attr]`
     builder.push(fmt.token_with_edges(attr.pound_token().unwrap(), Word, Tight));
@@ -41,6 +42,17 @@ pub(super) fn format_with_attrs(
         .map(|attr| format_attr(fmt, attr))
         .collect::<Vec<_>>();
     attach_attrs(fmt, attrs, inline, format())
+}
+
+/// Checks in debug builds that the attributes of `node` are placed (by `format_attr`) before the
+/// rest of it is formatted: code formatting an expression that may have attributes goes through
+/// `format_expr` or `format_expr_at`, which place them or copy them with the expression
+pub(super) fn debug_assert_attrs_placed(fmt: &Formatter, node: &impl HasAttrs) {
+    debug_assert!(
+        node.attrs().all(|attr| fmt.was_placed(attr.syntax())),
+        "attributes not placed: {}",
+        node.syntax()
+    );
 }
 
 /// Whether the attribute is `#[rustfmt::skip]`

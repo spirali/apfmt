@@ -3,8 +3,8 @@
 use super::attr::{format_attr, format_with_attrs};
 use super::common::push_label;
 use super::expr::{
-    format_added_braces, format_block_or_inline, format_expr, format_head_expr,
-    format_head_with_block, format_if_expr, plain_stmt_list, single_line_block_expr,
+    ExprPosition, format_added_braces, format_expr, format_expr_at, format_head_expr,
+    format_head_with_block, plain_stmt_list, single_line_block_expr,
 };
 use super::pat::pat_layouts;
 use super::stmt::{format_block_expr, format_block_expr_with_tail};
@@ -137,14 +137,7 @@ fn arm_body_layouts(fmt: &Formatter, body: Expr) -> (Option<Frag>, Frag) {
         _ => (body, None),
     };
     let control_flow = is_control_flow(&expr);
-    let inner = match expr {
-        // With attributes: copied unchanged with them, see `format_expr`
-        expr if expr.attrs().next().is_some() => format_expr(fmt, expr),
-        // As a statement: never on a single line
-        Expr::IfExpr(expr) => format_if_expr(fmt, expr, false),
-        Expr::BlockExpr(block) => format_block_or_inline(fmt, block),
-        expr => format_expr(fmt, expr),
-    };
+    let inner = format_expr_at(fmt, expr, ExprPosition::ArmBody);
     let inner = fmt.keep_together(inner);
     let block = match &braces {
         Some(block) => format_block_expr_with_tail(fmt, block.clone(), Some(inner.clone())),

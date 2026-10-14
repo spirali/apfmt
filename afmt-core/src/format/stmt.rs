@@ -1,9 +1,8 @@
 //! Statements and blocks
 
-use super::attr::{format_attr, format_skippable_with_attrs};
+use super::attr::{debug_assert_attrs_placed, format_attr, format_skippable_with_attrs};
 use super::expr::{
-    format_expr, format_expr_without_attrs, format_head_expr, format_head_followed_by,
-    format_if_expr,
+    ExprPosition, format_expr, format_expr_at, format_head_expr, format_head_followed_by,
 };
 use super::format_unsupported;
 use super::item::format_item;
@@ -75,7 +74,11 @@ fn format_stmt(fmt: &Formatter, stmt: Stmt) -> Frag {
         Stmt::ExprStmt(expr) => {
             let mut builder = Builder::new(fmt);
 
-            builder.push(format_stmt_expr(fmt, expr.expr().unwrap()));
+            builder.push(format_expr_at(
+                fmt,
+                expr.expr().unwrap(),
+                ExprPosition::Statement,
+            ));
             // Block-like expressions (`if`, ...) may stand without `;`
             if expr.semicolon_token().is_some() {
                 builder.push_separator(SyntaxKind::SEMICOLON);
@@ -89,41 +92,12 @@ fn format_stmt(fmt: &Formatter, stmt: Stmt) -> Frag {
     }
 }
 
-/// The expression of an expression statement, its attributes on their own lines as on a `let`
-/// statement (`#[cfg(x)]` / `if a {`, see `format_skippable_with_attrs`). A standalone `if` is never
-/// on a single line, nor is a block other than `unsafe { ... }` (Style Guide "Blocks": a single-line
-/// block is "either used in expression position (not statement position) or is an unsafe block in
-/// statement position"), nor a block after attributes (as rustfmt does). The tail expression of a
-/// block is its value, so it is in expression position, as in rustfmt.
-fn format_stmt_expr(fmt: &Formatter, expr: Expr) -> Frag {
-    let has_attrs = expr.attrs().next().is_some();
-    format_skippable_with_attrs(fmt, &expr, || match expr.clone() {
-        Expr::IfExpr(expr) => format_if_expr(fmt, expr, false),
-        Expr::BlockExpr(block) if block.unsafe_token().is_none() || has_attrs => {
-            format_block_expr(fmt, block)
-        }
-        expr => format_expr_without_attrs(fmt, expr),
-    })
-}
-
-/// The tail expression of a block; with attributes, they are on their own lines and a block after
-/// them is broken (`#[cfg(x)]` / `{` / `    a` / `}`), as rustfmt does
-fn format_tail_expr(fmt: &Formatter, expr: Expr) -> Frag {
-    if expr.attrs().next().is_none() {
-        return format_expr(fmt, expr);
-    }
-    format_skippable_with_attrs(fmt, &expr, || match expr.clone() {
-        Expr::BlockExpr(block) => format_block_expr(fmt, block),
-        expr => format_expr_without_attrs(fmt, expr),
-    })
-}
-
 /// `tail` is the already formatted tail expression, when it is shared with another layout
 fn format_stmt_list(fmt: &Formatter, stmt_list: StmtList, tail: Option<Frag>) -> Frag {
     let delims = Delimiters::braces_of(stmt_list.syntax());
     let tail = stmt_list
         .tail_expr()
-        .map(|expr| tail.unwrap_or_else(|| format_tail_expr(fmt, expr)));
+        .map(|expr| tail.unwrap_or_else(|| format_expr_at(fmt, expr, ExprPosition::Tail)));
     let lines = stmt_list
         .attrs()
         .map(|attr| format_attr(fmt, attr))
@@ -143,6 +117,7 @@ pub(super) fn format_block_expr_with_tail(
     body: BlockExpr,
     tail: Option<Frag>,
 ) -> Frag {
+    debug_assert_attrs_placed(fmt, &body);
     if body.try_block_modifier().is_some() {
         return format_unsupported(fmt, body.syntax(), "a `try` block");
     }

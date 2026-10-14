@@ -11,4 +11,6 @@ fn f() {
     }
     #[cfg(x)]
     a = 1;
+    if #[a] x.y() {}
+    while #[a] !x.f() {}
 }

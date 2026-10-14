@@ -16,6 +16,7 @@ use crate::layout::list::{
     Delimiters, FlatLimit, ListItem, ListLayout, Overflow, TrailingSeparator, delimited_list,
     flat_layout, list_items, list_items_cast,
 };
+use crate::utils::has_attrs;
 use ra_ap_syntax::ast::{
     Abi, AssocItemList, Const, Enum, Expr, ExternBlock, FieldList, Fn as AstFn, GenericParamList,
     HasAttrs, HasGenericParams, HasModuleItem, HasName, HasTypeBounds, HasVisibility, Impl, Item,
@@ -120,7 +121,7 @@ fn is_hugged_closure_param(param: &Param) -> bool {
     while let Some(Pat::RefPat(ref_pat)) = &pat {
         pat = ref_pat.pat();
     }
-    param.attrs().next().is_none()
+    !has_attrs(param)
         && matches!(
             pat,
             Some(Pat::TuplePat(_) | Pat::SlicePat(_) | Pat::TupleStructPat(_))

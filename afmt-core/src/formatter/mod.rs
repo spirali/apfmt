@@ -17,6 +17,7 @@ use frag::{Branch, Branches};
 pub(crate) use frag::{Edge, Frag};
 use ra_ap_syntax::{SyntaxNode, SyntaxToken, TextRange};
 use std::cell::{Cell, RefCell};
+use std::collections::HashSet;
 use trivia::{multiline_comment_lines, normalize_block_comment};
 
 /// Source text that afmt cannot format yet, copied unchanged (see `Formatter::unsupported`)
@@ -32,6 +33,8 @@ pub(crate) struct Formatter<'a> {
     config: &'a Config,
     unsupported: RefCell<Vec<Unsupported>>,
     align_group_id_counter: Cell<AlignGroup>,
+    /// The source ranges of the nodes recorded by `mark_placed` (debug builds only)
+    placed: RefCell<HashSet<TextRange>>,
 }
 
 impl<'a> Formatter<'a> {
@@ -41,7 +44,20 @@ impl<'a> Formatter<'a> {
             doc_arena: RefCell::new(DocArena::new()),
             unsupported: RefCell::new(Vec::new()),
             align_group_id_counter: Cell::new(AlignGroup::new(0)),
+            placed: RefCell::new(HashSet::new()),
         }
+    }
+
+    /// Records in debug builds that `node` is placed in the output, for checks with `was_placed`
+    pub fn mark_placed(&self, node: &SyntaxNode) {
+        if cfg!(debug_assertions) {
+            self.placed.borrow_mut().insert(node.text_range());
+        }
+    }
+
+    /// Whether `node` was recorded by `mark_placed`; always true in release builds
+    pub fn was_placed(&self, node: &SyntaxNode) -> bool {
+        !cfg!(debug_assertions) || self.placed.borrow().contains(&node.text_range())
     }
 
     /// `None` if the alignment of trailing comments is disabled

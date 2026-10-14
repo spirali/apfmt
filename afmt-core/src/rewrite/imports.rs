@@ -8,7 +8,8 @@ use crate::comments::{
     is_line_comment, own_line_comment_follows, post_comments_end, trivia_end, trivia_from,
 };
 use crate::layout::list::list_items_cast;
-use ra_ap_syntax::ast::{HasAttrs, HasName, Path, Use, UseTree, UseTreeList};
+use crate::utils::has_attrs;
+use ra_ap_syntax::ast::{HasName, Path, Use, UseTree, UseTreeList};
 use ra_ap_syntax::{AstNode, SourceFile, SyntaxKind, SyntaxNode, SyntaxToken, TextRange, TextSize};
 use std::cmp::Ordering;
 
@@ -273,7 +274,7 @@ fn push_after(out: &mut String, text: &str, line_comment: bool) {
 /// The `use` item, if `node` is one that can be sorted with others (attributes, e.g. `#[macro_use]`,
 /// prevent it: Style Guide)
 fn sortable_use(node: &SyntaxNode) -> Option<Use> {
-    Use::cast(node.clone()).filter(|item| item.attrs().next().is_none())
+    Use::cast(node.clone()).filter(|item| !has_attrs(item))
 }
 
 /// Whether the next `use` item follows `prev` in the same group of imports: on the next line, or on the
@@ -297,7 +298,7 @@ fn use_groups(node: &SyntaxNode) -> Vec<Vec<Use>> {
         let Some(item) = Use::cast(child) else {
             continue;
         };
-        let sortable = item.attrs().next().is_none();
+        let sortable = !has_attrs(&item);
         let mut group = vec![item];
         while sortable
             && let Some(next) = children.peek().and_then(sortable_use)
@@ -330,7 +331,7 @@ fn semicolon(item: &Use) -> SyntaxToken {
 fn is_removed(item: &Use) -> bool {
     let semicolon = semicolon(item);
     let start = first_code_token(item.syntax()).text_range().start();
-    item.attrs().next().is_none()
+    !has_attrs(item)
         && item.use_tree().is_some_and(|tree| is_empty_tree(&tree))
         && trivia_end(&semicolon, None, TriviaStop::OwnLine) == semicolon
         && !item

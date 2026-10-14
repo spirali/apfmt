@@ -1,6 +1,6 @@
 //! Expressions
 
-use super::attr::format_with_attrs;
+use super::attr::{debug_assert_attrs_placed, format_skippable_with_attrs, format_with_attrs};
 use super::control::{format_for_expr, format_loop_expr, format_match_expr, format_while_expr};
 use super::generics::format_for_binder;
 use super::item::closure_params_layouts;
@@ -19,7 +19,7 @@ use crate::layout::list::TrailingSeparator;
 use crate::layout::list::{
     Delimiters, FlatLimit, ListItem, ListLayout, Overflow, delimited_list, list_items_cast,
 };
-use crate::utils::with_is_last;
+use crate::utils::{has_attrs, with_is_last};
 use ra_ap_syntax::ast::{
     ArgList, ArrayExpr, BinExpr, BinaryOp, BlockExpr, BreakExpr, CallExpr, CastExpr, ClosureExpr,
     ContinueExpr, ElseBranch, Expr, HasArgList, HasAttrs, HasGenericArgs, IfExpr, LetExpr, Literal,
@@ -133,7 +133,7 @@ fn format_expr_item(fmt: &Formatter, expr: Expr) -> (Frag, Overflow) {
         // break: `f(a.b(|x| {` / `...` / `}))`, `f(a.b(` / `...` / `)?)`, not the chain broken
         // before every `.`; `f(g(` / `...` / `)?)` is the root of a chain without elements
         Expr::MethodCallExpr(_) | Expr::TryExpr(_)
-            if expr.attrs().next().is_none() && is_combinable_expr(&expr) =>
+            if !has_attrs(&expr) && is_combinable_expr(&expr) =>
         {
             let layouts = postfix_chain_parts(fmt, expr);
             let overflow = layouts
@@ -142,7 +142,7 @@ fn format_expr_item(fmt: &Formatter, expr: Expr) -> (Frag, Overflow) {
                 .map_or(Overflow::Never, Overflow::With);
             (layouts.all(fmt), overflow)
         }
-        Expr::ClosureExpr(closure) if closure.attrs().next().is_none() => {
+        Expr::ClosureExpr(closure) if !has_attrs(&closure) => {
             let layouts = closure_layouts(fmt, closure);
             let overflow = layouts
                 .overflow
@@ -502,9 +502,7 @@ pub(super) fn single_line_block_expr(block: &BlockExpr) -> Option<Expr> {
     let tail = stmt_list.tail_expr();
     if stmt_list.statements().next().is_some()
         || stmt_list.attrs().next().is_some()
-        || tail
-            .as_ref()
-            .is_some_and(|tail| tail.attrs().next().is_some())
+        || tail.as_ref().is_some_and(has_attrs)
         || has_comment
         || block.try_block_modifier().is_some()
     {
@@ -557,6 +555,7 @@ fn format_if_single_line(
 }
 
 pub(super) fn format_if_expr(fmt: &Formatter, expr: IfExpr, allow_single_line: bool) -> Frag {
+    debug_assert_attrs_placed(fmt, &expr);
     let head = format_head_expr(fmt, expr.condition().unwrap());
     let block_exprs = allow_single_line
         .then(|| single_line_if_exprs(&expr))
@@ -608,9 +607,10 @@ fn collect_postfix_chain(expr: Expr, postfix: &mut Vec<Expr>) -> Expr {
 }
 
 /// `block` broken, or on a single line if it holds just an expression (see `single_line_block_expr`):
-/// `unsafe { x }`; a block in expression position (Style Guide "Blocks", see `format_stmt_expr` for
+/// `unsafe { x }`; a block in expression position (Style Guide "Blocks", see `format_expr_at` for
 /// statement position)
 pub(super) fn format_block_or_inline(fmt: &Formatter, block: BlockExpr) -> Frag {
+    debug_assert_attrs_placed(fmt, &block);
     let Some(tail) = single_line_block_expr(&block) else {
         return format_block_expr(fmt, block);
     };
@@ -673,6 +673,7 @@ struct ClosureLayouts {
 /// on one line are aligned after `|` (see `closure_params_layouts`); a body in braces then keeps them,
 /// as in rustfmt.
 fn closure_layouts(fmt: &Formatter, expr: ClosureExpr) -> ClosureLayouts {
+    debug_assert_attrs_placed(fmt, &expr);
     let mut prefix = Builder::new(fmt);
     if let Some(binder) = expr.for_binder() {
         prefix.push(format_for_binder(fmt, binder));
@@ -715,7 +716,7 @@ fn closure_body_layouts(
 ) -> (Frag, Option<Frag>) {
     let body = expr.body().unwrap();
     // A body with attributes (`|x| #[allow(a)] {`) is copied unchanged with them, see `format_expr`
-    if body.attrs().next().is_some() {
+    if has_attrs(&body) {
         let body = format_expr(fmt, body);
         return (body.clone(), Some(body));
     }
@@ -826,6 +827,7 @@ fn format_postfix_chain(fmt: &Formatter, expr: Expr) -> Frag {
 /// The layouts of a postfix chain, see `postfix_chain_layouts`. `?` and indexes stay with the element
 /// (or root) in front of them: `a.b()?[0]`.
 fn postfix_chain_parts(fmt: &Formatter, expr: Expr) -> HeadLayouts {
+    debug_assert_attrs_placed(fmt, &expr);
     let mut postfix = Vec::new();
     let root_expr = collect_postfix_chain(expr, &mut postfix);
     let mut root = Builder::new(fmt);
@@ -951,6 +953,13 @@ fn is_broken_let_chain(expr: &Expr) -> bool {
 }
 
 pub(super) fn format_head_expr(fmt: &Formatter, expr: Expr) -> HeadLayouts {
+    // With attributes: copied unchanged with them, see `format_expr`
+    if has_attrs(&expr) {
+        return HeadLayouts {
+            hanging: None,
+            other: Some(format_expr(fmt, expr)),
+        };
+    }
     if is_postfix_expr(&expr) {
         return postfix_chain_parts(fmt, expr);
     }
@@ -996,16 +1005,61 @@ pub(super) fn format_head_expr(fmt: &Formatter, expr: Expr) -> HeadLayouts {
 }
 
 /// An expression; with outer attributes, it is copied unchanged (attributes are formatted only in
-/// front of a statement or the tail expression of a block, see `format_stmt_expr`)
+/// front of a statement or the tail expression of a block, see `format_expr_at`)
 pub(super) fn format_expr(fmt: &Formatter, expr: Expr) -> Frag {
-    if expr.attrs().next().is_some() {
+    if has_attrs(&expr) {
         return format_unsupported_with_attrs(fmt, expr.syntax(), "an attribute on an expression");
     }
     format_expr_without_attrs(fmt, expr)
 }
 
-/// An expression without its outer attributes, which the caller formats
+/// Where an expression stands, which decides how its attributes and a block or an `if` are
+/// formatted, see `format_expr_at`
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum ExprPosition {
+    /// An expression statement
+    Statement,
+    /// The tail expression of a block
+    Tail,
+    /// The body of a match arm
+    ArmBody,
+}
+
+/// An expression at `position`. The attributes of a statement or a tail are on their own lines as
+/// on a `let` statement (`#[cfg(x)]` / `if a {`, see `format_skippable_with_attrs`) and a block
+/// after them is broken (as rustfmt does); elsewhere they are copied unchanged with the expression
+/// (see `format_expr`). A standalone `if` (a statement, an arm body) is never on a single line, nor
+/// is a statement block other than `unsafe { ... }` (Style Guide "Blocks": a single-line block is
+/// "either used in expression position (not statement position) or is an unsafe block in statement
+/// position"). The tail expression of a block is its value, so it is in expression position, as in
+/// rustfmt.
+pub(super) fn format_expr_at(fmt: &Formatter, expr: Expr, position: ExprPosition) -> Frag {
+    use ExprPosition::{ArmBody, Statement, Tail};
+    let has_attrs = has_attrs(&expr);
+    if has_attrs && position == ArmBody {
+        return format_expr(fmt, expr);
+    }
+    let format = || match expr.clone() {
+        Expr::IfExpr(expr) if position != Tail => format_if_expr(fmt, expr, false),
+        Expr::BlockExpr(block)
+            if has_attrs || position == Statement && block.unsafe_token().is_none() =>
+        {
+            format_block_expr(fmt, block)
+        }
+        Expr::BlockExpr(block) if position == ArmBody => format_block_or_inline(fmt, block),
+        expr => format_expr_without_attrs(fmt, expr),
+    };
+    if has_attrs {
+        format_skippable_with_attrs(fmt, &expr, format)
+    } else {
+        format()
+    }
+}
+
+/// An expression without its outer attributes, which the caller places (see
+/// `debug_assert_attrs_placed`)
 pub(super) fn format_expr_without_attrs(fmt: &Formatter, expr: Expr) -> Frag {
+    debug_assert_attrs_placed(fmt, &expr);
     match expr {
         Expr::Literal(expr) => format_literal(fmt, expr),
         Expr::CallExpr(expr) => format_call_expr(fmt, expr),

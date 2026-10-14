@@ -1,4 +1,10 @@
 use ra_ap_syntax::TextSize;
+use ra_ap_syntax::ast::HasAttrs;
+
+/// Whether the node has attributes
+pub(crate) fn has_attrs(node: &impl HasAttrs) -> bool {
+    node.attrs().next().is_some()
+}
 
 pub(crate) fn with_is_last<T>(items: &[T]) -> impl Iterator<Item = (&T, bool)> {
     items
