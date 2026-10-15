@@ -178,7 +178,7 @@ fn vertical_chain(fmt: &Formatter, root: &Frag, elements: &[Frag]) -> Frag {
 /// not left alone on its line: `x.baz?` / `    .qux()`, `a + b` / `    + c`, also `foo(` / `...` /
 /// `).baz?`
 fn vertical_lines(fmt: &Formatter, head: &Frag, lines: &[Frag]) -> Frag {
-    let indent_width = fmt.config().indent_width as usize;
+    let indent_width = fmt.config().tab_spaces as usize;
     let mut head = head.clone();
     let mut layouts: Option<Frag> = None;
     for k in 0..=lines.len() {

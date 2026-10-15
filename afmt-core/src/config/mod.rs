@@ -1,8 +1,11 @@
+pub mod cargo;
+pub mod rustfmt;
+
 use ra_ap_syntax::Edition;
 
 pub struct Config {
     pub max_width: u32,
-    pub indent_width: u32,
+    pub tab_spaces: u32,
     pub blank_lines_upper_bound: u32,
     pub fn_call_width: u32,
     /// Maximal width of a chain of fields and method calls put on a single line: `a.b().c()`
@@ -27,7 +30,11 @@ pub struct Config {
     pub trailing_comment_align_threshold: u32,
     /// Puts a single space inside single-line block comments: `/*a*/` -> `/* a */`
     pub normalize_comments: bool,
+    /// The edition of the syntax
     pub edition: Edition,
+    /// The source is not formatted at all (rustfmt's `disable_all_formatting`); the caller outputs
+    /// it unchanged
+    pub disable_all_formatting: bool,
     pub dump_parse_tree: bool,
     pub dump_doc_tree: bool,
     pub check_result: bool,
@@ -40,7 +47,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             max_width: 100,
-            indent_width: 4,
+            tab_spaces: 4,
             blank_lines_upper_bound: 1,
             fn_call_width: 60,
             chain_width: 60,
@@ -53,6 +60,7 @@ impl Default for Config {
             trailing_comment_align_threshold: 40,
             normalize_comments: true,
             edition: Edition::CURRENT,
+            disable_all_formatting: false,
             dump_parse_tree: false,
             dump_doc_tree: false,
             check_result: false,

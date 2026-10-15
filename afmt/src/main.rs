@@ -1,8 +1,9 @@
 use std::io::Read;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
-use afmt_core::{Config, UnsupportedSyntax};
+use afmt_core::{Config, Edition, UnsupportedSyntax};
 use clap::{Parser, ValueEnum};
 
 /// What to do with syntax that afmt cannot format yet
@@ -17,7 +18,7 @@ enum Unsupported {
 }
 
 #[derive(Parser)]
-#[command(version, about = "TODO")]
+#[command(version, about = "Rust code formatter")]
 struct Cli {
     /// Path to the file to parse; reads from stdin if not provided
     file: Option<PathBuf>,
@@ -42,6 +43,26 @@ struct Cli {
     /// What to do with syntax that afmt cannot format yet
     #[clap(long, value_enum, default_value_t = Unsupported::Warn)]
     unsupported: Unsupported,
+
+    /// The edition of the syntax (2015, 2018, 2021 or 2024); overrides the edition of the package in
+    /// the nearest `Cargo.toml` (as `cargo fmt` does), which overrides `edition` in the rustfmt config
+    /// file [default: 2024]
+    #[clap(long, value_parser = Edition::from_str)]
+    edition: Option<Edition>,
+
+    /// The rustfmt config file to use, or a directory with `rustfmt.toml` or `.rustfmt.toml`, instead
+    /// of looking it up from the directory of the file (or the current directory for stdin), its
+    /// ancestors, the home directory and the user's configuration directory, like rustfmt
+    #[clap(long, conflicts_with = "no_config")]
+    config_path: Option<PathBuf>,
+
+    /// Do not read any rustfmt config file, nor the edition from `Cargo.toml`
+    #[clap(long)]
+    no_config: bool,
+
+    /// Print the config file used and the options of it that afmt ignores on stderr
+    #[clap(short, long)]
+    verbose: bool,
 }
 
 /// Lists the syntax that afmt cannot format yet on stderr: `file:line:column: what: snippet`
@@ -69,17 +90,104 @@ fn process_error(file: &str, error: afmt_core::Error) {
         afmt_core::Error::Unsupported(unsupported) => {
             report_unsupported(file, &unsupported, "");
         }
+        afmt_core::Error::IoError(error) => {
+            writeln!(handle, "{}", error).unwrap();
+        }
     };
 }
 
-/// Reports an I/O error on stderr and exits with code 1
 fn exit_with_io_error(what: &str, error: std::io::Error) -> ! {
     eprintln!("afmt: {what}: {error}");
     std::process::exit(1);
 }
 
+fn config_file(cli: &Cli) -> Option<PathBuf> {
+    if let Some(path) = &cli.config_path {
+        let file = if path.is_dir() {
+            afmt_core::rustfmt_config_in_dir(path)
+        } else {
+            path.exists().then(|| path.clone())
+        };
+        if file.is_none() {
+            eprintln!("afmt: no config file found at {}", path.display());
+            std::process::exit(1);
+        }
+        return file;
+    }
+    afmt_core::find_rustfmt_config(source_dir(cli))
+}
+
+/// The directory where the config files of the source are looked up from: the directory of the file,
+/// or the current directory for stdin
+fn source_dir(cli: &Cli) -> &Path {
+    let dir = match &cli.file {
+        Some(file) => file.parent().unwrap_or(Path::new(".")),
+        None => Path::new("."),
+    };
+    // `Path::parent` of a file name without a directory is ""
+    if dir.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        dir
+    }
+}
+
+/// Sets the edition of the package in the nearest `Cargo.toml`, if there is one with `[package]`;
+/// exits with code 1 when it cannot be read
+fn try_apply_cargo_edition(cli: &Cli, cfg: &mut Config) {
+    let Some(manifest) = afmt_core::find_cargo_manifest(source_dir(cli)) else {
+        return;
+    };
+    match afmt_core::cargo_edition(&manifest) {
+        Ok(Some(edition)) => cfg.edition = edition,
+        Ok(None) => {}
+        Err(afmt_core::Error::GenericError(message)) => {
+            eprintln!("afmt: cannot read the edition: {message}");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("afmt: cannot read the edition from {}: {e:?}", manifest.display());
+            std::process::exit(1);
+        }
+    }
+}
+
+fn try_apply_config(cli: &Cli, cfg: &mut Config) {
+    if let Some(config_path) = config_file(cli) {
+        let rconfig = match afmt_core::RustfmtConfig::load(&config_path) {
+            Ok(rconfig) => rconfig,
+            Err(e) => {
+                eprintln!("cannot read config file: {e:?}");
+                std::process::exit(1);
+            }
+        };
+        rconfig.apply(cfg);
+    }
+}
+
+/// Writes `out` to stdout; a closed stdout (e.g. `afmt file.rs | head`) is not an error
+fn write_output(out: &str) {
+    // Not `print!`, which panics when stdout is closed
+    if let Err(error) = std::io::stdout().write_all(out.as_bytes())
+        && error.kind() != std::io::ErrorKind::BrokenPipe
+    {
+        exit_with_io_error("cannot write the output", error);
+    }
+}
+
 fn main() {
     let cli = Cli::parse();
+
+    let mut cfg = Config::default();
+    if !cli.no_config {
+        try_apply_config(&cli, &mut cfg);
+        try_apply_cargo_edition(&cli, &mut cfg);
+    }
+    cfg.dump_parse_tree = cli.dump_parse_tree;
+    cfg.dump_doc_tree = cli.dump_doc_tree;
+    cfg.check_result = cli.result_check;
+    cfg.allow_unsupported = cli.unsupported != Unsupported::Error;
+
     let code = match &cli.file {
         Some(path) => std::fs::read_to_string(path).unwrap_or_else(|error| {
             exit_with_io_error(&format!("cannot read {}", path.display()), error)
@@ -92,13 +200,15 @@ fn main() {
             code
         }
     };
-    let cfg = Config {
-        dump_parse_tree: cli.dump_parse_tree,
-        dump_doc_tree: cli.dump_doc_tree,
-        check_result: cli.result_check,
-        allow_unsupported: cli.unsupported != Unsupported::Error,
-        ..Config::default()
-    };
+
+    if let Some(edition) = cli.edition {
+        cfg.edition = edition;
+    }
+
+    if cfg.disable_all_formatting {
+        write_output(&code);
+        return;
+    }
     let file = cli
         .file
         .as_ref()
@@ -122,10 +232,5 @@ fn main() {
     };
     // An empty file stays empty, otherwise the output ends with a line break
     let out = if out.is_empty() { out } else { out + "\n" };
-    // Not `print!`, which panics when stdout is closed (e.g. `afmt file.rs | head`)
-    if let Err(error) = std::io::stdout().write_all(out.as_bytes())
-        && error.kind() != std::io::ErrorKind::BrokenPipe
-    {
-        exit_with_io_error("cannot write the output", error);
-    }
+    write_output(&out);
 }

@@ -1,0 +1,12 @@
+# options that afmt does not have, with their default values
+hard_tabs = false
+newline_style = "Auto"
+reorder_imports = true
+reorder_modules = true
+remove_nested_parens = true
+use_try_shorthand = false
+force_explicit_abi = true
+merge_derives = true
+use_field_init_shorthand = false
+style_edition = "2024"
+max_width = 80

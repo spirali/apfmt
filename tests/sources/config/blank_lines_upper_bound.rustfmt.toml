@@ -1,0 +1,2 @@
+# Unstable in rustfmt, so stable rustfmt ignores it (the expected output is nightly rustfmt's)
+blank_lines_upper_bound = 2

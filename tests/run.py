@@ -1,6 +1,6 @@
 #!/usr/bin/env -S uv run --script
 # /// script
-# requires-python = ">=3.10"
+# requires-python = ">=3.11"
 # dependencies = ["rich>=13"]
 # ///
 """
@@ -16,6 +16,10 @@ Test harness for afmt.
   `--unsupported warn`, must report some unsupported syntax (otherwise the test should be
   renamed), and `<name>.unsupported.expected.rs` is required as the reference (it checks what
   afmt keeps, e.g. attributes that rustfmt would drop).
+  If `<name>.rustfmt.toml` exists next to the test, both rustfmt and afmt read it as their
+  config file (`--config-path`); when it sets `edition`, `--edition` is not passed to them.
+  Otherwise both get an empty config file, so no `rustfmt.toml` in the working directory, its
+  ancestors, the home directory or the user's configuration directory changes the results.
 
 `compare`: show afmt and rustfmt output side by side for selected tests.
   The comparison is always against rustfmt; `<name>.expected.rs` files are ignored.
@@ -64,6 +68,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -81,6 +86,8 @@ from rich.table import Table
 from rich.text import Text
 
 EXPECTED_SUFFIX = ".expected.rs"
+# The config file of a test, read by both rustfmt and afmt (see `config_args`)
+CONFIG_SUFFIX = ".rustfmt.toml"
 # Tests of syntax that afmt copies unchanged (see `run_test`)
 UNSUPPORTED_SUFFIX = ".unsupported.rs"
 
@@ -139,12 +146,38 @@ def run_cmd(
     return proc.stdout, proc.stderr
 
 
-def run_rustfmt(code: str, args) -> str:
-    # stdin mode prints only the formatted code to stdout; in stdin mode rustfmt looks
-    # up its config from the cwd, so run it from the repo root to never pick up
-    # tests/sources/rustfmt.toml (which disables formatting)
+def config_path_for(source: Path) -> Path:
+    return source.with_name(source.name.removesuffix(".rs") + CONFIG_SUFFIX)
+
+
+def config_args(source: Path | None, args, pin_edition: bool = False) -> list[str]:
+    """The options passing the config of a test to rustfmt and afmt: an explicit config file
+    (`<name>.rustfmt.toml`, or an empty one), so that neither looks one up, and the edition unless
+    the config file sets it. With `pin_edition` (for afmt, which also reads the edition from the
+    nearest `Cargo.toml`, as `cargo fmt` does), the edition of the config file is passed too.
+    Raises `CommandError` for a malformed config file."""
+    config = config_path_for(source) if source is not None else None
+    if config is None or not config.exists():
+        return ["--config-path", str(args.empty_config), "--edition", args.edition]
+    try:
+        settings = tomllib.loads(config.read_text())
+    except tomllib.TOMLDecodeError as e:
+        raise CommandError(f"{config.name} is not valid TOML: {e}")
+    if "edition" not in settings:
+        edition = ["--edition", args.edition]
+    elif pin_edition:
+        edition = ["--edition", str(settings["edition"])]
+    else:
+        edition = []
+    return ["--config-path", str(config), *edition]
+
+
+def run_rustfmt(code: str, args, source: Path | None) -> str:
+    # stdin mode prints only the formatted code to stdout; the config file is given explicitly
+    # (`config_args`) and rustfmt runs from the repo root, so that a `rust-toolchain.toml` in the
+    # cwd of the harness does not pick another rustfmt
     stdout, _ = run_cmd(
-        [args.rustfmt, "--edition", args.edition],
+        [args.rustfmt, *config_args(source, args)],
         stdin=code,
         timeout=args.timeout,
         cwd=ROOT_DIR,
@@ -166,12 +199,19 @@ def afmt_options(unsupported: bool) -> list[str]:
     return ["--unsupported", "warn" if unsupported else "error"]
 
 
-def run_afmt(code: str, args, unsupported: bool) -> tuple[str, str]:
-    """afmt's output and stderr, see `afmt_options`"""
+def run_afmt(code: str, args, source: Path | None) -> tuple[str, str]:
+    """afmt's output and stderr for the test `source`, see `afmt_options` and `config_args`"""
+    unsupported = source is not None and is_unsupported_test(source)
     return run_cmd(
-        [str(args.afmt), *afmt_options(unsupported), "--result-check"],
+        [
+            str(args.afmt),
+            *afmt_options(unsupported),
+            *config_args(source, args, pin_edition=True),
+            "--result-check",
+        ],
         stdin=code,
         timeout=args.timeout,
+        cwd=ROOT_DIR,
     )
 
 
@@ -211,14 +251,14 @@ def run_test(source: Path, args) -> Result:
     else:
         expected_name = "rustfmt.rs"
         try:
-            expected = run_rustfmt(code, args)
+            expected = run_rustfmt(code, args, source)
         except CommandError as e:
             result.failures.append(Failure("rustfmt error", str(e)))
             return result
     result.outputs[expected_name] = expected
 
     try:
-        actual, stderr = run_afmt(code, args, unsupported)
+        actual, stderr = run_afmt(code, args, source)
     except CommandError as e:
         result.failures.append(Failure("afmt error", str(e)))
         return result
@@ -245,7 +285,7 @@ def run_test(source: Path, args) -> Result:
         return result
 
     try:
-        second, _ = run_afmt(actual, args, unsupported)
+        second, _ = run_afmt(actual, args, source)
     except CommandError as e:
         result.failures.append(Failure("afmt error (2nd pass)", str(e)))
         return result
@@ -464,6 +504,8 @@ def list_sources(sources: list[Path], show_reference: bool) -> None:
             reference = Text("expected.rs", style="bold cyan")
         else:
             reference = Text("rustfmt", style="dark_orange")
+        if config_path_for(s).exists():
+            reference += Text(f" + {CONFIG_SUFFIX.removeprefix('.')}", style="magenta")
         console.print(Text(f"{name:<{width}}  ") + reference, soft_wrap=True)
 
 
@@ -478,9 +520,13 @@ def prepare_tools(args, need_rustfmt: bool = True) -> None:
     if not args.afmt.exists():
         console.print(f"[bold red]afmt binary not found:[/bold red] {args.afmt}")
         sys.exit(2)
-    if need_rustfmt and shutil.which(args.rustfmt) is None:
-        console.print(f"[bold red]rustfmt not found:[/bold red] {args.rustfmt}")
-        sys.exit(2)
+    if need_rustfmt:
+        if shutil.which(args.rustfmt) is None:
+            console.print(f"[bold red]rustfmt not found:[/bold red] {args.rustfmt}")
+            sys.exit(2)
+        # the reference depends on the version, which a toolchain override can change
+        version = tool_version([args.rustfmt, "--version"]) or "unknown version"
+        console.print(f"[dim]Reference: {version}[/dim]", highlight=False)
 
 
 def cmd_test(args, sources: list[Path]) -> None:
@@ -544,12 +590,12 @@ def cmd_compare(args, sources: list[Path]) -> None:
         code = source.read_text()
         errors = []
         try:
-            afmt_out, _ = run_afmt(code, args, is_unsupported_test(source))
+            afmt_out, _ = run_afmt(code, args, source)
         except CommandError as e:
             afmt_out = ""
             errors.append(f"afmt error: {e}")
         try:
-            rustfmt_out = run_rustfmt(code, args)
+            rustfmt_out = run_rustfmt(code, args, source)
         except CommandError as e:
             rustfmt_out = ""
             errors.append(f"rustfmt error: {e}")
@@ -636,12 +682,12 @@ class BenchFile:
 def bench_commands(args) -> dict[str, list[str]]:
     """The measured command of every tool; the same commands as `test` uses, without
     afmt's --result-check unless it is asked for."""
-    afmt = [str(args.afmt), *afmt_options(False)]
+    afmt = [str(args.afmt), *afmt_options(False), *config_args(None, args)]
     if args.result_check:
         afmt.append("--result-check")
     commands = {"afmt": afmt}
     if args.compare:
-        commands["rustfmt"] = [args.rustfmt, "--edition", args.edition]
+        commands["rustfmt"] = [args.rustfmt, *config_args(None, args)]
     return commands
 
 
@@ -789,8 +835,9 @@ def git_revision() -> dict[str, str | bool | None]:
 
 def tool_version(cmd: list[str]) -> str | None:
     try:
+        # from the repo root like the formatting commands, for the same toolchain
         proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=10, check=False
+            cmd, capture_output=True, text=True, timeout=10, check=False, cwd=ROOT_DIR
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -1056,7 +1103,11 @@ def main() -> None:
         "--afmt", type=Path, help=f"afmt binary (default: {DEFAULT_AFMT})"
     )
     common.add_argument("--rustfmt", default="rustfmt", help="rustfmt binary")
-    common.add_argument("--edition", default="2024", help="edition passed to rustfmt")
+    common.add_argument(
+        "--edition",
+        default="2024",
+        help="edition passed to rustfmt and afmt (unless the config file of a test sets it)",
+    )
     common.add_argument(
         "--no-build", action="store_true", help="do not run cargo build"
     )
@@ -1164,12 +1215,16 @@ def main() -> None:
         sys.exit(1)
 
     prepare_tools(args, need_rustfmt=args.command != "bench" or args.compare)
-    if args.command == "test":
-        cmd_test(args, sources)
-    elif args.command == "bench":
-        cmd_bench(args, sources)
-    else:
-        cmd_compare(args, sources)
+    with tempfile.TemporaryDirectory(prefix="afmt-tests-") as tmp:
+        # the config of tests without their own config file (`config_args`)
+        args.empty_config = Path(tmp) / "rustfmt.toml"
+        args.empty_config.write_text("")
+        if args.command == "test":
+            cmd_test(args, sources)
+        elif args.command == "bench":
+            cmd_bench(args, sources)
+        else:
+            cmd_compare(args, sources)
 
 
 if __name__ == "__main__":

@@ -424,7 +424,7 @@ impl<'a> Resolver<'a> {
                 content: Content::Newline,
             }),
             DocNode::Nest(d) => {
-                let indent = ctx.indent + self.config.indent_width;
+                let indent = ctx.indent + self.config.tab_spaces;
                 let layout_set = self.resolve(Context { indent, ..ctx }, *d);
                 indented(&mut self.content_arena.borrow_mut(), indent, layout_set)
             }
@@ -480,7 +480,7 @@ impl<'a> Resolver<'a> {
                 layout_set
             }
             DocNode::ShortLastLine(doc) => {
-                let max = ctx.indent + self.config.indent_width;
+                let max = ctx.indent + self.config.tab_spaces;
                 let mut layout_set = self.resolve(ctx, *doc);
                 layout_set
                     .layouts

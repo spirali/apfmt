@@ -2,8 +2,12 @@
 
 use std::process::{Command, Stdio};
 
+/// afmt without any rustfmt config file, which would otherwise be looked up from the current
+/// directory and in the home directory of the user running the tests
 fn afmt() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_afmt"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_afmt"));
+    command.arg("--no-config");
+    command
 }
 
 #[test]

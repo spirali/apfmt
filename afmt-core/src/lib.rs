@@ -17,7 +17,10 @@ use crate::format::format_source_file;
 use crate::formatter::{Formatter, Unsupported};
 use crate::rewrite::rewrite_source;
 use crate::utils::line_column;
+pub use config::cargo::{cargo_edition, find_cargo_manifest};
+pub use config::rustfmt::{RustfmtConfig, find_rustfmt_config, rustfmt_config_in_dir};
 pub use error::{Error, Result, UnsupportedSyntax};
+pub use ra_ap_syntax::Edition;
 use ra_ap_syntax::{AstNode, WalkEvent};
 use ra_ap_syntax::{NodeOrToken, SourceFile};
 
