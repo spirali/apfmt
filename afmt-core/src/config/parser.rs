@@ -1,52 +1,35 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::str::FromStr;
 
 use ra_ap_syntax::Edition;
 use serde::Deserialize;
-use toml::Value;
+use toml::{Table, Value};
 
 use crate::Error::GenericError;
 use crate::config::Config;
 
-pub const RUSTFMT_CONFIG_FILE_NAMES: [&str; 2] = [".rustfmt.toml", "rustfmt.toml"];
-
-pub fn rustfmt_config_in_dir(dir: &Path) -> Option<PathBuf> {
-    RUSTFMT_CONFIG_FILE_NAMES
-        .iter()
-        .map(|name| dir.join(name))
-        // `is_file` is false for a directory named `rustfmt.toml` and for an unreadable path
-        .find(|path| path.is_file())
-}
-
-pub fn find_rustfmt_config(dir: &Path) -> Option<PathBuf> {
-    let dir = std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
-    let dir = dir.canonicalize().unwrap_or(dir);
-    dir.ancestors()
-        .find_map(rustfmt_config_in_dir)
-        .or_else(|| std::env::home_dir().and_then(|home| rustfmt_config_in_dir(&home)))
-        .or_else(|| user_config_dir().and_then(|dir| rustfmt_config_in_dir(&dir.join("rustfmt"))))
-}
-
-fn user_config_dir() -> Option<PathBuf> {
-    let env_dir = |name: &str| {
-        std::env::var_os(name)
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute())
-    };
-    if cfg!(windows) {
-        env_dir("APPDATA")
-    } else if cfg!(target_os = "macos") {
-        std::env::home_dir().map(|home| home.join("Library/Application Support"))
-    } else {
-        env_dir("XDG_CONFIG_HOME").or_else(|| std::env::home_dir().map(|home| home.join(".config")))
+/// Applies the config file at `path` to `cfg`. The format is told by the name: in a rustfmt config
+/// file (a name ending with `rustfmt.toml`), the options that afmt does not have are ignored; in an
+/// afmt one, they are an error.
+pub fn read_config(path: &Path, cfg: &mut Config) -> crate::Result<()> {
+    let toml = TomlConfig::load(path)?;
+    if !is_rustfmt_config(path) {
+        toml.check_unknown()?;
     }
+    toml.apply(cfg);
+    Ok(())
 }
 
-/// The options of a rustfmt config file that afmt has; a wrong value of one option does not make the
-/// others fail (`Setting`)
+fn is_rustfmt_config(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with("rustfmt.toml"))
+}
+
+/// The options of a config file
 #[derive(Default, Deserialize)]
 #[serde(default)]
-pub struct RustfmtConfig {
+struct TomlConfig {
     max_width: Option<u32>,
     use_small_heuristics: Option<Heuristics>,
     fn_call_width: Option<u32>,
@@ -61,6 +44,12 @@ pub struct RustfmtConfig {
     short_array_element_width_threshold: Option<u32>,
     edition: Option<EditionSetting>,
     disable_all_formatting: Option<bool>,
+    // afmt's own options, not in rustfmt (or not in rustfmt's meaning)
+    trailing_comment_align_threshold: Option<u32>,
+    normalize_comment_sigil_spacing: Option<bool>,
+    /// The options that afmt does not have
+    #[serde(flatten)]
+    unknown: Table,
 }
 
 fn set_value<T: Copy>(out: &mut T, v: Option<T>) {
@@ -75,23 +64,35 @@ fn set_value_bound(out: &mut u32, v: Option<u32>, bound: u32) {
     }
 }
 
-impl RustfmtConfig {
-    pub fn load(path: &Path) -> crate::Result<RustfmtConfig> {
+impl TomlConfig {
+    pub fn load(path: &Path) -> crate::Result<TomlConfig> {
         let toml = std::fs::read_to_string(path)?;
-        RustfmtConfig::parse(&toml)
+        TomlConfig::parse(&toml)
     }
 
-    pub fn parse(toml: &str) -> crate::Result<RustfmtConfig> {
-        let cfg: RustfmtConfig = toml::from_str(toml)
-            .map_err(|e| GenericError(format!("Could not parse rustfmt config: {}", e)))?;
-        if let Some(w) = cfg.max_width
-            && w == 0
-        {
-            return Err(GenericError(
-                "rustfmt config: Invalid max width".to_string(),
-            ));
+    pub fn parse(toml: &str) -> crate::Result<TomlConfig> {
+        let cfg: TomlConfig = toml::from_str(toml)
+            .map_err(|e| GenericError(format!("Could not parse afmt config: {}", e)))?;
+        if cfg.max_width == Some(0) {
+            return Err(GenericError("Invalid max width".to_string()));
         }
         Ok(cfg)
+    }
+
+    /// Fails when the file has options that afmt does not have
+    fn check_unknown(&self) -> crate::Result<()> {
+        if self.unknown.is_empty() {
+            return Ok(());
+        }
+        let names: Vec<_> = self
+            .unknown
+            .keys()
+            .map(|name| format!("`{name}`"))
+            .collect();
+        Err(GenericError(format!(
+            "Unknown options in afmt config: {}",
+            names.join(", ")
+        )))
     }
 
     pub fn apply(&self, config: &mut Config) {
@@ -103,6 +104,14 @@ impl RustfmtConfig {
         set_value(
             &mut config.short_array_element_width_threshold,
             self.short_array_element_width_threshold,
+        );
+        set_value(
+            &mut config.trailing_comment_align_threshold,
+            self.trailing_comment_align_threshold,
+        );
+        set_value(
+            &mut config.normalize_comment_sigil_spacing,
+            self.normalize_comment_sigil_spacing,
         );
         set_value(&mut config.edition, self.edition.map(|e| e.0));
         set_value(
@@ -213,8 +222,87 @@ mod tests {
 
     fn apply(toml: &str) -> Config {
         let mut config = Config::default();
-        RustfmtConfig::parse(toml).unwrap().apply(&mut config);
+        TomlConfig::parse(toml).unwrap().apply(&mut config);
         config
+    }
+
+    #[test]
+    fn rustfmt_options() {
+        let config = apply(
+            "max_width = 80\nuse_small_heuristics = \"Max\"\nchain_width = 40\ntab_spaces = 2\n\
+             edition = \"2021\"\n",
+        );
+        assert_eq!(config.max_width, 80);
+        assert_eq!(config.fn_call_width, 80);
+        assert_eq!(config.chain_width, 40);
+        assert_eq!(config.tab_spaces, 2);
+        assert_eq!(config.edition, Edition::Edition2021);
+    }
+
+    #[test]
+    fn afmt_options() {
+        let config =
+            apply("trailing_comment_align_threshold = 0\nnormalize_comment_sigil_spacing = false\n");
+        assert_eq!(config.trailing_comment_align_threshold, 0);
+        assert!(!config.normalize_comment_sigil_spacing);
+    }
+
+    #[test]
+    fn unknown_option_is_an_error() {
+        for toml in [
+            "max_widht = 80",
+            "hard_tabs = true",
+            "dump_parse_tree = true",
+        ] {
+            let config = TomlConfig::parse(toml).unwrap();
+            let Err(GenericError(message)) = config.check_unknown() else {
+                panic!("`{toml}` is accepted");
+            };
+            let name = toml.split(' ').next().unwrap();
+            assert!(message.contains(&format!("`{name}`")), "{message}");
+        }
+        assert!(
+            TomlConfig::parse("max_width = 80")
+                .unwrap()
+                .check_unknown()
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn unknown_options_are_ignored_in_rustfmt_config_only() {
+        let dir = std::env::temp_dir().join(format!("afmt-read-config-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let toml = "hard_tabs = true\nmax_width = 80\n";
+        for (name, ok) in [
+            ("rustfmt.toml", true),
+            (".rustfmt.toml", true),
+            ("test.rustfmt.toml", true),
+            ("afmt.toml", false),
+            (".afmt.toml", false),
+            ("other.toml", false),
+        ] {
+            let path = dir.join(name);
+            std::fs::write(&path, toml).unwrap();
+            let mut config = Config::default();
+            assert_eq!(read_config(&path, &mut config).is_ok(), ok, "{name}");
+            if ok {
+                assert_eq!(config.max_width, 80);
+            }
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn invalid_values_are_errors() {
+        for toml in [
+            "max_width = 0",
+            "max_width = -1",
+            "normalize_comment_sigil_spacing = 1",
+            "edition = \"2020\"",
+        ] {
+            assert!(TomlConfig::parse(toml).is_err(), "`{toml}` is accepted");
+        }
     }
 
     fn widths(config: &Config) -> [u32; 7] {
@@ -292,14 +380,7 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_options_are_ignored() {
-        let config =
-            apply("hard_tabs = true\nstyle_edition = \"2024\"\nmax_width = 90\n[unknown]\nx = 1\n");
-        assert_eq!(config.max_width, 90);
-    }
-
-    #[test]
     fn malformed_file_changes_nothing() {
-        assert!(RustfmtConfig::parse("max_width = 80\nthis is not toml").is_err());
+        assert!(TomlConfig::parse("max_width = 80\nthis is not toml").is_err());
     }
 }

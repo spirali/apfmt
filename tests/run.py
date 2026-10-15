@@ -18,6 +18,8 @@ Test harness for afmt.
   afmt keeps, e.g. attributes that rustfmt would drop).
   If `<name>.rustfmt.toml` exists next to the test, both rustfmt and afmt read it as their
   config file (`--config-path`); when it sets `edition`, `--edition` is not passed to them.
+  If `<name>.afmt.toml` exists, afmt reads it instead (rustfmt still reads `<name>.rustfmt.toml`
+  or nothing); for afmt's own options, the reference is usually `<name>.expected.rs`.
   Otherwise both get an empty config file, so no `rustfmt.toml` in the working directory, its
   ancestors, the home directory or the user's configuration directory changes the results.
 
@@ -88,6 +90,8 @@ from rich.text import Text
 EXPECTED_SUFFIX = ".expected.rs"
 # The config file of a test, read by both rustfmt and afmt (see `config_args`)
 CONFIG_SUFFIX = ".rustfmt.toml"
+# The afmt config file of a test, read by afmt only, instead of `CONFIG_SUFFIX`
+AFMT_CONFIG_SUFFIX = ".afmt.toml"
 # Tests of syntax that afmt copies unchanged (see `run_test`)
 UNSUPPORTED_SUFFIX = ".unsupported.rs"
 
@@ -146,18 +150,21 @@ def run_cmd(
     return proc.stdout, proc.stderr
 
 
-def config_path_for(source: Path) -> Path:
-    return source.with_name(source.name.removesuffix(".rs") + CONFIG_SUFFIX)
+def config_path_for(source: Path, suffix: str = CONFIG_SUFFIX) -> Path:
+    return source.with_name(source.name.removesuffix(".rs") + suffix)
 
 
-def config_args(source: Path | None, args, pin_edition: bool = False) -> list[str]:
-    """The options passing the config of a test to rustfmt and afmt: an explicit config file
-    (`<name>.rustfmt.toml`, or an empty one), so that neither looks one up, and the edition unless
-    the config file sets it. With `pin_edition` (for afmt, which also reads the edition from the
-    nearest `Cargo.toml`, as `cargo fmt` does), the edition of the config file is passed too.
-    Raises `CommandError` for a malformed config file."""
-    config = config_path_for(source) if source is not None else None
-    if config is None or not config.exists():
+def config_args(source: Path | None, args, afmt: bool = False) -> list[str]:
+    """The options passing the config of a test to rustfmt or (with `afmt`) afmt: an explicit
+    config file, so that neither looks one up, and the edition unless the config file sets it.
+    rustfmt gets `<name>.rustfmt.toml`; afmt gets `<name>.afmt.toml`, else `<name>.rustfmt.toml`;
+    both get an empty file when the test has none. afmt always gets the edition (also the one of its
+    config file), since it also reads the edition from the nearest `Cargo.toml`, as `cargo fmt`
+    does. Raises `CommandError` for a malformed config file."""
+    suffixes = [AFMT_CONFIG_SUFFIX, CONFIG_SUFFIX] if afmt else [CONFIG_SUFFIX]
+    configs = [config_path_for(source, s) for s in suffixes] if source else []
+    config = next((c for c in configs if c.exists()), None)
+    if config is None:
         return ["--config-path", str(args.empty_config), "--edition", args.edition]
     try:
         settings = tomllib.loads(config.read_text())
@@ -165,7 +172,7 @@ def config_args(source: Path | None, args, pin_edition: bool = False) -> list[st
         raise CommandError(f"{config.name} is not valid TOML: {e}")
     if "edition" not in settings:
         edition = ["--edition", args.edition]
-    elif pin_edition:
+    elif afmt:
         edition = ["--edition", str(settings["edition"])]
     else:
         edition = []
@@ -206,7 +213,7 @@ def run_afmt(code: str, args, source: Path | None) -> tuple[str, str]:
         [
             str(args.afmt),
             *afmt_options(unsupported),
-            *config_args(source, args, pin_edition=True),
+            *config_args(source, args, afmt=True),
             "--result-check",
         ],
         stdin=code,
@@ -262,7 +269,7 @@ def run_test(source: Path, args) -> Result:
     except CommandError as e:
         result.failures.append(Failure("afmt error", str(e)))
         return result
-    result.outputs["afmt.rs"] = actual
+    result.outputs["parser"] = actual
 
     if unsupported and UNSUPPORTED_MESSAGE not in stderr:
         result.failures.append(
@@ -279,7 +286,7 @@ def run_test(source: Path, args) -> Result:
             Failure(
                 "mismatch",
                 f"afmt output differs from {expected_name}",
-                make_diff(expected, actual, expected_name, "afmt.rs"),
+                make_diff(expected, actual, expected_name, "parser"),
             )
         )
         return result
@@ -296,7 +303,7 @@ def run_test(source: Path, args) -> Result:
             Failure(
                 "not idempotent",
                 "afmt(afmt(input)) differs from afmt(input)",
-                make_diff(actual, second, "afmt.rs", "afmt2.rs"),
+                make_diff(actual, second, "parser", "afmt2.rs"),
             )
         )
     return result
@@ -342,7 +349,7 @@ def print_source(title: str, code: str) -> None:
     )
 
 
-REPORT_ORDER = ("input.rs", "afmt.rs", "expected.rs", "rustfmt.rs", "afmt2.rs")
+REPORT_ORDER = ("input.rs", "parser", "expected.rs", "rustfmt.rs", "afmt2.rs")
 
 
 def report_failure(result: Result, max_diff_lines: int, verbose: bool) -> None:
@@ -504,8 +511,9 @@ def list_sources(sources: list[Path], show_reference: bool) -> None:
             reference = Text("expected.rs", style="bold cyan")
         else:
             reference = Text("rustfmt", style="dark_orange")
-        if config_path_for(s).exists():
-            reference += Text(f" + {CONFIG_SUFFIX.removeprefix('.')}", style="magenta")
+        for suffix in [CONFIG_SUFFIX, AFMT_CONFIG_SUFFIX]:
+            if config_path_for(s, suffix).exists():
+                reference += Text(f" + {suffix.removeprefix('.')}", style="magenta")
         console.print(Text(f"{name:<{width}}  ") + reference, soft_wrap=True)
 
 
@@ -682,7 +690,7 @@ class BenchFile:
 def bench_commands(args) -> dict[str, list[str]]:
     """The measured command of every tool; the same commands as `test` uses, without
     afmt's --result-check unless it is asked for."""
-    afmt = [str(args.afmt), *afmt_options(False), *config_args(None, args)]
+    afmt = [str(args.afmt), *afmt_options(False), *config_args(None, args, afmt=True)]
     if args.result_check:
         afmt.append("--result-check")
     commands = {"afmt": afmt}

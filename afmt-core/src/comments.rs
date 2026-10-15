@@ -85,6 +85,15 @@ pub(crate) fn is_line_comment(token: &SyntaxToken) -> bool {
     token.kind() == SyntaxKind::COMMENT && token.text().starts_with("//")
 }
 
+/// The comment `text` is a doc comment: `///` (not `////`), `//!`, `/**` (not `/***` nor the empty
+/// `/**/`) or `/*!`
+pub(crate) fn is_doc_comment(text: &str) -> bool {
+    (text.starts_with("///") && !text.starts_with("////"))
+        || text.starts_with("//!")
+        || (text.starts_with("/**") && !text.starts_with("/***") && text != "/**/")
+        || text.starts_with("/*!")
+}
+
 /// The first token of `node` that is not trivia; rust-analyzer attaches the comments in front of an item
 /// to the item
 pub(crate) fn first_code_token(node: &SyntaxNode) -> SyntaxToken {
@@ -181,5 +190,27 @@ pub(crate) fn comments_ending_line_end(token: &SyntaxToken) -> SyntaxToken {
         trivia_end(token, None, TriviaStop::OwnLine)
     } else {
         token.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_doc_comment;
+
+    #[test]
+    fn doc_comments() {
+        for (comment, doc) in [
+            ("/// a", true),
+            ("//! a", true),
+            ("/** a */", true),
+            ("/*! a */", true),
+            ("// a", false),
+            ("//// a", false),
+            ("/* a */", false),
+            ("/**/", false),
+            ("/*** a */", false),
+        ] {
+            assert_eq!(is_doc_comment(comment), doc, "{comment}");
+        }
     }
 }

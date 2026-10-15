@@ -18,11 +18,13 @@ use crate::formatter::{Formatter, Unsupported};
 use crate::rewrite::rewrite_source;
 use crate::utils::line_column;
 pub use config::cargo::{cargo_edition, find_cargo_manifest};
-pub use config::rustfmt::{RustfmtConfig, find_rustfmt_config, rustfmt_config_in_dir};
 pub use error::{Error, Result, UnsupportedSyntax};
 pub use ra_ap_syntax::Edition;
 use ra_ap_syntax::{AstNode, WalkEvent};
 use ra_ap_syntax::{NodeOrToken, SourceFile};
+
+pub use crate::config::lookup::{find_config, config_in_dir};
+pub use crate::config::parser::read_config;
 
 fn print_tree(source_file: &SourceFile) {
     let mut depth = 0;
@@ -240,20 +242,21 @@ mod tests {
     }
 
     #[test]
-    fn normalize_comments() {
-        let code = "fn/*a*/f() { g(/**/ 1 /*  b  */, /** c*/ 2); }";
+    fn normalize_comment_sigil_spacing() {
+        // empty comments (`/**/`, `//`) get no space
+        let code = "fn/*a*/f() { g(/**/ 1 /*  b  */, /** c*/ 2); //c\n //\n}";
         let config = Config::default();
         assert_eq!(
             format_source_code(&config, code).unwrap().code,
-            "fn /* a */ f() {\n    g(/**/ 1 /* b */, /** c*/ 2);\n}"
+            "fn /* a */ f() {\n    g(/**/ 1 /* b */, /** c*/ 2); // c\n    //\n}"
         );
         let config = Config {
-            normalize_comments: false,
+            normalize_comment_sigil_spacing: false,
             ..Config::default()
         };
         assert_eq!(
             format_source_code(&config, code).unwrap().code,
-            "fn /*a*/ f() {\n    g(/**/ 1 /*  b  */, /** c*/ 2);\n}"
+            "fn /*a*/ f() {\n    g(/**/ 1 /*  b  */, /** c*/ 2); //c\n    //\n}"
         );
     }
 }

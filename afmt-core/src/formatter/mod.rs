@@ -5,6 +5,7 @@ mod builder;
 mod frag;
 mod trivia;
 
+use crate::comments::is_doc_comment;
 use crate::config::Config;
 use crate::doc::DocNode::Newline;
 use crate::doc::{
@@ -19,7 +20,7 @@ pub(crate) use frag::{Edge, Frag};
 use ra_ap_syntax::{SyntaxNode, SyntaxToken, TextRange};
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
-use trivia::{multiline_comment_lines, normalize_block_comment};
+use trivia::{multiline_comment_lines, normalize_comment_sigil_spacing, trim_comment_line};
 
 /// Source text that afmt cannot format yet, copied unchanged (see `Formatter::unsupported`)
 pub(crate) struct Unsupported {
@@ -447,9 +448,10 @@ impl<'a> Formatter<'a> {
     }
 
     fn comment_doc(&self, token: &SyntaxToken) -> DocId {
+        let doc = is_doc_comment(token.text());
         if let Some(lines) = multiline_comment_lines(token) {
             // The lines are aligned to the column of the comment start
-            let mut lines = lines.into_iter();
+            let mut lines = lines.into_iter().map(|line| trim_comment_line(line, doc));
             let mut doc_id = self.make_node(DocNode::Text(lines.next().unwrap().into()));
             for line in lines {
                 doc_id = self.concat(doc_id, NEWLINE_DOC);
@@ -459,14 +461,22 @@ impl<'a> Formatter<'a> {
             }
             return self.make_node(DocNode::Align(doc_id));
         }
-        let normalized = self
+        let trimmed: Vec<_> = token
+            .text()
+            .split('\n')
+            .map(|line| trim_comment_line(line, doc))
+            .collect();
+        let trimmed = trimmed.join("\n");
+        let text = self
             .config
-            .normalize_comments
-            .then(|| normalize_block_comment(token.text()))
-            .flatten();
-        self.make_node(match normalized {
-            Some(text) => DocNode::Text(text.into()),
-            None => DocNode::Token(token.clone()),
+            .normalize_comment_sigil_spacing
+            .then(|| normalize_comment_sigil_spacing(&trimmed))
+            .flatten()
+            .unwrap_or(trimmed);
+        self.make_node(if text == token.text() {
+            DocNode::Token(token.clone())
+        } else {
+            DocNode::Text(text.into())
         })
     }
 

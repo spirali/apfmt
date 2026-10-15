@@ -1,5 +1,6 @@
-pub mod cargo;
-pub mod rustfmt;
+pub(crate) mod cargo;
+pub(crate) mod parser;
+pub(crate) mod lookup;
 
 use ra_ap_syntax::Edition;
 
@@ -28,8 +29,9 @@ pub struct Config {
     pub short_array_element_width_threshold: u32,
     /// The gap after which the widest list items do not align their trailing comments; 0 disables it
     pub trailing_comment_align_threshold: u32,
-    /// Puts a single space inside single-line block comments: `/*a*/` -> `/* a */`
-    pub normalize_comments: bool,
+    /// Puts a single space after the opening sigil of a comment and before the closing one:
+    /// `//a` -> `// a`, `/*a*/` -> `/* a */` (see `normalize_comment_sigil_spacing`)
+    pub normalize_comment_sigil_spacing: bool,
     /// The edition of the syntax
     pub edition: Edition,
     /// The source is not formatted at all (rustfmt's `disable_all_formatting`); the caller outputs
@@ -58,7 +60,7 @@ impl Default for Config {
             single_line_if_else_max_width: 50,
             short_array_element_width_threshold: 10,
             trailing_comment_align_threshold: 40,
-            normalize_comments: true,
+            normalize_comment_sigil_spacing: true,
             edition: Edition::CURRENT,
             disable_all_formatting: false,
             dump_parse_tree: false,

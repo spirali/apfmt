@@ -16,20 +16,34 @@ fn separator_doc(kind: SyntaxKind) -> DocId {
     }
 }
 
-/// Puts a single space after the opening and before the closing sigil of a single-line
-/// block comment (`/*a*/` -> `/* a */`). Returns `None` when the text stays as it is.
-/// Doc comments and empty comments are left alone.
-pub(super) fn normalize_block_comment(text: &str) -> Option<String> {
+/// Puts a single space after the opening sigil of a line comment (`//a` -> `// a`) and after the
+/// opening and before the closing sigil of a single-line block comment (`/*a*/` -> `/* a */`), as the
+/// Style Guide recommends, when the comment text starts with a letter or a digit; other comments
+/// (empty ones, separators `//-----`, commented-out code `//#[cfg(x)]`, ...) are left alone, and so
+/// are doc comments (adding a space to some lines of a doc comment would change the indentation of
+/// its Markdown), `////...` and multi-line block comments. Returns `None` when the text stays as it is.
+pub(super) fn normalize_comment_sigil_spacing(text: &str) -> Option<String> {
+    let starts_with_alphanumeric = |s: &str| s.starts_with(char::is_alphanumeric);
+    if let Some(rest) = text.strip_prefix("//") {
+        let skip = rest.starts_with(['/', '!']) || !starts_with_alphanumeric(rest);
+        return (!skip).then(|| format!("// {rest}"));
+    }
     let inner = text.strip_prefix("/*")?.strip_suffix("*/")?;
     if inner.contains('\n') || inner.starts_with('*') || inner.starts_with('!') {
         return None;
     }
     let trimmed = inner.trim();
-    if trimmed.is_empty() {
+    if !starts_with_alphanumeric(trimmed) {
         return None;
     }
     let normalized = format!("/* {trimmed} */");
     (normalized != text).then_some(normalized)
+}
+
+/// A line of a comment without its trailing whitespace, which the Style Guide forbids; a line of a
+/// doc comment (`doc`) keeps it, since two trailing spaces end a line in Markdown
+pub(super) fn trim_comment_line(line: &str, doc: bool) -> &str {
+    if doc { line } else { line.trim_end() }
 }
 
 fn source_column(token: &SyntaxToken) -> usize {
@@ -298,5 +312,48 @@ impl<'a> Builder<'a> {
             .as_ref()
             .is_some_and(|c| rest_of_line_is_comments(c, None));
         ends_line && self.push_trivia(None, TriviaStop::OwnLine)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_comment_sigil_spacing;
+
+    #[test]
+    fn comment_sigil_spacing() {
+        for (comment, expected) in [
+            ("//a", Some("// a")),
+            ("//let x = 1;", Some("// let x = 1;")),
+            ("// a", None),
+            ("//TODO", Some("// TODO")),
+            ("//é", Some("// é")),
+            // empty comments
+            ("//", None),
+            ("/**/", None),
+            ("/*  */", None),
+            // doc comments and `////`
+            ("///a", None),
+            ("//!a", None),
+            ("////a", None),
+            ("/**a*/", None),
+            ("/*!a*/", None),
+            // no letter or digit after the sigil: whitespace, separators, commented-out code
+            ("//\ta", None),
+            ("//-----", None),
+            ("//#[derive(Debug)]", None),
+            ("//(note) a", None),
+            ("/*---*/", None),
+            ("/*(x)*/", None),
+            ("/*a*/", Some("/* a */")),
+            ("/*  a  */", Some("/* a */")),
+            ("/* a */", None),
+            ("/*a\nb*/", None),
+        ] {
+            assert_eq!(
+                normalize_comment_sigil_spacing(comment).as_deref(),
+                expected,
+                "{comment:?}"
+            );
+        }
     }
 }

@@ -3,7 +3,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use afmt_core::{Config, Edition, UnsupportedSyntax};
+use afmt_core::{read_config, Config, Edition, UnsupportedSyntax};
 use clap::{Parser, ValueEnum};
 
 /// What to do with syntax that afmt cannot format yet
@@ -50,7 +50,8 @@ struct Cli {
     #[clap(long, value_parser = Edition::from_str)]
     edition: Option<Edition>,
 
-    /// The rustfmt config file to use, or a directory with `rustfmt.toml` or `.rustfmt.toml`, instead
+    /// The rustfmt config like file to use, or a directory with:
+    /// `rustfmt.toml`, `.rustfmt.toml`, `afmt.toml`, `.afmt.toml`, instead
     /// of looking it up from the directory of the file (or the current directory for stdin), its
     /// ancestors, the home directory and the user's configuration directory, like rustfmt
     #[clap(long, conflicts_with = "no_config")]
@@ -60,9 +61,9 @@ struct Cli {
     #[clap(long)]
     no_config: bool,
 
-    /// Print the config file used and the options of it that afmt ignores on stderr
-    #[clap(short, long)]
-    verbose: bool,
+    /// Do not ready any rustfmt config file
+    #[clap(long)]
+    no_rustfmt_toml: bool,
 }
 
 /// Lists the syntax that afmt cannot format yet on stderr: `file:line:column: what: snippet`
@@ -104,7 +105,7 @@ fn exit_with_io_error(what: &str, error: std::io::Error) -> ! {
 fn config_file(cli: &Cli) -> Option<PathBuf> {
     if let Some(path) = &cli.config_path {
         let file = if path.is_dir() {
-            afmt_core::rustfmt_config_in_dir(path)
+            afmt_core::config_in_dir(path, true, !cli.no_rustfmt_toml)
         } else {
             path.exists().then(|| path.clone())
         };
@@ -114,7 +115,7 @@ fn config_file(cli: &Cli) -> Option<PathBuf> {
         }
         return file;
     }
-    afmt_core::find_rustfmt_config(source_dir(cli))
+    afmt_core::find_config(source_dir(cli), !cli.no_rustfmt_toml)
 }
 
 /// The directory where the config files of the source are looked up from: the directory of the file,
@@ -154,14 +155,13 @@ fn try_apply_cargo_edition(cli: &Cli, cfg: &mut Config) {
 
 fn try_apply_config(cli: &Cli, cfg: &mut Config) {
     if let Some(config_path) = config_file(cli) {
-        let rconfig = match afmt_core::RustfmtConfig::load(&config_path) {
-            Ok(rconfig) => rconfig,
+        match read_config(&config_path, cfg) {
+            Ok(()) => {}
             Err(e) => {
                 eprintln!("cannot read config file: {e:?}");
                 std::process::exit(1);
             }
         };
-        rconfig.apply(cfg);
     }
 }
 

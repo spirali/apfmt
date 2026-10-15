@@ -1,6 +1,6 @@
 fn main() {
     // Hello
-    //Comment2
+    // Comment2
 
     /* aa */
 
