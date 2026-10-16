@@ -41,6 +41,43 @@ fn formats_the_module_tree() {
 }
 
 #[test]
+fn status_lines_and_summary() {
+    let ws = TestDir::new("status");
+    ws.write("Cargo.toml", &package("a", "2024"));
+    ws.write("src/lib.rs", &format!("mod b;\n{FORMATTED}"));
+    ws.write("src/b.rs", UNFORMATTED);
+
+    let output = ws.cargo_afmt("", &["--check"]);
+    let stderr_text = stderr(&output);
+    assert!(
+        stderr_text.contains("    Finished 2 files in ")
+            && stderr_text.ends_with(": 1 would be reformatted, 1 unchanged\n"),
+        "{stderr_text}"
+    );
+    // Not a terminal: no colours, unless asked
+    assert!(!stderr_text.contains('\x1b'), "{stderr_text}");
+    let output = ws.cargo_afmt("", &["--check", "--color", "always"]);
+    assert!(stderr(&output).contains("\x1b["), "{}", stderr(&output));
+
+    let output = ws.cargo_afmt("", &[]);
+    let stderr_text = stderr(&output);
+    assert!(
+        stderr_text.starts_with(" Reformatted src/b.rs\n"),
+        "{stderr_text}"
+    );
+    assert!(
+        stderr_text.ends_with(": 1 reformatted, 1 unchanged\n"),
+        "{stderr_text}"
+    );
+
+    ws.write("src/b.rs", UNFORMATTED);
+    let output = ws.cargo_afmt("", &["-q"]);
+    assert!(output.status.success());
+    assert_eq!(stderr(&output), "");
+    assert_eq!(stdout(&output), "");
+}
+
+#[test]
 fn all_targets_are_formatted() {
     let ws = TestDir::new("targets");
     ws.write("Cargo.toml", &package("a", "2024"));
@@ -85,10 +122,11 @@ fn edition_of_each_target() {
     ws.write("src/old.rs", GEN_NAME);
     let output = ws.cargo_afmt("", &["-v"]);
     assert!(output.status.success(), "{}", stderr(&output));
+    let stderr = stderr(&output);
     assert!(
-        stdout(&output).contains("[bin (2021)] src/old.rs"),
-        "{}",
-        stdout(&output)
+        stderr.contains("  Formatting a v0.1.0 (bin `old`, edition 2021): 1 file\n")
+            && stderr.contains("             src/old.rs\n"),
+        "{stderr}"
     );
     assert_eq!(
         ws.read("src/old.rs"),

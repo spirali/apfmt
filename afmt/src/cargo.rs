@@ -17,12 +17,14 @@ pub struct Metadata {
 #[derive(Debug, Deserialize)]
 pub struct Package {
     pub name: String,
+    pub version: String,
     pub manifest_path: PathBuf,
     pub targets: Vec<Target>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct Target {
+    pub name: String,
     /// `lib`, `bin`, ...
     pub kind: Vec<String>,
     /// The root file of the target's module tree
@@ -114,11 +116,11 @@ mod tests {
             r#"{
                 "workspace_root": "/ws",
                 "packages": [
-                    {"name": "a", "manifest_path": "/ws/a/Cargo.toml", "targets": [
-                        {"kind": ["lib"], "src_path": "/ws/a/src/lib.rs", "edition": "2021"}
+                    {"name": "a", "version": "0.1.0", "manifest_path": "/ws/a/Cargo.toml", "targets": [
+                        {"name": "a", "kind": ["lib"], "src_path": "/ws/a/src/lib.rs", "edition": "2021"}
                     ], "other": 1},
-                    {"name": "b", "manifest_path": "/ws/b/Cargo.toml", "targets": [
-                        {"kind": ["bin"], "src_path": "/ws/b/src/main.rs", "edition": "2024"}
+                    {"name": "b", "version": "0.1.0", "manifest_path": "/ws/b/Cargo.toml", "targets": [
+                        {"name": "b", "kind": ["bin"], "src_path": "/ws/b/src/main.rs", "edition": "2024"}
                     ]}
                 ]
             }"#,

@@ -3,7 +3,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use afmt::{FormatOptions, error_messages, format_code};
+use afmt::report::ColorWhen;
+use afmt::{FormatOptions, error_messages, format_code, report};
 use afmt_core::Edition;
 use clap::Parser;
 
@@ -31,12 +32,16 @@ struct Cli {
     #[arg(long, value_parser = Edition::from_str)]
     edition: Option<Edition>,
 
+    /// When to colour the messages [default: auto, or `CARGO_TERM_COLOR`]
+    #[arg(long, value_enum, value_name = "WHEN")]
+    color: Option<ColorWhen>,
+
     #[command(flatten)]
     format: FormatOptions,
 }
 
 fn exit_with_error(message: &str) -> ! {
-    eprintln!("afmt: {message}");
+    report::error("afmt", message);
     std::process::exit(1);
 }
 
@@ -64,6 +69,7 @@ fn write_output(out: &str) {
 
 fn main() {
     let cli = Cli::parse();
+    report::set_color(cli.color);
 
     let mut cfg = cli
         .format

@@ -1,6 +1,7 @@
 //! What `afmt` and `cargo afmt` share: the options of formatting and the messages about the result
 
 pub mod cargo;
+pub mod report;
 
 use std::path::{Path, PathBuf};
 

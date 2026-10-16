@@ -6,8 +6,10 @@ use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
+use std::time::Instant;
 
 use afmt::cargo::{Selection, metadata, select_packages};
+use afmt::report::{self, ColorWhen, FAILURE, SUCCESS, styled};
 use afmt::{FormatOptions, error_messages, format_code};
 use afmt_core::{Config, Edition, canonical_path};
 use clap::Parser;
@@ -37,7 +39,7 @@ struct Cli {
     #[arg(long, value_name = "PATH")]
     manifest_path: Option<PathBuf>,
 
-    /// Print the targets and the files of each, and the files that were reformatted
+    /// Print the targets and the files of each
     #[arg(short, long)]
     verbose: bool,
 
@@ -48,6 +50,10 @@ struct Cli {
     /// The number of files formatted in parallel [default: the number of CPUs]
     #[arg(short, long, value_name = "N")]
     jobs: Option<NonZeroUsize>,
+
+    /// When to colour the messages [default: auto, or `CARGO_TERM_COLOR`]
+    #[arg(long, value_enum, value_name = "WHEN")]
+    color: Option<ColorWhen>,
 
     #[command(flatten)]
     format: FormatOptions,
@@ -175,7 +181,7 @@ fn parallel_map<T: Sync, R: Send>(
 }
 
 fn exit_with_error(message: &str) -> ! {
-    eprintln!("cargo-afmt: {message}");
+    report::error("cargo-afmt", message);
     std::process::exit(1);
 }
 
@@ -203,33 +209,42 @@ fn files_to_format(cli: &Cli) -> Vec<SourceFile> {
             let edition = target
                 .edition()
                 .unwrap_or_else(|error| exit_with_error(&error));
-            if cli.verbose {
-                println!(
-                    "[{} ({edition})] {}",
-                    target.kind.join(", "),
-                    display_path(&target.src_path)
-                );
-            }
             let tree = afmt_core::module_files(&target.src_path, edition);
             if !cli.quiet {
                 for warning in &tree.warnings {
-                    eprintln!("warning: {warning}");
+                    report::warning(warning);
                 }
             }
+            // The files that no target before has
+            let mut new_files = Vec::new();
             for (path, code) in tree.files {
                 match files.get(&path) {
                     None => {
-                        if cli.verbose {
-                            println!("    {}", display_path(&path));
-                        }
+                        new_files.push(display_path(&path));
                         files.insert(path, (edition, code));
                     }
-                    Some(&(first, _)) if first != edition && !cli.quiet => eprintln!(
-                        "warning: {} is in targets of editions {first} and {edition}; \
-                         formatted as {first}",
-                        display_path(&path)
-                    ),
+                    Some(&(first, _)) if first != edition && !cli.quiet => {
+                        report::warning(&format!(
+                            "{} is in targets of editions {first} and {edition}; \
+                             formatted as {first}",
+                            display_path(&path)
+                        ));
+                    }
                     Some(_) => {}
+                }
+            }
+            if cli.verbose {
+                let text = format!(
+                    "{} v{} ({} `{}`, edition {edition}): {}",
+                    package.name,
+                    package.version,
+                    target.kind.join(", "),
+                    target.name,
+                    count(new_files.len(), "file", "files"),
+                );
+                report::status("Formatting", SUCCESS, &text);
+                for file in &new_files {
+                    report::status_detail(file);
                 }
             }
         }
@@ -251,6 +266,8 @@ fn main() {
         args.remove(1);
     }
     let cli = Cli::parse_from(args);
+    report::set_color(cli.color);
+    let start = Instant::now();
 
     let files = files_to_format(&cli);
     let threads = cli
@@ -266,8 +283,7 @@ fn main() {
         format_file(file, config, &cli.format, cli.check)
     });
 
-    let mut failed = false;
-    let mut changed = false;
+    let (mut changed, mut failed, mut unchanged) = (0, 0, 0);
     for (SourceFile { path, .. }, result) in files.iter().zip(&results) {
         for message in &result.messages {
             if result.outcome == Outcome::Failed || !cli.quiet {
@@ -275,19 +291,61 @@ fn main() {
             }
         }
         match result.outcome {
-            Outcome::Failed => failed = true,
+            Outcome::Failed => failed += 1,
             Outcome::Changed => {
-                changed = true;
-                if cli.check && !cli.quiet {
+                changed += 1;
+                if !cli.quiet && cli.check {
+                    // The list for scripts, on stdout
                     println!("{}", display_path(path));
-                } else if cli.verbose {
-                    println!("reformatted {}", display_path(path));
+                } else if !cli.quiet {
+                    report::status("Reformatted", SUCCESS, &display_path(path));
                 }
             }
-            Outcome::Unchanged => {}
+            Outcome::Unchanged => unchanged += 1,
         }
     }
-    if failed || (cli.check && changed) {
+    if !cli.quiet {
+        print_summary(files.len(), [changed, failed, unchanged], cli.check, start);
+    }
+    if failed > 0 || (cli.check && changed > 0) {
         std::process::exit(1);
     }
+}
+
+/// `n` and the noun for it: `1 file`, `2 files`
+fn count(n: usize, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+
+/// The last status line: `Finished 3 files in 0.12s: 1 reformatted, 1 failed, 1 unchanged`
+fn print_summary(
+    files: usize,
+    [changed, failed, unchanged]: [usize; 3],
+    check: bool,
+    start: Instant,
+) {
+    let changed_text = if check {
+        "would be reformatted"
+    } else {
+        "reformatted"
+    };
+    let parts: Vec<_> = [
+        (changed, changed_text.to_string()),
+        (failed, styled(FAILURE, "failed")),
+        (unchanged, "unchanged".to_string()),
+    ]
+    .into_iter()
+    .filter(|(n, _)| *n > 0)
+    .map(|(n, text)| format!("{n} {text}"))
+    .collect();
+    let mut text = format!(
+        "{} in {:.2}s",
+        count(files, "file", "files"),
+        start.elapsed().as_secs_f64()
+    );
+    if !parts.is_empty() {
+        text = format!("{text}: {}", parts.join(", "));
+    }
+    let style = if failed > 0 { FAILURE } else { SUCCESS };
+    report::status("Finished", style, &text);
 }

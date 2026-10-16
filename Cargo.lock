@@ -7,6 +7,8 @@ name = "afmt"
 version = "0.1.0"
 dependencies = [
  "afmt-core",
+ "anstream",
+ "anstyle",
  "clap",
  "serde",
  "serde_json",
