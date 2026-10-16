@@ -1,84 +1,8 @@
 //! The command line: finding and reading the rustfmt config file, `--edition`
 
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+mod common;
 
-/// A fresh directory for one test, with an empty `home/` that the commands use as the home
-/// directory (and `home/.config` as the user's configuration directory), so that the config files
-/// of the user running the tests are never read
-struct TestDir {
-    root: PathBuf,
-}
-
-impl TestDir {
-    fn new(name: &str) -> TestDir {
-        let root = std::env::temp_dir().join(format!("afmt-cli-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(root.join("home/.config")).unwrap();
-        TestDir { root }
-    }
-
-    fn path(&self, path: &str) -> PathBuf {
-        self.root.join(path)
-    }
-
-    /// Writes `content` into the file at `path`, creating its directories
-    fn write(&self, path: &str, content: &str) -> PathBuf {
-        let path = self.path(path);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, content).unwrap();
-        path
-    }
-
-    /// afmt run in `cwd` with `args`, reading `stdin`
-    fn afmt(&self, cwd: &Path, args: &[&str], stdin: &str) -> Output {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_afmt"))
-            .args(args)
-            .current_dir(cwd)
-            .env("HOME", self.path("home"))
-            .env("XDG_CONFIG_HOME", self.path("home/.config"))
-            .env("APPDATA", self.path("home/.config"))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        child
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(stdin.as_bytes())
-            .unwrap();
-        child.wait_with_output().unwrap()
-    }
-
-    /// The output of afmt formatting the file at `path` (run in the test directory)
-    fn format_file(&self, path: &Path, args: &[&str]) -> String {
-        let mut all_args = args.to_vec();
-        all_args.push(path.to_str().unwrap());
-        success(self.afmt(&self.root, &all_args, ""))
-    }
-}
-
-impl Drop for TestDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.root);
-    }
-}
-
-fn success(output: Output) -> String {
-    assert!(
-        output.status.success(),
-        "afmt failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout).unwrap()
-}
-
-fn stderr(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
-}
+use common::{TestDir, stderr, success};
 
 /// A source whose indentation shows `tab_spaces`
 const NESTED: &str = "fn main() { if x { y(); } }\n";
@@ -369,4 +293,6 @@ fn broken_cargo_toml_fails() {
     );
     // --no-config does not read it
     assert_eq!(dir.format_file(&file, &["--no-config"]), indented(4));
+    // nor does --edition
+    assert_eq!(dir.format_file(&file, &["--edition", "2021"]), indented(4));
 }

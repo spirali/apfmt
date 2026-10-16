@@ -22,6 +22,35 @@ pub struct UnsupportedSyntax {
     pub snippet: String,
 }
 
+impl UnsupportedSyntax {
+    /// The message about it, `line:column: not supported yet: what{note}: snippet`
+    pub fn message(&self, note: &str) -> String {
+        format!(
+            "{}:{}: not supported yet: {}{note}: {}",
+            self.line, self.column, self.what, self.snippet
+        )
+    }
+}
+
+/// The error as text: a syntax error per line, the unsupported syntax as `line:column: what: snippet`
+/// per line
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::SyntaxErrors(errors) => {
+                let errors: Vec<_> = errors.iter().map(|e| format!("{e:?}")).collect();
+                write!(f, "{}", errors.join("\n"))
+            }
+            Error::IoError(error) => write!(f, "{error}"),
+            Error::GenericError(message) => write!(f, "{message}"),
+            Error::Unsupported(unsupported) => {
+                let lines: Vec<_> = unsupported.iter().map(|u| u.message("")).collect();
+                write!(f, "{}", lines.join("\n"))
+            }
+        }
+    }
+}
+
 impl From<std::io::Error> for Error {
     fn from(e: std::io::Error) -> Self {
         Error::IoError(e)

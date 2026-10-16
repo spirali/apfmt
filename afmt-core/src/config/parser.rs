@@ -11,7 +11,7 @@ use crate::config::Config;
 /// Applies the config file at `path` to `cfg`. The format is told by the name: in a rustfmt config
 /// file (a name ending with `rustfmt.toml`), the options that afmt does not have are ignored; in an
 /// afmt one, they are an error.
-pub fn read_config(path: &Path, cfg: &mut Config) -> crate::Result<()> {
+pub(crate) fn read_config(path: &Path, cfg: &mut Config) -> crate::Result<()> {
     let toml = TomlConfig::load(path)?;
     if !is_rustfmt_config(path) {
         toml.check_unknown()?;
@@ -65,16 +65,19 @@ fn set_value_bound(out: &mut u32, v: Option<u32>, bound: u32) {
 }
 
 impl TomlConfig {
-    pub fn load(path: &Path) -> crate::Result<TomlConfig> {
+    fn load(path: &Path) -> crate::Result<TomlConfig> {
         let toml = std::fs::read_to_string(path)?;
         TomlConfig::parse(&toml)
     }
 
-    pub fn parse(toml: &str) -> crate::Result<TomlConfig> {
-        let cfg: TomlConfig = toml::from_str(toml)
-            .map_err(|e| GenericError(format!("Could not parse afmt config: {}", e)))?;
+    fn parse(toml: &str) -> crate::Result<TomlConfig> {
+        // The caller names the file
+        let cfg: TomlConfig =
+            toml::from_str(toml).map_err(|e| GenericError(e.to_string().trim_end().to_string()))?;
         if cfg.max_width == Some(0) {
-            return Err(GenericError("Invalid max width".to_string()));
+            return Err(GenericError(
+                "`max_width` must be greater than 0".to_string(),
+            ));
         }
         Ok(cfg)
     }
@@ -90,12 +93,12 @@ impl TomlConfig {
             .map(|name| format!("`{name}`"))
             .collect();
         Err(GenericError(format!(
-            "Unknown options in afmt config: {}",
+            "unknown options: {}",
             names.join(", ")
         )))
     }
 
-    pub fn apply(&self, config: &mut Config) {
+    fn apply(&self, config: &mut Config) {
         set_value(&mut config.tab_spaces, self.tab_spaces);
         set_value(
             &mut config.blank_lines_upper_bound,
@@ -219,6 +222,7 @@ impl Heuristics {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::TempDir;
 
     fn apply(toml: &str) -> Config {
         let mut config = Config::default();
@@ -241,8 +245,9 @@ mod tests {
 
     #[test]
     fn afmt_options() {
-        let config =
-            apply("trailing_comment_align_threshold = 0\nnormalize_comment_sigil_spacing = false\n");
+        let config = apply(
+            "trailing_comment_align_threshold = 0\nnormalize_comment_sigil_spacing = false\n",
+        );
         assert_eq!(config.trailing_comment_align_threshold, 0);
         assert!(!config.normalize_comment_sigil_spacing);
     }
@@ -271,8 +276,7 @@ mod tests {
 
     #[test]
     fn unknown_options_are_ignored_in_rustfmt_config_only() {
-        let dir = std::env::temp_dir().join(format!("afmt-read-config-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = TempDir::new("read-config", &[]);
         let toml = "hard_tabs = true\nmax_width = 80\n";
         for (name, ok) in [
             ("rustfmt.toml", true),
@@ -290,7 +294,6 @@ mod tests {
                 assert_eq!(config.max_width, 80);
             }
         }
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

@@ -19,25 +19,22 @@ fn separator_doc(kind: SyntaxKind) -> DocId {
 /// Puts a single space after the opening sigil of a line comment (`//a` -> `// a`) and after the
 /// opening and before the closing sigil of a single-line block comment (`/*a*/` -> `/* a */`), as the
 /// Style Guide recommends, when the comment text starts with a letter or a digit; other comments
-/// (empty ones, separators `//-----`, commented-out code `//#[cfg(x)]`, ...) are left alone, and so
-/// are doc comments (adding a space to some lines of a doc comment would change the indentation of
-/// its Markdown), `////...` and multi-line block comments. Returns `None` when the text stays as it is.
+/// (empty ones, separators `//-----`, commented-out code `//#[cfg(x)]`, `////...`, ...) and multi-line
+/// block comments are left alone. Returns `None` when the text stays as it is. Not for doc comments
+/// (`is_doc_comment`): adding a space to some lines of a doc comment would change the indentation
+/// of its Markdown.
 pub(super) fn normalize_comment_sigil_spacing(text: &str) -> Option<String> {
     let starts_with_alphanumeric = |s: &str| s.starts_with(char::is_alphanumeric);
     if let Some(rest) = text.strip_prefix("//") {
-        let skip = rest.starts_with(['/', '!']) || !starts_with_alphanumeric(rest);
-        return (!skip).then(|| format!("// {rest}"));
+        return starts_with_alphanumeric(rest).then(|| format!("// {rest}"));
     }
     let inner = text.strip_prefix("/*")?.strip_suffix("*/")?;
-    if inner.contains('\n') || inner.starts_with('*') || inner.starts_with('!') {
-        return None;
-    }
     let trimmed = inner.trim();
-    if !starts_with_alphanumeric(trimmed) {
-        return None;
-    }
-    let normalized = format!("/* {trimmed} */");
-    (normalized != text).then_some(normalized)
+    // `/* {trimmed} */` already
+    let normalized =
+        inner.len() == trimmed.len() + 2 && inner.starts_with(' ') && inner.ends_with(' ');
+    (!normalized && !inner.contains('\n') && starts_with_alphanumeric(trimmed))
+        .then(|| format!("/* {trimmed} */"))
 }
 
 /// A line of a comment without its trailing whitespace, which the Style Guide forbids; a line of a
@@ -347,6 +344,7 @@ mod tests {
             ("/*a*/", Some("/* a */")),
             ("/*  a  */", Some("/* a */")),
             ("/* a */", None),
+            ("/* a\t*/", Some("/* a */")),
             ("/*a\nb*/", None),
         ] {
             assert_eq!(

@@ -1,3 +1,5 @@
+use std::path::{Path, PathBuf};
+
 use ra_ap_syntax::TextSize;
 use ra_ap_syntax::ast::HasAttrs;
 
@@ -21,4 +23,19 @@ pub(crate) fn line_column(code: &str, offset: TextSize) -> (usize, usize) {
         before.matches('\n').count() + 1,
         before[line_start..].chars().count() + 1,
     )
+}
+
+/// `path` absolute, with symbolic links and `..` resolved; as far as it can be (`path` itself when
+/// it does not exist)
+pub fn canonical_path(path: &Path) -> PathBuf {
+    let path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    path.canonicalize().unwrap_or(path)
+}
+
+/// The first of the files `names` that exists in `dir`
+pub(crate) fn file_in_dir(dir: &Path, names: &[&str]) -> Option<PathBuf> {
+    names
+        .iter()
+        .map(|name| dir.join(name))
+        .find(|path| path.is_file())
 }

@@ -18,6 +18,7 @@ pub(crate) use builder::Builder;
 use frag::{Branch, Branches};
 pub(crate) use frag::{Edge, Frag};
 use ra_ap_syntax::{SyntaxNode, SyntaxToken, TextRange};
+use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use trivia::{multiline_comment_lines, normalize_comment_sigil_spacing, trim_comment_line};
@@ -461,19 +462,22 @@ impl<'a> Formatter<'a> {
             }
             return self.make_node(DocNode::Align(doc_id));
         }
-        let trimmed: Vec<_> = token
-            .text()
-            .split('\n')
-            .map(|line| trim_comment_line(line, doc))
-            .collect();
-        let trimmed = trimmed.join("\n");
-        let text = self
-            .config
-            .normalize_comment_sigil_spacing
+        let source = token.text();
+        // Allocated only when the text changes
+        let trimmed: Cow<str> = if source.contains('\n') {
+            let lines: Vec<_> = source
+                .split('\n')
+                .map(|line| trim_comment_line(line, doc))
+                .collect();
+            lines.join("\n").into()
+        } else {
+            trim_comment_line(source, doc).into()
+        };
+        let normalized = (self.config.normalize_comment_sigil_spacing && !doc)
             .then(|| normalize_comment_sigil_spacing(&trimmed))
-            .flatten()
-            .unwrap_or(trimmed);
-        self.make_node(if text == token.text() {
+            .flatten();
+        let text = normalized.map_or(trimmed, Cow::Owned);
+        self.make_node(if text == source {
             DocNode::Token(token.clone())
         } else {
             DocNode::Text(text.into())

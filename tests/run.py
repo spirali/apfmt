@@ -150,7 +150,9 @@ def run_cmd(
     return proc.stdout, proc.stderr
 
 
-def config_path_for(source: Path, suffix: str = CONFIG_SUFFIX) -> Path:
+def sibling_path(source: Path, suffix: str) -> Path:
+    """The file of the test `source` with `suffix` (`EXPECTED_SUFFIX`, `CONFIG_SUFFIX`, ...):
+    `<name>.rs` -> `<name><suffix>`"""
     return source.with_name(source.name.removesuffix(".rs") + suffix)
 
 
@@ -158,11 +160,10 @@ def config_args(source: Path | None, args, afmt: bool = False) -> list[str]:
     """The options passing the config of a test to rustfmt or (with `afmt`) afmt: an explicit
     config file, so that neither looks one up, and the edition unless the config file sets it.
     rustfmt gets `<name>.rustfmt.toml`; afmt gets `<name>.afmt.toml`, else `<name>.rustfmt.toml`;
-    both get an empty file when the test has none. afmt always gets the edition (also the one of its
-    config file), since it also reads the edition from the nearest `Cargo.toml`, as `cargo fmt`
-    does. Raises `CommandError` for a malformed config file."""
+    both get an empty file when the test has none. Raises `CommandError` for a malformed config
+    file."""
     suffixes = [AFMT_CONFIG_SUFFIX, CONFIG_SUFFIX] if afmt else [CONFIG_SUFFIX]
-    configs = [config_path_for(source, s) for s in suffixes] if source else []
+    configs = [sibling_path(source, s) for s in suffixes] if source else []
     config = next((c for c in configs if c.exists()), None)
     if config is None:
         return ["--config-path", str(args.empty_config), "--edition", args.edition]
@@ -170,12 +171,7 @@ def config_args(source: Path | None, args, afmt: bool = False) -> list[str]:
         settings = tomllib.loads(config.read_text())
     except tomllib.TOMLDecodeError as e:
         raise CommandError(f"{config.name} is not valid TOML: {e}")
-    if "edition" not in settings:
-        edition = ["--edition", args.edition]
-    elif afmt:
-        edition = ["--edition", str(settings["edition"])]
-    else:
-        edition = []
+    edition = [] if "edition" in settings else ["--edition", args.edition]
     return ["--config-path", str(config), *edition]
 
 
@@ -207,7 +203,10 @@ def afmt_options(unsupported: bool) -> list[str]:
 
 
 def run_afmt(code: str, args, source: Path | None) -> tuple[str, str]:
-    """afmt's output and stderr for the test `source`, see `afmt_options` and `config_args`"""
+    """afmt's output and stderr for the test `source`, see `afmt_options` and `config_args`.
+    afmt runs in the temporary directory of the tests: it reads the edition from the nearest
+    `Cargo.toml` of its working directory (as `cargo fmt` passes it), which would override the
+    one of the config file of a test"""
     unsupported = source is not None and is_unsupported_test(source)
     return run_cmd(
         [
@@ -218,7 +217,7 @@ def run_afmt(code: str, args, source: Path | None) -> tuple[str, str]:
         ],
         stdin=code,
         timeout=args.timeout,
-        cwd=ROOT_DIR,
+        cwd=args.empty_config.parent,
     )
 
 
@@ -233,17 +232,13 @@ def make_diff(expected: str, actual: str, a_name: str, b_name: str) -> list[str]
     )
 
 
-def expected_path_for(source: Path) -> Path:
-    return source.with_name(source.name.removesuffix(".rs") + EXPECTED_SUFFIX)
-
-
 def run_test(source: Path, args) -> Result:
     name = source.relative_to(SOURCES_DIR).as_posix()
     result = Result(name, CURRENT_DIR / name.removesuffix(".rs"))
     result.outputs["input.rs"] = code = source.read_text()
 
     unsupported = is_unsupported_test(source)
-    expected_path = expected_path_for(source)
+    expected_path = sibling_path(source, EXPECTED_SUFFIX)
     if expected_path.exists():
         expected_name = "expected.rs"
         expected = expected_path.read_text()
@@ -269,7 +264,7 @@ def run_test(source: Path, args) -> Result:
     except CommandError as e:
         result.failures.append(Failure("afmt error", str(e)))
         return result
-    result.outputs["parser"] = actual
+    result.outputs["afmt.rs"] = actual
 
     if unsupported and UNSUPPORTED_MESSAGE not in stderr:
         result.failures.append(
@@ -286,7 +281,7 @@ def run_test(source: Path, args) -> Result:
             Failure(
                 "mismatch",
                 f"afmt output differs from {expected_name}",
-                make_diff(expected, actual, expected_name, "parser"),
+                make_diff(expected, actual, expected_name, "afmt.rs"),
             )
         )
         return result
@@ -303,7 +298,7 @@ def run_test(source: Path, args) -> Result:
             Failure(
                 "not idempotent",
                 "afmt(afmt(input)) differs from afmt(input)",
-                make_diff(actual, second, "parser", "afmt2.rs"),
+                make_diff(actual, second, "afmt.rs", "afmt2.rs"),
             )
         )
     return result
@@ -349,7 +344,7 @@ def print_source(title: str, code: str) -> None:
     )
 
 
-REPORT_ORDER = ("input.rs", "parser", "expected.rs", "rustfmt.rs", "afmt2.rs")
+REPORT_ORDER = ("input.rs", "afmt.rs", "expected.rs", "rustfmt.rs", "afmt2.rs")
 
 
 def report_failure(result: Result, max_diff_lines: int, verbose: bool) -> None:
@@ -507,12 +502,12 @@ def list_sources(sources: list[Path], show_reference: bool) -> None:
         return
     width = max((len(n) for n in names), default=0)
     for name, s in zip(names, sources):
-        if expected_path_for(s).exists():
+        if sibling_path(s, EXPECTED_SUFFIX).exists():
             reference = Text("expected.rs", style="bold cyan")
         else:
             reference = Text("rustfmt", style="dark_orange")
         for suffix in [CONFIG_SUFFIX, AFMT_CONFIG_SUFFIX]:
-            if config_path_for(s, suffix).exists():
+            if sibling_path(s, suffix).exists():
                 reference += Text(f" + {suffix.removeprefix('.')}", style="magenta")
         console.print(Text(f"{name:<{width}}  ") + reference, soft_wrap=True)
 
@@ -528,6 +523,8 @@ def prepare_tools(args, need_rustfmt: bool = True) -> None:
     if not args.afmt.exists():
         console.print(f"[bold red]afmt binary not found:[/bold red] {args.afmt}")
         sys.exit(2)
+    # afmt does not run in the current directory (`run_afmt`)
+    args.afmt = args.afmt.resolve()
     if need_rustfmt:
         if shutil.which(args.rustfmt) is None:
             console.print(f"[bold red]rustfmt not found:[/bold red] {args.rustfmt}")

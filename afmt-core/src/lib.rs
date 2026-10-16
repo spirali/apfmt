@@ -7,8 +7,11 @@ mod error;
 mod format;
 mod formatter;
 mod layout;
+mod modules;
 mod resolver;
 mod rewrite;
+#[cfg(test)]
+mod test_utils;
 mod utils;
 
 use crate::check::check_result;
@@ -17,14 +20,15 @@ use crate::format::format_source_file;
 use crate::formatter::{Formatter, Unsupported};
 use crate::rewrite::rewrite_source;
 use crate::utils::line_column;
-pub use config::cargo::{cargo_edition, find_cargo_manifest};
+pub use config::cargo::{CARGO_MANIFEST_NAME, find_cargo_manifest};
 pub use error::{Error, Result, UnsupportedSyntax};
 pub use ra_ap_syntax::Edition;
 use ra_ap_syntax::{AstNode, WalkEvent};
 use ra_ap_syntax::{NodeOrToken, SourceFile};
 
-pub use crate::config::lookup::{find_config, config_in_dir};
-pub use crate::config::parser::read_config;
+pub use crate::config::source::{ConfigOptions, config_for_source};
+pub use crate::modules::{ModuleFiles, module_files};
+pub use crate::utils::canonical_path;
 
 fn print_tree(source_file: &SourceFile) {
     let mut depth = 0;

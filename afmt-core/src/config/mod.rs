@@ -1,6 +1,7 @@
 pub(crate) mod cargo;
-pub(crate) mod parser;
 pub(crate) mod lookup;
+pub(crate) mod parser;
+pub(crate) mod source;
 
 use ra_ap_syntax::Edition;
 

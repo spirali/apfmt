@@ -1,6 +1,10 @@
 //! The command line interface: input, output and errors
 
-use std::process::{Command, Stdio};
+mod common;
+
+use std::process::Command;
+
+use common::output_with_stdin;
 
 /// afmt without any rustfmt config file, which would otherwise be looked up from the current
 /// directory and in the home directory of the user running the tests
@@ -24,14 +28,7 @@ fn missing_file_is_an_error_not_a_panic() {
 
 #[test]
 fn syntax_error_exits_with_code_1() {
-    let mut child = afmt()
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    std::io::Write::write_all(&mut child.stdin.take().unwrap(), b"fn f( {").unwrap();
-    let output = child.wait_with_output().unwrap();
+    let output = output_with_stdin(&mut afmt(), "fn f( {");
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
 }
@@ -45,13 +42,7 @@ fn output_ends_with_one_newline_unless_empty() {
         ("fn f() {}", "fn f() {}\n"),
         ("fn f() {}\n\n", "fn f() {}\n"),
     ] {
-        let mut child = afmt()
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
-        std::io::Write::write_all(&mut child.stdin.take().unwrap(), input.as_bytes()).unwrap();
-        let output = child.wait_with_output().unwrap();
+        let output = output_with_stdin(&mut afmt(), input);
         assert_eq!(
             String::from_utf8(output.stdout).unwrap(),
             expected,

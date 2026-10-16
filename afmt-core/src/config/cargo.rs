@@ -7,6 +7,7 @@ use ra_ap_syntax::Edition;
 use serde::Deserialize;
 
 use crate::Error::GenericError;
+use crate::utils::{canonical_path, file_in_dir};
 
 pub const CARGO_MANIFEST_NAME: &str = "Cargo.toml";
 
@@ -47,16 +48,14 @@ struct WorkspacePackage {
 /// The nearest `Cargo.toml` in `dir` or its ancestors: the manifest of the package of the sources in
 /// `dir`, as cargo finds it
 pub fn find_cargo_manifest(dir: &Path) -> Option<PathBuf> {
-    let dir = std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
-    let dir = dir.canonicalize().unwrap_or(dir);
-    dir.ancestors()
-        .map(|dir| dir.join(CARGO_MANIFEST_NAME))
-        .find(|path| path.is_file())
+    canonical_path(dir)
+        .ancestors()
+        .find_map(|dir| file_in_dir(dir, &[CARGO_MANIFEST_NAME]))
 }
 
 /// The edition of the package of the manifest at `path`; `None` for a virtual workspace (a manifest
 /// without `[package]`)
-pub fn cargo_edition(path: &Path) -> crate::Result<Option<Edition>> {
+pub(crate) fn cargo_edition(path: &Path) -> crate::Result<Option<Edition>> {
     let manifest = read_manifest(path)?;
     let Some(package) = &manifest.package else {
         return Ok(None);
@@ -89,7 +88,8 @@ pub fn cargo_edition(path: &Path) -> crate::Result<Option<Edition>> {
 }
 
 fn read_manifest(path: &Path) -> crate::Result<Manifest> {
-    let toml = std::fs::read_to_string(path)?;
+    let toml =
+        std::fs::read_to_string(path).map_err(|error| manifest_error(path, &error.to_string()))?;
     toml::from_str(&toml).map_err(|error| manifest_error(path, error.to_string().trim_end()))
 }
 
@@ -105,9 +105,9 @@ fn workspace_root(path: &Path, manifest: &Manifest, package: &Package) -> crate:
     if manifest.workspace.is_some() {
         return Ok(path.to_path_buf());
     }
-    for dir in package_dir.ancestors().skip(1) {
-        let candidate = dir.join(CARGO_MANIFEST_NAME);
-        if candidate.is_file() && read_manifest(&candidate)?.workspace.is_some() {
+    let manifests = package_dir.ancestors().skip(1);
+    for candidate in manifests.filter_map(|dir| file_in_dir(dir, &[CARGO_MANIFEST_NAME])) {
+        if read_manifest(&candidate)?.workspace.is_some() {
             return Ok(candidate);
         }
     }
@@ -120,18 +120,7 @@ fn workspace_root(path: &Path, manifest: &Manifest, package: &Package) -> crate:
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A fresh directory with the files `(path, content)`
-    fn create_dir(name: &str, files: &[(&str, &str)]) -> PathBuf {
-        let root = std::env::temp_dir().join(format!("afmt-cargo-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        for (path, content) in files {
-            let path = root.join(path);
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(path, content).unwrap();
-        }
-        root
-    }
+    use crate::test_utils::TempDir;
 
     fn edition_of(root: &Path, manifest: &str) -> crate::Result<Option<Edition>> {
         cargo_edition(&root.join(manifest))
@@ -139,7 +128,7 @@ mod tests {
 
     #[test]
     fn package_edition() {
-        let root = create_dir(
+        let root = TempDir::new(
             "package",
             &[(
                 "Cargo.toml",
@@ -150,22 +139,20 @@ mod tests {
             edition_of(&root, "Cargo.toml").unwrap(),
             Some(Edition::Edition2021)
         );
-        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn missing_edition_is_2015() {
-        let root = create_dir("default", &[("Cargo.toml", "[package]\nname = \"a\"\n")]);
+        let root = TempDir::new("default", &[("Cargo.toml", "[package]\nname = \"a\"\n")]);
         assert_eq!(
             edition_of(&root, "Cargo.toml").unwrap(),
             Some(Edition::Edition2015)
         );
-        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn virtual_workspace_has_no_edition() {
-        let root = create_dir(
+        let root = TempDir::new(
             "virtual",
             &[(
                 "Cargo.toml",
@@ -173,12 +160,11 @@ mod tests {
             )],
         );
         assert_eq!(edition_of(&root, "Cargo.toml").unwrap(), None);
-        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn inherited_edition() {
-        let root = create_dir(
+        let root = TempDir::new(
             "inherited",
             &[
                 (
@@ -208,12 +194,11 @@ mod tests {
             edition_of(&root, "elsewhere/b/Cargo.toml").unwrap(),
             Some(Edition::Edition2021)
         );
-        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn package_and_workspace_in_one_manifest() {
-        let root = create_dir(
+        let root = TempDir::new(
             "root-package",
             &[(
                 "Cargo.toml",
@@ -225,12 +210,11 @@ mod tests {
             edition_of(&root, "Cargo.toml").unwrap(),
             Some(Edition::Edition2024)
         );
-        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn errors() {
-        let root = create_dir(
+        let root = TempDir::new(
             "errors",
             &[
                 ("bad-edition/Cargo.toml", "[package]\nedition = \"2020\"\n"),
@@ -248,12 +232,11 @@ mod tests {
             };
             assert!(message.contains(manifest), "{message}");
         }
-        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn nearest_manifest() {
-        let root = create_dir(
+        let root = TempDir::new(
             "nearest",
             &[
                 ("Cargo.toml", "[workspace]\n"),
@@ -263,6 +246,5 @@ mod tests {
         );
         let found = find_cargo_manifest(&root.join("a/src/bin")).unwrap();
         assert_eq!(found, root.join("a/Cargo.toml").canonicalize().unwrap());
-        std::fs::remove_dir_all(root).unwrap();
     }
 }
