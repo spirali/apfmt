@@ -374,8 +374,7 @@ pub(super) fn format_range<R: RangeItem>(
             builder.push_token(op, Tight);
             builder.push(format_bound(end));
         }
-        // Spaced from an operator after it like a word: `2.. =>`, not `2..=>` (`..=` `>`)
-        None => builder.push(fmt.token_with_edges(op, Tight, Word)),
+        None => builder.push(fmt.postfix_token(op)),
     }
     builder.into_frag()
 }
@@ -858,7 +857,7 @@ fn postfix_chain_parts(fmt: &Formatter, expr: Expr) -> HeadLayouts {
             }
             Expr::TryExpr(e) => {
                 let last = elements.last_mut().map_or(&mut root, |(_, tail)| tail);
-                last.push_token(e.question_mark_token().unwrap(), Tight);
+                last.push(fmt.postfix_token(e.question_mark_token().unwrap()));
             }
             Expr::IndexExpr(e) => {
                 // Broken only when it does not fit on one line: `a[i + j]`

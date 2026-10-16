@@ -105,7 +105,7 @@ pub(super) fn compute_space(left: Edge, right: Edge) -> DocId {
         (_, BraceOpen) => SPACE_DOC,                   // f() {
         (Operator, _) | (_, Operator) => SPACE_DOC,    // a + b
         (Word, Open) => EMPTY_DOC,                     // foo(
-        (Close, Open) => EMPTY_DOC,                    // )(
+        (Close | BraceClose, Open) => EMPTY_DOC,       // )(  { .. }(
         (Word, Word) => SPACE_DOC,                     // fn foo
         (Close, Word) => SPACE_DOC,
         _ => SPACE_DOC,

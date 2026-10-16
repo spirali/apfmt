@@ -107,6 +107,12 @@ impl<'a> Formatter<'a> {
         )
     }
 
+    /// A postfix operator, `?` or a `..` without an end: no space in front of it, spaced like a word
+    /// after it (`x? == y`, `x? as u8`, `2.. =>`, not `2..=>`), but tight to `.`, `?`, `(`, `[`
+    pub fn postfix_token(&self, token: SyntaxToken) -> Frag {
+        self.token_with_edges(token, Edge::Tight, Edge::Word)
+    }
+
     /// Text that is not in the source (e.g. an inserted `"C"`), without a cursor
     pub fn text(&self, text: &str, edge: Edge) -> Frag {
         let str_id = self.make_string(text.into());
