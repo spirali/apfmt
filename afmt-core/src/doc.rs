@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
 use ra_ap_syntax::SyntaxToken;
@@ -11,6 +11,9 @@ impl DocId {
         *self == EMPTY_DOC
     }
 }
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub(crate) struct DocStrId(u32);
 
 #[derive(Debug, Clone, Copy, Ord, PartialOrd, Eq, PartialEq)]
 pub(crate) struct Cost(u32);
@@ -46,11 +49,10 @@ impl AlignGroup {
 pub(crate) enum DocNode {
     Empty,
     Token(SyntaxToken),
-    // TODO: Move into a container that is just usize length (ThinBox on nightly?)
-    Text(Box<str>),
+    Text(DocStrId),
     Newline,
     Concat(DocId, DocId),
-    Alt(DocId, DocId, AltFlatInfo),
+    Alt(DocId, DocId),
     Nest(DocId),
     Align(DocId),
     /// Only layouts of the inner doc that fit on a single line
@@ -70,16 +72,10 @@ pub(crate) enum DocNode {
     AlignMark(AlignGroup),
 }
 
-// On 64-bit targets, the payload of `Alt` with its `AltFlatInfo` fits in the space of the largest
-// variant, `Text(Box<str>)`, so the cache makes no node larger; on 32-bit targets, where a
-// `Box<str>` is 8 bytes, it does
-#[cfg(target_pointer_width = "64")]
-const _: () =
-    assert!(std::mem::size_of::<(DocId, DocId, AltFlatInfo)>() <= std::mem::size_of::<Box<str>>());
-
-/// What the single-line walks of the formatter (`Formatter::flat_width`, `Formatter::has_flat_layout`)
-/// need to know about an `Alt` node, computed when it is created: a doc shared by many alternatives is
-/// then walked once, not once per path to it (exponential in the nesting)
+/// What the single-line walks (`DocArena::flat_width`, `DocArena::has_flat_layout`) need to know
+/// about an `Alt` node, computed the first time a walk reaches it and kept in `DocArena::alt_infos`: a
+/// doc shared by many alternatives is then walked once, not once per path to it (exponential in the
+/// nesting)
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct AltFlatInfo {
     /// The width of the narrowest single-line branch, `u32::MAX` if no branch has one
@@ -109,6 +105,9 @@ impl AltFlatInfo {
 
 pub(crate) struct DocArena {
     nodes: Vec<DocNode>,
+    strings: Vec<Box<str>>,
+    /// The single-line facts of the `Alt` nodes reached by the single-line walks so far
+    alt_infos: HashMap<DocId, AltFlatInfo>,
 }
 
 pub(crate) const NEWLINE_DOC: DocId = DocId(0);
@@ -125,12 +124,14 @@ impl DocArena {
             nodes: vec![
                 DocNode::Newline,
                 DocNode::Empty,
-                DocNode::Text(" ".into()),
-                DocNode::Alt(NEWLINE_DOC, SPACE_DOC, AltFlatInfo::new(Some(1), true)),
+                DocNode::Text(DocStrId(0)),
+                DocNode::Alt(NEWLINE_DOC, SPACE_DOC),
                 DocNode::Concat(NEWLINE_DOC, NEWLINE_DOC),
-                DocNode::Text(",".into()),
-                DocNode::Text(";".into()),
+                DocNode::Text(DocStrId(1)),
+                DocNode::Text(DocStrId(2)),
             ],
+            strings: vec![" ".into(), ",".into(), ";".into()],
+            alt_infos: HashMap::new(),
         }
     }
 
@@ -141,12 +142,83 @@ impl DocArena {
         id
     }
 
+    #[inline]
+    pub fn make_string(&mut self, str: Box<str>) -> DocStrId {
+        let id = DocStrId(self.strings.len() as u32);
+        self.strings.push(str);
+        id
+    }
+
     pub fn dump(&self, root: DocId) {
         self.dump_helper(root, 0);
     }
 
     pub fn get_node(&self, doc: DocId) -> &DocNode {
         &self.nodes[doc.0 as usize]
+    }
+
+    pub fn get_text(&self, str_id: DocStrId) -> &str {
+        &self.strings[str_id.0 as usize]
+    }
+
+    /// Width of the doc on a single line, the narrowest of its alternatives; `None` if it cannot be on
+    /// a single line, also because of a text with a line break (a multi-line string literal)
+    pub fn flat_width(&mut self, doc: DocId) -> Option<usize> {
+        let text_width =
+            |text: &str| (!text.contains('\n')).then(|| unicode_width::UnicodeWidthStr::width(text));
+        match self.get_node(doc) {
+            DocNode::Token(token) => text_width(token.text()),
+            DocNode::Text(t) => text_width(self.get_text(*t)),
+            DocNode::Empty | DocNode::AlignMark(_) => Some(0),
+            DocNode::Newline | DocNode::Nest(_) | DocNode::Align(_) | DocNode::MultiLine(_) => None,
+            &DocNode::Flat(d)
+            | &DocNode::KeepTogether(d, _)
+            | &DocNode::Dispreferred(d, _)
+            | &DocNode::ShortLastLine(d) => self.flat_width(d),
+            &DocNode::Concat(a, b) => {
+                let width1 = self.flat_width(a)?;
+                Some(width1 + self.flat_width(b)?)
+            }
+            DocNode::Alt(..) => self.alt_info(doc).width(),
+        }
+    }
+
+    /// Whether the doc may have a layout under `Flat`: false only if a line break is forced in all of
+    /// its alternatives (unlike `flat_width`, a multi-line token, e.g. a string literal, is allowed, as
+    /// the resolver allows it)
+    pub fn has_flat_layout(&mut self, doc: DocId) -> bool {
+        match self.get_node(doc) {
+            DocNode::Newline => false,
+            DocNode::Token(_) | DocNode::Text(_) | DocNode::Empty | DocNode::AlignMark(_) => true,
+            &DocNode::Nest(d)
+            | &DocNode::Align(d)
+            | &DocNode::Flat(d)
+            | &DocNode::MultiLine(d)
+            | &DocNode::KeepTogether(d, _)
+            | &DocNode::Dispreferred(d, _)
+            | &DocNode::ShortLastLine(d) => self.has_flat_layout(d),
+            &DocNode::Concat(a, b) => self.has_flat_layout(a) && self.has_flat_layout(b),
+            DocNode::Alt(..) => self.alt_info(doc).has_flat_layout(),
+        }
+    }
+
+    /// The single-line facts of the `Alt` node `doc`, computed on the first call
+    fn alt_info(&mut self, doc: DocId) -> AltFlatInfo {
+        if let Some(info) = self.alt_infos.get(&doc) {
+            return *info;
+        }
+        let &DocNode::Alt(doc1, doc2) = self.get_node(doc) else {
+            panic!("alt_info of a node that is not `Alt`");
+        };
+        // Width of the narrowest single-line branch
+        let width = match (self.flat_width(doc1), self.flat_width(doc2)) {
+            (Some(width1), Some(width2)) => Some(width1.min(width2)),
+            (width1, width2) => width1.or(width2),
+        };
+        let has_flat_layout = self.has_flat_layout(doc1) || self.has_flat_layout(doc2);
+        let info = AltFlatInfo::new(width, has_flat_layout);
+        self.alt_infos.insert(doc, info);
+        info
     }
 
     /// The doc graph reachable from `root` in the Graphviz DOT format; shared nodes are written once
@@ -163,7 +235,7 @@ impl DocArena {
             let node = self.get_node(doc);
             let (label, shape, color) = match node {
                 DocNode::Token(token) => (format!("'{}'", token.text()), "box", "lightblue"),
-                DocNode::Text(text) => (format!("'{}'", text), "box", "lightyellow"),
+                DocNode::Text(text) => (format!("'{}'", self.get_text(*text)), "box", "lightyellow"),
                 DocNode::Newline => ("Newline".into(), "rect", "gray"),
                 DocNode::Concat(..) => ("Concat".into(), "ellipse", "white"),
                 DocNode::Alt(..) => ("Alt".into(), "diamond", "orange"),
@@ -200,7 +272,7 @@ impl DocArena {
                 | DocNode::Empty
                 | DocNode::AlignMark(_) => vec![],
                 DocNode::Concat(d1, d2) => vec![(*d1, "1"), (*d2, "2")],
-                DocNode::Alt(d1, d2, _) => vec![(*d1, ""), (*d2, "")],
+                DocNode::Alt(d1, d2) => vec![(*d1, ""), (*d2, "")],
                 DocNode::Nest(d)
                 | DocNode::Align(d)
                 | DocNode::Flat(d)
@@ -250,7 +322,7 @@ impl DocArena {
                 make_ident();
                 println!(")");
             }
-            DocNode::Alt(d1, d2, _) => {
+            DocNode::Alt(d1, d2) => {
                 println!("Alt(");
                 self.dump_helper(*d1, indent + 1);
                 self.dump_helper(*d2, indent + 1);

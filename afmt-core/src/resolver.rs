@@ -161,7 +161,7 @@ impl<'a> Renderer<'a> {
             Content::Text(t) => {
                 let s = match self.resolver.doc_arena.get_node(t) {
                     DocNode::Token(token) => token.text(),
-                    DocNode::Text(t) => t,
+                    DocNode::Text(t) => self.resolver.doc_arena.get_text(*t),
                     DocNode::Empty => return,
                     _ => unreachable!(),
                 };
@@ -228,7 +228,7 @@ impl MarkCollector<'_> {
             Content::Text(t) => {
                 let s = match self.resolver.doc_arena.get_node(t) {
                     DocNode::Token(token) => token.text(),
-                    DocNode::Text(t) => t,
+                    DocNode::Text(t) => self.resolver.doc_arena.get_text(*t),
                     DocNode::Empty => return,
                     _ => unreachable!(),
                 };
@@ -392,6 +392,18 @@ impl<'a> Resolver<'a> {
         renderer.out
     }
 
+    /*pub fn new_resolve(&self) -> LayoutSet {
+        /*Context {
+            col: None,
+            indent: 0,
+            flat: false,
+        },*/
+        let mut doc_stack = Vec::with_capacity(1024);
+        doc_stack.push(self.root);
+
+        todo!()
+    }*/
+
     pub fn resolve(&self, ctx: Context, doc: DocId) -> LayoutSet {
         let resolve_text = |s: &str| {
             let measure = if s.is_empty() {
@@ -407,7 +419,7 @@ impl<'a> Resolver<'a> {
         };
         match self.doc_arena.get_node(doc) {
             DocNode::Token(token) => resolve_text(token.text()),
-            DocNode::Text(text) => resolve_text(text),
+            DocNode::Text(text) => resolve_text(self.doc_arena.get_text(*text)),
             DocNode::Empty => resolve_text(""),
             DocNode::AlignMark(group) => LayoutSet::single(Layout {
                 measure: Measure::empty(&ctx),
@@ -487,7 +499,7 @@ impl<'a> Resolver<'a> {
                     .retain(|layout| layout.measure.last.is_none_or(|last| last <= max));
                 layout_set
             }
-            DocNode::Alt(doc1, doc2, _) => {
+            DocNode::Alt(doc1, doc2) => {
                 if let Some(layout_set) = self.memo.borrow().get(&(doc, ctx)) {
                     return layout_set.clone();
                 }

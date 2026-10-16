@@ -7,11 +7,7 @@ mod trivia;
 
 use crate::comments::is_doc_comment;
 use crate::config::Config;
-use crate::doc::DocNode::Newline;
-use crate::doc::{
-    AlignGroup, AltFlatInfo, Cost, DocArena, DocId, DocNode, EMPTY_DOC, NEWLINE_DOC,
-    NEWLINE_OR_SPACE_DOC,
-};
+use crate::doc::{AlignGroup, Cost, DocArena, DocId, DocNode, DocStrId, EMPTY_DOC, NEWLINE_DOC, NEWLINE_OR_SPACE_DOC};
 use crate::formatter::Edge::{Keyword, LineStart, Nothing, Word};
 use crate::resolver::Resolver;
 pub(crate) use builder::Builder;
@@ -79,8 +75,14 @@ impl<'a> Formatter<'a> {
         self.config
     }
 
+    #[inline]
     fn make_node(&self, doc_node: DocNode) -> DocId {
         self.doc_arena.borrow_mut().make(doc_node)
+    }
+
+    #[inline]
+    fn make_string(&self, text: Box<str>) -> DocStrId {
+        self.doc_arena.borrow_mut().make_string(text)
     }
 
     pub fn token(&self, token: SyntaxToken, edge: Edge) -> Frag {
@@ -104,7 +106,8 @@ impl<'a> Formatter<'a> {
 
     /// Text that is not in the source (e.g. an inserted `"C"`), without a cursor
     pub fn text(&self, text: &str, edge: Edge) -> Frag {
-        Frag::new_simple(self.make_node(DocNode::Text(text.into())), edge, None)
+        let str_id = self.make_string(text.into());
+        Frag::new_simple(self.make_node(DocNode::Text(str_id)), edge, None)
     }
 
     /// The source text of `node` unchanged, comments included, with the edges of
@@ -131,8 +134,9 @@ impl<'a> Formatter<'a> {
             }
             token = t.next_token();
         }
+        let str_id = self.make_string(text.into());
         Frag::new(
-            self.make_node(DocNode::Text(text.into())),
+            self.make_node(DocNode::Text(str_id)),
             start,
             end,
             Some(last.clone()),
@@ -329,19 +333,7 @@ impl<'a> Formatter<'a> {
     }
 
     fn has_flat_layout_doc(&self, doc_id: DocId) -> bool {
-        match self.doc_arena.borrow().get_node(doc_id) {
-            DocNode::Newline => false,
-            DocNode::Token(_) | DocNode::Text(_) | DocNode::Empty | DocNode::AlignMark(_) => true,
-            DocNode::Nest(d)
-            | DocNode::Align(d)
-            | DocNode::Flat(d)
-            | DocNode::MultiLine(d)
-            | DocNode::KeepTogether(d, _)
-            | DocNode::Dispreferred(d, _)
-            | DocNode::ShortLastLine(d) => self.has_flat_layout_doc(*d),
-            DocNode::Concat(a, b) => self.has_flat_layout_doc(*a) && self.has_flat_layout_doc(*b),
-            DocNode::Alt(_, _, info) => info.has_flat_layout(),
-        }
+        self.doc_arena.borrow_mut().has_flat_layout(doc_id)
     }
 
     /// Single-line layout of `frag`, if its width is at most `max_width`
@@ -351,20 +343,12 @@ impl<'a> Formatter<'a> {
             .then(|| self.flat(frag))
     }
 
-    /// The alternative of two docs, with what the single-line walks need to know about it
-    /// (`AltFlatInfo`); the walks stop at the `Alt` nodes of the children, which already have it
+    /// The alternative of two docs
     fn alt_doc(&self, doc1: DocId, doc2: DocId) -> DocId {
         if doc1 == doc2 {
             return doc1;
         }
-        // Width of the narrowest single-line branch
-        let width = match (self.flat_width_doc(doc1), self.flat_width_doc(doc2)) {
-            (Some(width1), Some(width2)) => Some(width1.min(width2)),
-            (width1, width2) => width1.or(width2),
-        };
-        let has_flat_layout = self.has_flat_layout_doc(doc1) || self.has_flat_layout_doc(doc2);
-        let info = AltFlatInfo::new(width, has_flat_layout);
-        self.make_node(DocNode::Alt(doc1, doc2, info))
+        self.make_node(DocNode::Alt(doc1, doc2))
     }
 
     pub fn alt_opt(&self, frag: Frag, other: Option<Frag>) -> Frag {
@@ -453,11 +437,11 @@ impl<'a> Formatter<'a> {
         if let Some(lines) = multiline_comment_lines(token) {
             // The lines are aligned to the column of the comment start
             let mut lines = lines.into_iter().map(|line| trim_comment_line(line, doc));
-            let mut doc_id = self.make_node(DocNode::Text(lines.next().unwrap().into()));
+            let mut doc_id = self.make_node(DocNode::Text(self.make_string(lines.next().unwrap().into())));
             for line in lines {
                 doc_id = self.concat(doc_id, NEWLINE_DOC);
                 if !line.is_empty() {
-                    doc_id = self.concat(doc_id, self.make_node(DocNode::Text(line.into())));
+                    doc_id = self.concat(doc_id, self.make_node(DocNode::Text(self.make_string(line.into()))));
                 }
             }
             return self.make_node(DocNode::Align(doc_id));
@@ -480,32 +464,13 @@ impl<'a> Formatter<'a> {
         self.make_node(if text == source {
             DocNode::Token(token.clone())
         } else {
-            DocNode::Text(text.into())
+            DocNode::Text(self.make_string(text.into()))
         })
     }
 
-    /// Width of the doc on a single line, the narrowest of its alternatives; `None` if it cannot be on
-    /// a single line, also because of a text with a line break (a multi-line string literal)
+    /// Width of the doc on a single line (see `DocArena::flat_width`)
     fn flat_width_doc(&self, doc_id: DocId) -> Option<usize> {
-        let text_width = |text: &str| {
-            (!text.contains('\n')).then(|| unicode_width::UnicodeWidthStr::width(text))
-        };
-        match self.doc_arena.borrow().get_node(doc_id) {
-            DocNode::Token(token) => text_width(token.text()),
-            DocNode::Text(t) => text_width(t),
-            DocNode::Empty | DocNode::AlignMark(_) => Some(0),
-            Newline | DocNode::Nest(_) | DocNode::Align(_) => None,
-            DocNode::Flat(d) => self.flat_width_doc(*d),
-            DocNode::MultiLine(_) => None,
-            DocNode::KeepTogether(d, _)
-            | DocNode::Dispreferred(d, _)
-            | DocNode::ShortLastLine(d) => self.flat_width_doc(*d),
-            DocNode::Concat(a, b) => self
-                .flat_width_doc(*a)
-                .and_then(|size1| self.flat_width_doc(*b).map(|size2| size1 + size2)),
-            // Width of the narrowest single-line branch, see `alt_doc`
-            DocNode::Alt(_, _, info) => info.width(),
-        }
+        self.doc_arena.borrow_mut().flat_width(doc_id)
     }
 
     /// Width of the fragment on a single line, the widest of its branches that can be on a single line
