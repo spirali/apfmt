@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+ra_ap_parser = "0.0.350"
 ra_ap_syntax = "0.0.350"
 serde = { version = "1", features = ["derive"] }
 smallvec = "1.16"

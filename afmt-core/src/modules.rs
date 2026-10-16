@@ -4,8 +4,9 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use ra_ap_parser::LexedStr;
 use ra_ap_syntax::ast::{self, HasAttrs, HasModuleItem, HasName};
-use ra_ap_syntax::{Edition, SourceFile};
+use ra_ap_syntax::{Edition, SourceFile, SyntaxKind};
 
 use crate::utils::canonical_path;
 
@@ -49,8 +50,8 @@ pub fn module_files(root: &Path, edition: Edition) -> ModuleFiles {
                 continue;
             }
         };
-        // Without the keyword, no module is declared and the file is not parsed
-        if !source.contains("mod") {
+        // Without a declaration, the file is not parsed: lexing is much cheaper
+        if !may_declare_module_file(&source, edition) {
             result.files.push((canonical, source));
             continue;
         }
@@ -75,6 +76,19 @@ pub fn module_files(root: &Path, edition: Edition) -> ModuleFiles {
         queue.extend(children.into_iter().rev());
     }
     result
+}
+
+/// Whether `source` may declare a module in another file, `mod name;`: the tokens `mod`, a name and `;`
+/// in a row (trivia between them). Every such declaration has them, so no module file is missed; the
+/// tokens in a macro call or an inline module only cost a parse.
+fn may_declare_module_file(source: &str, edition: Edition) -> bool {
+    let lexed = LexedStr::new(edition, source);
+    let code: Vec<SyntaxKind> = (0..lexed.len())
+        .map(|i| lexed.kind(i))
+        .filter(|kind| !kind.is_trivia())
+        .collect();
+    code.windows(3)
+        .any(|tokens| tokens == [SyntaxKind::MOD_KW, SyntaxKind::IDENT, SyntaxKind::SEMICOLON])
 }
 
 /// Where the modules declared in a file, or in an inline module of it, live
@@ -180,6 +194,29 @@ mod tests {
             .map(|(file, _)| file.strip_prefix(&dir).unwrap().display().to_string())
             .collect();
         (files, tree.warnings)
+    }
+
+    #[test]
+    fn module_file_declarations() {
+        let declares = |source| super::may_declare_module_file(source, Edition::CURRENT);
+        for source in [
+            "mod a;",
+            "pub(crate) mod a;",
+            "mod r#type;",
+            "mod /* c */ a\n;",
+            "#[path = \"x.rs\"]\nmod a;",
+            "mod a {\n    mod b;\n}",
+        ] {
+            assert!(declares(source), "{source}");
+        }
+        for source in [
+            "mod a {}",
+            "let model = module;",
+            "// mod a;",
+            "const S: &str = \"mod a;\";",
+        ] {
+            assert!(!declares(source), "{source}");
+        }
     }
 
     #[test]

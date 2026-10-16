@@ -18,6 +18,7 @@ dependencies = [
 name = "afmt-core"
 version = "0.1.0"
 dependencies = [
+ "ra_ap_parser",
  "ra_ap_syntax",
  "serde",
  "smallvec",
