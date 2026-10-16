@@ -149,7 +149,7 @@ impl LayoutSet {
 /// The leaves of a content (`Text`, `Newline`, `Mark`) in order, each with its indentation; it walks
 /// an explicit stack instead of recursing, a content nests as deeply as its doc (e.g. a long chain)
 struct Leaves<'a> {
-    content_arena: std::cell::Ref<'a, ContentArena>,
+    content_arena: &'a ContentArena,
     stack: Vec<(Content, u32)>,
 }
 
@@ -336,12 +336,12 @@ fn align_marks(resolver: &Resolver, content: Content) -> Vec<u32> {
 
 pub(crate) struct Resolver<'a> {
     doc_arena: DocArena,
-    content_arena: RefCell<ContentArena>,
+    content_arena: ContentArena,
     config: &'a Config,
     root: DocId,
     /// The layouts of the docs that are shared by more alternatives (`Alt` nodes), by context; the
     /// doc is a DAG, so without it a shared doc is resolved again in every alternative containing it
-    memo: RefCell<HashMap<(DocId, Context), LayoutSet>>,
+    memo: HashMap<(DocId, Context), LayoutSet>,
 }
 
 impl<'a> Resolver<'a> {
@@ -350,14 +350,14 @@ impl<'a> Resolver<'a> {
             doc_arena,
             config,
             root,
-            content_arena: RefCell::new(ContentArena::new()),
-            memo: RefCell::new(HashMap::new()),
+            content_arena: ContentArena::new(),
+            memo: HashMap::new(),
         }
     }
 
     fn leaves(&self, content: Content) -> Leaves<'_> {
         Leaves {
-            content_arena: self.content_arena.borrow(),
+            content_arena: &self.content_arena,
             stack: vec![(content, 0)],
         }
     }
@@ -373,7 +373,7 @@ impl<'a> Resolver<'a> {
         (!s.is_empty()).then_some(s)
     }
 
-    pub fn render(&self, reserve_size: usize) -> String {
+    pub fn render(&mut self, reserve_size: usize) -> String {
         let layout_set = self.resolve();
         //layout_set.dump();
         let best = layout_set.best().unwrap();
@@ -390,7 +390,7 @@ impl<'a> Resolver<'a> {
 
     /// The layouts of `doc` in `ctx`; it runs on an explicit stack of `Task`s instead of recursion, a
     /// doc nests deeply (e.g. a long chain of `Concat`s) and the recursion would overflow the stack
-    pub fn resolve(&self) -> LayoutSet {
+    pub fn resolve(&mut self) -> LayoutSet {
         let mut tasks = Vec::with_capacity(128);
         let mut next = Some((
             Context {
@@ -414,7 +414,7 @@ impl<'a> Resolver<'a> {
                 Task::Indent(indent) => {
                     let layout_set = results.pop().unwrap();
                     results.push(indented(
-                        &mut self.content_arena.borrow_mut(),
+                        &mut self.content_arena,
                         indent,
                         layout_set,
                     ));
@@ -450,7 +450,7 @@ impl<'a> Resolver<'a> {
                     let la = results.pop().unwrap();
                     let layout_set = merge_layout_sets(la, lb);
                     self.memo
-                        .borrow_mut()
+
                         .insert((doc, ctx), layout_set.clone());
                     results.push(layout_set);
                 }
@@ -469,17 +469,20 @@ impl<'a> Resolver<'a> {
                     let mut sub = results.pop().unwrap();
                     let [la, out] = results.last_chunk_mut::<2>().unwrap();
                     let layout1 = &la.layouts[i as usize];
-                    for layout2 in &mut sub.layouts {
-                        layout2.measure.badness = layout2
-                            .measure
-                            .badness
-                            .saturating_add(layout1.measure.badness);
-                        layout2.measure.cost =
-                            layout2.measure.cost.saturating_add(layout1.measure.cost);
-                        layout2.measure.height += layout1.measure.height;
-                        let c1 = self.content_arena.borrow_mut().make(layout1.content);
-                        let c2 = self.content_arena.borrow_mut().make(layout2.content);
-                        layout2.content = Content::Concat(c1, c2);
+                    if !sub.layouts.is_empty() {
+                        // One arena borrow and one node for `layout1`, shared by all the concatenations
+                        let c1 = self.content_arena.make(layout1.content);
+                        for layout2 in &mut sub.layouts {
+                            layout2.measure.badness = layout2
+                                .measure
+                                .badness
+                                .saturating_add(layout1.measure.badness);
+                            layout2.measure.cost =
+                                layout2.measure.cost.saturating_add(layout1.measure.cost);
+                            layout2.measure.height += layout1.measure.height;
+                            let c2 = self.content_arena.make(layout2.content);
+                            layout2.content = Content::Concat(c1, c2);
+                        }
                     }
                     *out = merge_layout_sets(std::mem::replace(out, LayoutSet::empty()), sub);
                     match la.layouts.get(i as usize + 1) {
@@ -566,7 +569,7 @@ impl<'a> Resolver<'a> {
                 return Some((ctx, *d));
             }
             DocNode::Alt(doc1, doc2) => {
-                if let Some(layout_set) = self.memo.borrow().get(&(doc, ctx)) {
+                if let Some(layout_set) = self.memo.get(&(doc, ctx)) {
                     results.push(layout_set.clone());
                     return None;
                 }
