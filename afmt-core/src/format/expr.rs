@@ -19,12 +19,12 @@ use crate::layout::list::TrailingSeparator;
 use crate::layout::list::{
     Delimiters, FlatLimit, ListItem, ListLayout, Overflow, delimited_list, list_items_cast,
 };
-use crate::utils::{has_attrs, with_is_last};
+use crate::utils::{has_attrs, is_brace_macro_expr, with_is_last};
 use ra_ap_syntax::ast::{
     ArgList, ArrayExpr, BinExpr, BinaryOp, BlockExpr, BreakExpr, CallExpr, CastExpr, ClosureExpr,
-    ContinueExpr, ElseBranch, Expr, HasArgList, HasAttrs, HasGenericArgs, IfExpr, LetExpr, Literal,
-    LogicOp, ParenExpr, PathExpr, PrefixExpr, RangeExpr, RangeItem, RecordExpr, RecordExprField,
-    RefExpr, ReturnExpr, StmtList, TupleExpr,
+    ContinueExpr, ElseBranch, Expr, HasArgList, HasAttrs, HasGenericArgs, IfExpr, IndexExpr,
+    LetExpr, Literal, LogicOp, ParenExpr, PathExpr, PrefixExpr, RangeExpr, RangeItem, RecordExpr,
+    RecordExprField, RefExpr, ReturnExpr, StmtList, TupleExpr,
 };
 use ra_ap_syntax::{AstNode, SyntaxKind, SyntaxNode, SyntaxToken};
 
@@ -491,7 +491,9 @@ pub(super) fn plain_stmt_list(block: &BlockExpr) -> Option<StmtList> {
 }
 
 /// The expression of a block that can be written as `{ expr }`: no statements, no comments and no
-/// attributes (`{` / `    #[cfg(x)]` / `    expr` / `}`); not a `try` block, which is copied (see `format_block_expr_with_tail`)
+/// attributes (`{` / `    #[cfg(x)]` / `    expr` / `}`); not a `try` block, which is copied (see `format_block_expr_with_tail`).
+/// Not a macro call with braces, which is a statement there (`is_brace_macro_expr`): its block is
+/// broken (as in rustfmt) and keeps its braces as a closure or match arm body.
 pub(super) fn single_line_block_expr(block: &BlockExpr) -> Option<Expr> {
     let stmt_list = block.stmt_list()?;
     let has_comment = stmt_list
@@ -507,12 +509,12 @@ pub(super) fn single_line_block_expr(block: &BlockExpr) -> Option<Expr> {
     {
         return None;
     }
-    tail
+    tail.filter(|expr| !is_brace_macro_expr(expr.syntax()))
 }
 
 /// `{ inner }`, where `inner` is the expression from `single_line_block_expr`; the caller restricts it
 /// to a single line
-fn format_braced_block(fmt: &Formatter, block: &BlockExpr, inner: Frag) -> Frag {
+pub(super) fn format_braced_block(fmt: &Formatter, block: &BlockExpr, inner: Frag) -> Frag {
     Delimiters::braces_of(block.stmt_list().unwrap().syntax()).enclose(fmt, inner)
 }
 
@@ -587,6 +589,22 @@ pub(super) fn format_if_expr(fmt: &Formatter, expr: IfExpr, allow_single_line: b
             format_if_single_line(fmt, &expr, condition, then_expr, else_expr)
         }),
     )
+}
+
+/// `[index]` of `target[index]`, broken only when it does not fit on one line, and then block
+/// indented between the brackets, never before `[` (Style Guide "Array accesses, indexing, and
+/// slicing"): `target[` / `    index` / `]`
+fn format_index(fmt: &Formatter, expr: &IndexExpr) -> Frag {
+    let index = ListItem {
+        frag: format_expr(fmt, expr.index().unwrap()),
+        comma: None,
+        own_line: false,
+        overflow: Overflow::Never,
+    };
+    let layout =
+        ListLayout::tall(FlatLimit::MaxWidth).trailing_separator(TrailingSeparator::Omitted);
+    let delims = Delimiters::brackets_of(expr.syntax());
+    fmt.keep_together(delimited_list(fmt, &delims, &[index], layout))
 }
 
 /// Splits a postfix chain `a.b()?.c[0]` into its root (`a`, the return value) and the postfix
@@ -860,9 +878,7 @@ fn postfix_chain_parts(fmt: &Formatter, expr: Expr) -> HeadLayouts {
                 last.push(fmt.postfix_token(e.question_mark_token().unwrap()));
             }
             Expr::IndexExpr(e) => {
-                // Broken only when it does not fit on one line: `a[i + j]`
-                let index = fmt.keep_together(format_expr(fmt, e.index().unwrap()));
-                let index = Delimiters::brackets_of(e.syntax()).enclose(fmt, index);
+                let index = format_index(fmt, &e);
                 let last = elements.last_mut().map_or(&mut root, |(_, tail)| tail);
                 last.push(index);
             }

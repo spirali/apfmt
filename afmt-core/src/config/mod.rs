@@ -24,10 +24,14 @@ pub struct Config {
     pub struct_variant_width: u32,
     /// Maximal width of `if a { b } else { c }` put on a single line
     pub single_line_if_else_max_width: u32,
+    /// Maximal width of `let pat = init else { expr };` put on a single line; 0 always breaks it
+    pub single_line_let_else_max_width: u32,
     /// Maximal width of an argument for which the arguments of a broken call are filled on lines
     /// (`a, b, c,` / `d, e,`) instead of one per line; every argument has to be simple (a literal, a name).
     /// 0 disables it.
     pub short_array_element_width_threshold: u32,
+    /// `;` after a `return`, `break` or `continue` ending a broken block (`break;`), or none (`break`)
+    pub trailing_semicolon: bool,
     /// The gap after which the widest list items do not align their trailing comments; 0 disables it
     pub trailing_comment_align_threshold: u32,
     /// Puts a single space after the opening sigil of a comment and before the closing one:
@@ -59,7 +63,9 @@ impl Default for Config {
             attr_fn_like_width: 70,
             struct_variant_width: 35,
             single_line_if_else_max_width: 50,
+            single_line_let_else_max_width: 50,
             short_array_element_width_threshold: 10,
+            trailing_semicolon: true,
             trailing_comment_align_threshold: 40,
             normalize_comment_sigil_spacing: true,
             edition: Edition::CURRENT,

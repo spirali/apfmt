@@ -2,7 +2,7 @@ fn f() {
     match x {
         R => {
             loop {
-                break
+                break;
             }
         }
         S => {

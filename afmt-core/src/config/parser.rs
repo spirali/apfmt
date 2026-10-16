@@ -39,9 +39,11 @@ struct TomlConfig {
     array_width: Option<u32>,
     chain_width: Option<u32>,
     single_line_if_else_max_width: Option<u32>,
+    single_line_let_else_max_width: Option<u32>,
     tab_spaces: Option<u32>,
     blank_lines_upper_bound: Option<u32>,
     short_array_element_width_threshold: Option<u32>,
+    trailing_semicolon: Option<bool>,
     edition: Option<EditionSetting>,
     disable_all_formatting: Option<bool>,
     // afmt's own options, not in rustfmt (or not in rustfmt's meaning)
@@ -108,6 +110,7 @@ impl TomlConfig {
             &mut config.short_array_element_width_threshold,
             self.short_array_element_width_threshold,
         );
+        set_value(&mut config.trailing_semicolon, self.trailing_semicolon);
         set_value(
             &mut config.trailing_comment_align_threshold,
             self.trailing_comment_align_threshold,
@@ -132,6 +135,7 @@ impl TomlConfig {
             h.apply(&mut config.array_width, 60, w, true);
             h.apply(&mut config.chain_width, 60, w, true);
             h.apply(&mut config.single_line_if_else_max_width, 50, w, false);
+            h.apply(&mut config.single_line_let_else_max_width, 50, w, false);
         }
 
         set_value_bound(&mut config.fn_call_width, self.fn_call_width, w);
@@ -147,6 +151,11 @@ impl TomlConfig {
         set_value_bound(
             &mut config.single_line_if_else_max_width,
             self.single_line_if_else_max_width,
+            w,
+        );
+        set_value_bound(
+            &mut config.single_line_let_else_max_width,
+            self.single_line_let_else_max_width,
             w,
         );
     }
@@ -308,7 +317,7 @@ mod tests {
         }
     }
 
-    fn widths(config: &Config) -> [u32; 7] {
+    fn widths(config: &Config) -> [u32; 8] {
         [
             config.fn_call_width,
             config.attr_fn_like_width,
@@ -317,6 +326,7 @@ mod tests {
             config.array_width,
             config.chain_width,
             config.single_line_if_else_max_width,
+            config.single_line_let_else_max_width,
         ]
     }
 
@@ -324,7 +334,7 @@ mod tests {
     fn defaults_are_rustfmt_defaults() {
         let config = apply("");
         assert_eq!(config.max_width, 100);
-        assert_eq!(widths(&config), [60, 70, 18, 35, 60, 60, 50]);
+        assert_eq!(widths(&config), [60, 70, 18, 35, 60, 60, 50, 50]);
         assert_eq!(config.edition, Config::default().edition);
         assert!(!config.disable_all_formatting);
     }
@@ -333,13 +343,14 @@ mod tests {
     fn simple_options() {
         let config = apply(
             "tab_spaces = 2\nblank_lines_upper_bound = 3\nshort_array_element_width_threshold = 0\n\
-             edition = \"2018\"\ndisable_all_formatting = true\n",
+             edition = \"2018\"\ndisable_all_formatting = true\ntrailing_semicolon = false\n",
         );
         assert_eq!(config.tab_spaces, 2);
         assert_eq!(config.blank_lines_upper_bound, 3);
         assert_eq!(config.short_array_element_width_threshold, 0);
         assert_eq!(config.edition, Edition::Edition2018);
         assert!(config.disable_all_formatting);
+        assert!(!config.trailing_semicolon);
     }
 
     #[test]
@@ -351,29 +362,29 @@ mod tests {
     fn heuristics_are_scaled_up_from_max_width() {
         // the ratio 1.55 is rounded to 1.6
         let config = apply("max_width = 155");
-        assert_eq!(widths(&config), [96, 112, 29, 56, 96, 96, 80]);
+        assert_eq!(widths(&config), [96, 112, 29, 56, 96, 96, 80, 80]);
     }
 
     #[test]
     fn heuristics_are_not_scaled_down() {
         let config = apply("max_width = 50");
         assert_eq!(config.max_width, 50);
-        assert_eq!(widths(&config), [60, 70, 18, 35, 60, 60, 50]);
+        assert_eq!(widths(&config), [60, 70, 18, 35, 60, 60, 50, 50]);
     }
 
     #[test]
     fn heuristics_max_and_off() {
         let config = apply("max_width = 80\nuse_small_heuristics = \"Max\"");
-        assert_eq!(widths(&config), [80; 7]);
+        assert_eq!(widths(&config), [80; 8]);
         // the case does not matter
         let config = apply("max_width = 80\nuse_small_heuristics = \"off\"");
-        assert_eq!(widths(&config), [80, 80, 0, 0, 80, 80, 0]);
+        assert_eq!(widths(&config), [80, 80, 0, 0, 80, 80, 0, 0]);
     }
 
     #[test]
     fn explicit_width_overrides_heuristics() {
         let config = apply("fn_call_width = 30\nuse_small_heuristics = \"Max\"");
-        assert_eq!(widths(&config), [30, 100, 100, 100, 100, 100, 100]);
+        assert_eq!(widths(&config), [30, 100, 100, 100, 100, 100, 100, 100]);
     }
 
     #[test]

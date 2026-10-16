@@ -40,8 +40,9 @@ fn operator_chains() {
         + eeeeeeee as u64 * ffffffff as u64
         - gggggggg as u64
         + hhhhhhhh as u64 * iiiiiiii as u64;
-    let refs = &mut *values[aaaaaaaa + bbbbbbbb * cccccccc - dddddddd][eeeeeeee * ffffffff
-        + gggggggg][hhhhhhhh - iiiiiiii * jjjjjjjj + kkkkkkkk];
+    let refs = &mut *values[aaaaaaaa + bbbbbbbb * cccccccc - dddddddd][
+        eeeeeeee * ffffffff + gggggggg
+    ][hhhhhhhh - iiiiiiii * jjjjjjjj + kkkkkkkk];
     let ranges =
         &slice[start_index + offset * stride..end_index - offset * stride + remainder_of_division];
     total += first_component * weight_one

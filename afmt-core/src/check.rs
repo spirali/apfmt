@@ -1,4 +1,4 @@
-use crate::utils::line_column;
+use crate::utils::{is_brace_macro_expr, is_jump_expr, line_column};
 use ra_ap_syntax::ast::{self, HasAttrs, HasVisibility, Use, UseTree};
 use ra_ap_syntax::{
     AstNode, Direction, NodeOrToken, SourceFile, SyntaxKind, SyntaxNode, SyntaxToken, TextSize,
@@ -73,10 +73,12 @@ fn is_optional_block(node: &SyntaxNode) -> bool {
     else {
         return false;
     };
-    // No label or modifier in front of `{`, and only an expression in it
+    // No label or modifier in front of `{`, and only an expression in it, not a statement `m! {}`
     node.first_token() == stmt_list.first_token()
         && stmt_list.children().count() == 1
-        && stmt_list.children().all(|c| ast::Expr::can_cast(c.kind()))
+        && stmt_list
+            .children()
+            .all(|c| ast::Expr::can_cast(c.kind()) && !is_brace_macro_expr(&c))
 }
 
 /// The preorder walk of the tree without trivia and without trailing commas, with source offsets
@@ -89,6 +91,10 @@ fn steps(file: &SourceFile) -> Vec<(Step, TextSize)> {
         match event {
             WalkEvent::Enter(NodeOrToken::Node(node)) if is_optional_block(&node) => {
                 transparent.push(node.first_child().unwrap());
+                transparent.push(node);
+            }
+            // `break;` is compared as the tail expression `break`, its `;` dropped
+            WalkEvent::Enter(NodeOrToken::Node(node)) if is_trailing_jump_stmt(&node) => {
                 transparent.push(node);
             }
             WalkEvent::Enter(NodeOrToken::Node(node))
@@ -209,13 +215,28 @@ fn canonical_use_tree(tree: &UseTree) -> Option<String> {
     Some(text)
 }
 
-/// The `|` in front of the first pattern of an or-pattern, `| A | B`, which the formatter drops
+/// The statement `return;`, `break;` or `continue;` ending a block, whose `;` the formatter adds or
+/// removes (`trailing_semicolon`)
+fn is_trailing_jump_stmt(node: &SyntaxNode) -> bool {
+    let Some(stmt) = ast::ExprStmt::cast(node.clone()) else {
+        return false;
+    };
+    stmt.expr().is_some_and(|expr| is_jump_expr(expr.syntax()))
+        && node
+            .parent()
+            .is_some_and(|p| p.kind() == SyntaxKind::STMT_LIST)
+        && node.next_sibling().is_none()
+}
+
 /// A stray `;` in a block, which is removed (`rewrite/empty_stmts.rs`)
 fn is_empty_stmt(token: &SyntaxToken) -> bool {
     token.kind() == SyntaxKind::SEMICOLON
-        && token.parent().is_some_and(|p| p.kind() == SyntaxKind::STMT_LIST)
+        && token
+            .parent()
+            .is_some_and(|p| p.kind() == SyntaxKind::STMT_LIST)
 }
 
+/// The `|` in front of the first pattern of an or-pattern, `| A | B`, which the formatter drops
 fn is_leading_pipe(token: &SyntaxToken) -> bool {
     token.kind() == SyntaxKind::PIPE
         && token.parent().is_some_and(|p| {
@@ -310,6 +331,36 @@ mod tests {
     }
 
     #[test]
+    fn trailing_jump_semicolon_may_change() {
+        let input = "fn f() { loop { g(); break } }";
+        let output = "fn f() {\n    loop {\n        g();\n        break;\n    }\n}";
+        assert_eq!(check_result_test(input, output), Ok(()));
+        assert_eq!(check_result_test(output, input), Ok(()));
+    }
+
+    #[test]
+    fn semicolon_after_other_tail_fails() {
+        assert!(check_result_test("fn f() { g() }", "fn f() { g(); }").is_err());
+        assert!(check_result_test("fn f() { break; g() }", "fn f() { break g() }").is_err());
+    }
+
+    #[test]
+    fn removed_braces_of_brace_macro_fail() {
+        let input = "fn f() { match x { A => { m! {} } } }";
+        let output = "fn f() {\n    match x {\n        A => m! {},\n    }\n}";
+        assert!(check_result_test(input, output).is_err());
+        let input = "fn f() { let c = || { m! {} }; }";
+        assert!(check_result_test(input, "fn f() {\n    let c = || m! {};\n}").is_err());
+    }
+
+    #[test]
+    fn removed_braces_of_paren_macro_pass() {
+        let input = "fn f() { match x { A => { m!() } } }";
+        let output = "fn f() {\n    match x {\n        A => m!(),\n    }\n}";
+        assert_eq!(check_result_test(input, output), Ok(()));
+    }
+
+    #[test]
     fn dropped_code_fails() {
         let error = check_result_test("pub fn f() {}", "fn f() {}").unwrap_err();
         assert!(error.contains("VISIBILITY"), "{error}");
@@ -366,8 +417,8 @@ mod tests {
 
     #[test]
     fn changed_import_attribute_fails() {
-        let error = check_result_test("#[cfg(any(a, b))]\nuse c;", "#[cfg(any(a))]\nuse c;")
-            .unwrap_err();
+        let error =
+            check_result_test("#[cfg(any(a, b))]\nuse c;", "#[cfg(any(a))]\nuse c;").unwrap_err();
         assert!(error.contains("differs"), "{error}");
     }
 

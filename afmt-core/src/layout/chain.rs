@@ -103,7 +103,8 @@ pub(crate) struct ChainElement {
 /// - on one line, if it fits (with two or more elements, within `chain_width`, as rustfmt does);
 /// - broken before every `.`, each element on its own block-indented line; a short root stays with
 ///   the elements that follow it while its last line ends at most at the indentation of the next
-///   line (`x.baz?` / `    .qux()`, also `foo(` / `...` / `).baz?`);
+///   line (`x.baz?` / `    .qux()`, also `foo(` / `...` / `).baz?`); a broken element costs a
+///   split, a broken root too;
 /// - all on one line except the arguments of the last element, which break (`a.b().c(` / `...` /
 ///   `)`), if the line fits as the single-line layout does; the Style Guide prefers the elements on
 ///   their own lines, so this layout costs a split, as every broken element in the previous layout
@@ -165,12 +166,13 @@ pub(crate) fn postfix_chain_layouts(
 
 /// The chain broken before every element, see `postfix_chain_layouts`; `elements` are formatted
 fn vertical_chain(fmt: &Formatter, root: &Frag, elements: &[Frag]) -> Frag {
-    // An element broken over more lines costs a split: the Style Guide prefers single-line elements
+    // An element broken over more lines costs a split: the Style Guide prefers single-line elements;
+    // so does the root (`foo(` / `    a,` / `).bar(...)`)
     let lines = elements
         .iter()
         .map(|e| fmt.keep_together(e.clone()))
         .collect::<Vec<_>>();
-    vertical_lines(fmt, root, &lines)
+    vertical_lines(fmt, &fmt.keep_together(root.clone()), &lines)
 }
 
 /// `head` followed by `lines`, each on its own block-indented line. A short head takes the lines

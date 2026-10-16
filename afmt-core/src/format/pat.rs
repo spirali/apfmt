@@ -11,14 +11,14 @@ use crate::formatter::{Builder, Formatter, Frag};
 use crate::layout::chain::{operator_chain, unindented_infix_chain, unindented_infix_fill};
 use crate::layout::head::HeadLayouts;
 use crate::layout::list::{
-    Delimiters, FlatLimit, ListLayout, TrailingSeparator, delimited_list, list_items,
+    Delimiters, FlatLimit, ListLayout, Overflow, TrailingSeparator, delimited_list, list_items,
     list_items_cast,
 };
 use ra_ap_syntax::ast::{
     HasName, IdentPat, LiteralPat, OrPat, ParenPat, Pat, RangePat, RecordPat, RecordPatField,
     RefPat, RestPat, SlicePat, TuplePat, TupleStructPat,
 };
-use ra_ap_syntax::{AstNode, SyntaxKind};
+use ra_ap_syntax::{AstNode, SyntaxKind, SyntaxNode};
 
 /// The layouts of a pattern followed by something on its last line (`= expr`, `in iter`, `if guard`):
 /// a broken or-pattern ends on a `| C` continuation line, so it hangs; a broken pattern costs a split
@@ -54,32 +54,54 @@ fn format_ident_pat(fmt: &Formatter, pat: IdentPat) -> Frag {
     builder.into_frag()
 }
 
+/// Whether a single pattern in parentheses may overflow, i.e. start on the line of `(` and end on
+/// the line of `)`: `Some(Foo {` / `...` / `})`. A struct, tuple struct or tuple pattern, also after
+/// `&`, as in rustfmt (`can_be_overflowed_pat`); not a slice pattern, which rustfmt does not hug
+/// (`Some(` / `    [` / `...` / `    ],` / `)`).
+fn is_combinable_pat(pat: &Pat) -> bool {
+    match pat {
+        Pat::RecordPat(_) | Pat::TupleStructPat(_) | Pat::TuplePat(_) => true,
+        Pat::RefPat(pat) => pat.pat().is_some_and(|p| is_combinable_pat(&p)),
+        _ => false,
+    }
+}
+
+/// The patterns in the parentheses of the tuple or tuple struct pattern `node`, laid out by
+/// `layout`; a single combinable one may overflow (see `is_combinable_pat`), as a call argument
+/// does
+fn format_pat_list(fmt: &Formatter, node: &SyntaxNode, layout: ListLayout) -> Frag {
+    let pats = node.children().filter_map(Pat::cast).collect::<Vec<_>>();
+    let hug = matches!(pats.as_slice(), [pat] if is_combinable_pat(pat));
+    let mut items = list_items_cast(node, |p| format_pat(fmt, p));
+    if hug {
+        let item = &mut items[0];
+        item.overflow = Overflow::With(item.frag.clone());
+    }
+    delimited_list(fmt, &Delimiters::parens_of(node), &items, layout)
+}
+
 fn format_tuple_pat(fmt: &Formatter, pat: TuplePat) -> Frag {
-    let fields = list_items_cast(pat.syntax(), |p| format_pat(fmt, p));
-    let layout = ListLayout::tall(FlatLimit::MaxWidth)
-        .trailing_separator(single_item_separator(fields.len()));
-    delimited_list(fmt, &Delimiters::parens_of(pat.syntax()), &fields, layout)
+    let fields = pat.fields().count();
+    let layout =
+        ListLayout::tall(FlatLimit::MaxWidth).trailing_separator(single_item_separator(fields));
+    format_pat_list(fmt, pat.syntax(), layout)
 }
 
 fn format_tuple_struct_pat(fmt: &Formatter, pat: TupleStructPat) -> Frag {
     let mut builder = Builder::new(fmt);
     builder.push(format_path(fmt, pat.path().unwrap()));
-    let fields = list_items_cast(pat.syntax(), |p| format_pat(fmt, p));
-    let delims = Delimiters::parens_of(pat.syntax());
-    builder.push(delimited_list(
-        fmt,
-        &delims,
-        &fields,
-        ListLayout::tall(FlatLimit::MaxWidth),
-    ));
+    let layout = ListLayout::tall(FlatLimit::MaxWidth);
+    builder.push(format_pat_list(fmt, pat.syntax(), layout));
     builder.into_frag()
 }
 
-/// `[a, b, ..]`
+/// `[a, b, ..]`, on a single line within `array_width` as an array (the Style Guide formats patterns
+/// like the corresponding expressions; as in rustfmt), otherwise one pattern per line (not filled)
 fn format_slice_pat(fmt: &Formatter, pat: SlicePat) -> Frag {
     let items = list_items_cast(pat.syntax(), |p| format_pat(fmt, p));
     let delims = Delimiters::brackets_of(pat.syntax());
-    delimited_list(fmt, &delims, &items, ListLayout::tall(FlatLimit::MaxWidth))
+    let layout = ListLayout::tall(FlatLimit::Within(fmt.config().array_width));
+    delimited_list(fmt, &delims, &items, layout)
 }
 
 /// `-1`, `"a"`

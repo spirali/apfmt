@@ -1,11 +1,29 @@
 use std::path::{Path, PathBuf};
 
-use ra_ap_syntax::TextSize;
-use ra_ap_syntax::ast::HasAttrs;
+use ra_ap_syntax::ast::{self, HasAttrs};
+use ra_ap_syntax::{AstNode, SyntaxKind, SyntaxNode, TextSize};
 
 /// Whether the node has attributes
 pub(crate) fn has_attrs(node: &impl HasAttrs) -> bool {
     node.attrs().next().is_some()
+}
+
+/// Whether `node` is a macro call with braces, `m! { ... }`, as an expression: as the only content of a
+/// block, it is a statement (it may expand to statements or items, `let a = 1;`), so the block cannot
+/// be removed; with `()` or `[]`, it is an expression there as anywhere else
+pub(crate) fn is_brace_macro_expr(node: &SyntaxNode) -> bool {
+    ast::MacroExpr::cast(node.clone())
+        .and_then(|expr| expr.macro_call()?.token_tree()?.l_curly_token())
+        .is_some()
+}
+
+/// Whether `node` is a `return`, `break` or `continue` expression, which ends its block with `;`
+/// (`trailing_semicolon`)
+pub(crate) fn is_jump_expr(node: &SyntaxNode) -> bool {
+    matches!(
+        node.kind(),
+        SyntaxKind::RETURN_EXPR | SyntaxKind::BREAK_EXPR | SyntaxKind::CONTINUE_EXPR
+    )
 }
 
 pub(crate) fn with_is_last<T>(items: &[T]) -> impl Iterator<Item = (&T, bool)> {
