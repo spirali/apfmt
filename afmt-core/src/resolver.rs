@@ -1,5 +1,5 @@
 use crate::config::Config;
-use crate::content::{Content, ContentArena, ContentId};
+use crate::content::{Content, ContentArena};
 use crate::doc::{AlignGroup, Cost, DocArena, DocId, DocNode};
 use smallvec::{SmallVec, smallvec};
 use std::cell::RefCell;
@@ -146,10 +146,34 @@ impl LayoutSet {
     }*/
 }
 
+/// The leaves of a content (`Text`, `Newline`, `Mark`) in order, each with its indentation; it walks
+/// an explicit stack instead of recursing, a content nests as deeply as its doc (e.g. a long chain)
+struct Leaves<'a> {
+    content_arena: std::cell::Ref<'a, ContentArena>,
+    stack: Vec<(Content, u32)>,
+}
+
+impl Iterator for Leaves<'_> {
+    type Item = (Content, u32);
+
+    fn next(&mut self) -> Option<(Content, u32)> {
+        while let Some((content, indent)) = self.stack.pop() {
+            match content {
+                Content::Concat(c1, c2) => {
+                    self.stack.push((self.content_arena.get(c2), indent));
+                    self.stack.push((self.content_arena.get(c1), indent));
+                }
+                Content::Indent(indent, c) => self.stack.push((self.content_arena.get(c), indent)),
+                leaf => return Some((leaf, indent)),
+            }
+        }
+        None
+    }
+}
+
 pub(crate) struct Renderer<'a> {
     resolver: &'a Resolver<'a>,
     out: String,
-    indent: u32,
     fresh: bool,
     paddings: Vec<u32>,
     marks: usize,
@@ -157,50 +181,32 @@ pub(crate) struct Renderer<'a> {
 
 impl<'a> Renderer<'a> {
     pub fn render(&mut self, content: Content) {
-        match content {
-            Content::Text(t) => {
-                let s = match self.resolver.doc_arena.get_node(t) {
-                    DocNode::Token(token) => token.text(),
-                    DocNode::Text(t) => self.resolver.doc_arena.get_text(*t),
-                    DocNode::Empty => return,
-                    _ => unreachable!(),
-                };
-                if s.is_empty() {
-                    return;
+        for (leaf, indent) in self.resolver.leaves(content) {
+            match leaf {
+                Content::Text(t) => {
+                    let Some(s) = self.resolver.text_of(t) else {
+                        continue;
+                    };
+                    // The indentation of a new line is written with its first text
+                    if self.fresh {
+                        self.fresh = false;
+                        for _ in 0..indent {
+                            self.out.push(' ');
+                        }
+                    }
+                    self.out.push_str(s);
                 }
-                // The indentation of a new line is written with its first text
-                if self.fresh {
-                    self.fresh = false;
-                    for _ in 0..self.indent {
+                Content::Newline => {
+                    self.out.push('\n');
+                    self.fresh = true;
+                }
+                Content::Mark(_) => {
+                    for _ in 0..self.paddings[self.marks] {
                         self.out.push(' ');
                     }
+                    self.marks += 1;
                 }
-                self.out.push_str(s);
-            }
-            Content::Newline => {
-                self.out.push('\n');
-                self.fresh = true;
-            }
-            Content::Indent(indent, d) => {
-                let old = self.indent;
-                self.indent = indent;
-                let c = self.resolver.content_arena.borrow().get(d);
-                self.render(c);
-                self.indent = old;
-            }
-            Content::Concat(c1, c2) => {
-                let (c1, c2) = {
-                    let ca = self.resolver.content_arena.borrow();
-                    (ca.get(c1), ca.get(c2))
-                };
-                self.render(c1);
-                self.render(c2);
-            }
-            Content::Mark(_) => {
-                for _ in 0..self.paddings[self.marks] {
-                    self.out.push(' ');
-                }
-                self.marks += 1;
+                Content::Concat(..) | Content::Indent(..) => unreachable!(),
             }
         }
     }
@@ -215,7 +221,6 @@ struct MarkedComment {
 
 struct MarkCollector<'a> {
     resolver: &'a Resolver<'a>,
-    indent: u32,
     col: Option<u32>,
     line: u32,
     marks: Vec<MarkedComment>,
@@ -224,49 +229,35 @@ struct MarkCollector<'a> {
 
 impl MarkCollector<'_> {
     fn collect(&mut self, content: Content) {
-        match content {
-            Content::Text(t) => {
-                let s = match self.resolver.doc_arena.get_node(t) {
-                    DocNode::Token(token) => token.text(),
-                    DocNode::Text(t) => self.resolver.doc_arena.get_text(*t),
-                    DocNode::Empty => return,
-                    _ => unreachable!(),
-                };
-                if s.is_empty() {
-                    return;
+        for (leaf, indent) in self.resolver.leaves(content) {
+            match leaf {
+                Content::Text(t) => {
+                    let Some(s) = self.resolver.text_of(t) else {
+                        continue;
+                    };
+                    let start = self.col.unwrap_or(indent);
+                    let mut lines = s.split('\n');
+                    let mut col = start + text_width(lines.next().unwrap());
+                    for line in lines {
+                        self.end_line(col);
+                        col = text_width(line);
+                    }
+                    self.col = Some(col);
                 }
-                let start = self.col.unwrap_or(self.indent);
-                let mut lines = s.split('\n');
-                let mut col = start + text_width(lines.next().unwrap());
-                for line in lines {
-                    self.end_line(col);
-                    col = text_width(line);
+                Content::Newline => {
+                    self.end_line(self.col.unwrap_or(0));
+                    self.col = None;
                 }
-                self.col = Some(col);
-            }
-            Content::Newline => {
-                self.end_line(self.col.unwrap_or(0));
-                self.col = None;
-            }
-            Content::Indent(indent, c) => {
-                let old = self.indent;
-                self.indent = indent;
-                let c = self.resolver.content_arena.borrow().get(c);
-                self.collect(c);
-                self.indent = old;
-            }
-            Content::Concat(c1, c2) => {
-                self.collect(self.resolver.get_content(c1));
-                self.collect(self.resolver.get_content(c2));
-            }
-            Content::Mark(group) => {
-                self.open.push(self.marks.len());
-                self.marks.push(MarkedComment {
-                    group,
-                    line: self.line,
-                    start: self.col.unwrap_or(self.indent),
-                    end: 0,
-                });
+                Content::Mark(group) => {
+                    self.open.push(self.marks.len());
+                    self.marks.push(MarkedComment {
+                        group,
+                        line: self.line,
+                        start: self.col.unwrap_or(indent),
+                        end: 0,
+                    });
+                }
+                Content::Concat(..) | Content::Indent(..) => unreachable!(),
             }
         }
     }
@@ -287,7 +278,6 @@ fn text_width(text: &str) -> u32 {
 fn align_marks(resolver: &Resolver, content: Content) -> Vec<u32> {
     let mut collector = MarkCollector {
         resolver,
-        indent: 0,
         col: None,
         line: 0,
         marks: Vec::new(),
@@ -365,25 +355,31 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    fn get_content(&self, content_id: ContentId) -> Content {
-        self.content_arena.borrow().get(content_id)
+    fn leaves(&self, content: Content) -> Leaves<'_> {
+        Leaves {
+            content_arena: self.content_arena.borrow(),
+            stack: vec![(content, 0)],
+        }
+    }
+
+    /// The text of a `Content::Text` leaf; `None` when it is empty
+    fn text_of(&self, doc: DocId) -> Option<&str> {
+        let s = match self.doc_arena.get_node(doc) {
+            DocNode::Token(token) => token.text(),
+            DocNode::Text(t) => self.doc_arena.get_text(*t),
+            DocNode::Empty => return None,
+            _ => unreachable!(),
+        };
+        (!s.is_empty()).then_some(s)
     }
 
     pub fn render(&self, reserve_size: usize) -> String {
-        let layout_set = self.resolve(
-            Context {
-                col: None,
-                indent: 0,
-                flat: false,
-            },
-            self.root,
-        );
+        let layout_set = self.resolve();
         //layout_set.dump();
         let best = layout_set.best().unwrap();
         let mut renderer = Renderer {
             resolver: self,
             out: String::with_capacity(reserve_size),
-            indent: 0,
             fresh: true,
             paddings: align_marks(self, best.content),
             marks: 0,
@@ -392,19 +388,125 @@ impl<'a> Resolver<'a> {
         renderer.out
     }
 
-    /*pub fn new_resolve(&self) -> LayoutSet {
-        /*Context {
-            col: None,
-            indent: 0,
-            flat: false,
-        },*/
-        let mut doc_stack = Vec::with_capacity(1024);
-        doc_stack.push(self.root);
+    /// The layouts of `doc` in `ctx`; it runs on an explicit stack of `Task`s instead of recursion, a
+    /// doc nests deeply (e.g. a long chain of `Concat`s) and the recursion would overflow the stack
+    pub fn resolve(&self) -> LayoutSet {
+        let mut tasks = Vec::with_capacity(128);
+        let mut next = Some((
+            Context {
+                col: None,
+                indent: 0,
+                flat: false,
+            },
+            self.root,
+        ));
+        let mut results: Vec<LayoutSet> = Vec::with_capacity(128);
+        loop {
+            if let Some((ctx, doc)) = next {
+                next = self.resolve_node(ctx, doc, &mut tasks, &mut results);
+                continue;
+            }
+            let Some(task) = tasks.pop() else {
+                break;
+            };
+            match task {
+                Task::Resolve(ctx, doc) => next = Some((ctx, doc)),
+                Task::Indent(indent) => {
+                    let layout_set = results.pop().unwrap();
+                    results.push(indented(
+                        &mut self.content_arena.borrow_mut(),
+                        indent,
+                        layout_set,
+                    ));
+                }
+                Task::Dispreferred(cost) => {
+                    for layout in &mut results.last_mut().unwrap().layouts {
+                        layout.measure.cost = layout.measure.cost.saturating_add(cost);
+                    }
+                }
+                Task::KeepTogether(cost) => {
+                    for layout in &mut results.last_mut().unwrap().layouts {
+                        if layout.measure.height > 0 {
+                            layout.measure.cost = layout.measure.cost.saturating_add(cost);
+                        }
+                    }
+                }
+                Task::MultiLine => {
+                    results
+                        .last_mut()
+                        .unwrap()
+                        .layouts
+                        .retain(|layout| layout.measure.height > 0);
+                }
+                Task::ShortLastLine(max) => {
+                    results
+                        .last_mut()
+                        .unwrap()
+                        .layouts
+                        .retain(|layout| layout.measure.last.is_none_or(|last| last <= max));
+                }
+                Task::Alt(ctx, doc) => {
+                    let lb = results.pop().unwrap();
+                    let la = results.pop().unwrap();
+                    let layout_set = merge_layout_sets(la, lb);
+                    self.memo
+                        .borrow_mut()
+                        .insert((doc, ctx), layout_set.clone());
+                    results.push(layout_set);
+                }
+                Task::ConcatStart(ctx, doc2) => {
+                    // The layouts of the first doc stay on the results, under those of the `Concat`
+                    // so far; with none, they are the empty result
+                    let Some(layout1) = results.last().unwrap().layouts.first() else {
+                        continue;
+                    };
+                    let col = layout1.measure.last;
+                    results.push(LayoutSet::empty());
+                    tasks.push(Task::Concat(ctx, doc2, 0));
+                    next = Some((Context { col, ..ctx }, doc2));
+                }
+                Task::Concat(ctx, doc2, i) => {
+                    let mut sub = results.pop().unwrap();
+                    let [la, out] = results.last_chunk_mut::<2>().unwrap();
+                    let layout1 = &la.layouts[i as usize];
+                    for layout2 in &mut sub.layouts {
+                        layout2.measure.badness = layout2
+                            .measure
+                            .badness
+                            .saturating_add(layout1.measure.badness);
+                        layout2.measure.cost =
+                            layout2.measure.cost.saturating_add(layout1.measure.cost);
+                        layout2.measure.height += layout1.measure.height;
+                        let c1 = self.content_arena.borrow_mut().make(layout1.content);
+                        let c2 = self.content_arena.borrow_mut().make(layout2.content);
+                        layout2.content = Content::Concat(c1, c2);
+                    }
+                    *out = merge_layout_sets(std::mem::replace(out, LayoutSet::empty()), sub);
+                    match la.layouts.get(i as usize + 1) {
+                        Some(layout1) => {
+                            let col = layout1.measure.last;
+                            tasks.push(Task::Concat(ctx, doc2, i + 1));
+                            next = Some((Context { col, ..ctx }, doc2));
+                        }
+                        None => {
+                            let out = results.pop().unwrap();
+                            *results.last_mut().unwrap() = out;
+                        }
+                    }
+                }
+            }
+        }
+        debug_assert_eq!(results.len(), 1);
+        results.pop().unwrap()
+    }
 
-        todo!()
-    }*/
-
-    pub fn resolve(&self, ctx: Context, doc: DocId) -> LayoutSet {
+    fn resolve_node(
+        &self,
+        ctx: Context,
+        doc: DocId,
+        tasks: &mut Vec<Task>,
+        results: &mut Vec<LayoutSet>,
+    ) -> Option<(Context, DocId)> {
         let resolve_text = |s: &str| {
             let measure = if s.is_empty() {
                 Measure::empty(&ctx)
@@ -417,7 +519,7 @@ impl<'a> Resolver<'a> {
                 content: Content::Text(doc),
             })
         };
-        match self.doc_arena.get_node(doc) {
+        let layout_set = match self.doc_arena.get_node(doc) {
             DocNode::Token(token) => resolve_text(token.text()),
             DocNode::Text(text) => resolve_text(self.doc_arena.get_text(*text)),
             DocNode::Empty => resolve_text(""),
@@ -437,87 +539,63 @@ impl<'a> Resolver<'a> {
             }),
             DocNode::Nest(d) => {
                 let indent = ctx.indent + self.config.tab_spaces;
-                let layout_set = self.resolve(Context { indent, ..ctx }, *d);
-                indented(&mut self.content_arena.borrow_mut(), indent, layout_set)
+                tasks.push(Task::Indent(indent));
+                return Some((Context { indent, ..ctx }, *d));
             }
             DocNode::Concat(doc1, doc2) => {
-                let la = self.resolve(ctx, *doc1);
-                let mut out = LayoutSet::empty();
-                for layout1 in la.layouts {
-                    let mut sub = self.resolve(
-                        Context {
-                            col: layout1.measure.last,
-                            ..ctx
-                        },
-                        *doc2,
-                    );
-                    for layout2 in &mut sub.layouts {
-                        layout2.measure.badness = layout2
-                            .measure
-                            .badness
-                            .saturating_add(layout1.measure.badness);
-                        layout2.measure.cost =
-                            layout2.measure.cost.saturating_add(layout1.measure.cost);
-                        layout2.measure.height += layout1.measure.height;
-                        let c1 = self.content_arena.borrow_mut().make(layout1.content);
-                        let c2 = self.content_arena.borrow_mut().make(layout2.content);
-                        layout2.content = Content::Concat(c1, c2);
-                    }
-                    out = merge_layout_sets(out, sub);
-                }
-                out
+                tasks.push(Task::ConcatStart(ctx, *doc2));
+                return Some((ctx, *doc1));
             }
-            DocNode::Flat(doc) => self.resolve(Context { flat: true, ..ctx }, *doc),
-            DocNode::Dispreferred(doc, cost) => {
-                let mut layout_set = self.resolve(ctx, *doc);
-                for layout in &mut layout_set.layouts {
-                    layout.measure.cost = layout.measure.cost.saturating_add(*cost);
-                }
-                layout_set
+            DocNode::Flat(d) => {
+                return Some((Context { flat: true, ..ctx }, *d));
             }
-            DocNode::KeepTogether(doc, cost) => {
-                let mut layout_set = self.resolve(ctx, *doc);
-                for layout in &mut layout_set.layouts {
-                    if layout.measure.height > 0 {
-                        layout.measure.cost = layout.measure.cost.saturating_add(*cost);
-                    }
-                }
-                layout_set
+            DocNode::Dispreferred(d, cost) => {
+                tasks.push(Task::Dispreferred(*cost));
+                return Some((ctx, *d));
             }
-            DocNode::MultiLine(doc) => {
-                let mut layout_set = self.resolve(ctx, *doc);
-                layout_set
-                    .layouts
-                    .retain(|layout| layout.measure.height > 0);
-                layout_set
+            DocNode::KeepTogether(d, cost) => {
+                tasks.push(Task::KeepTogether(*cost));
+                return Some((ctx, *d));
             }
-            DocNode::ShortLastLine(doc) => {
-                let max = ctx.indent + self.config.tab_spaces;
-                let mut layout_set = self.resolve(ctx, *doc);
-                layout_set
-                    .layouts
-                    .retain(|layout| layout.measure.last.is_none_or(|last| last <= max));
-                layout_set
+            DocNode::MultiLine(d) => {
+                tasks.push(Task::MultiLine);
+                return Some((ctx, *d));
+            }
+            DocNode::ShortLastLine(d) => {
+                tasks.push(Task::ShortLastLine(ctx.indent + self.config.tab_spaces));
+                return Some((ctx, *d));
             }
             DocNode::Alt(doc1, doc2) => {
                 if let Some(layout_set) = self.memo.borrow().get(&(doc, ctx)) {
-                    return layout_set.clone();
+                    results.push(layout_set.clone());
+                    return None;
                 }
-                let la = self.resolve(ctx, *doc1);
-                let lb = self.resolve(ctx, *doc2);
-                let layout_set = merge_layout_sets(la, lb);
-                self.memo
-                    .borrow_mut()
-                    .insert((doc, ctx), layout_set.clone());
-                layout_set
+                // `doc1` is resolved first: it is on top
+                tasks.push(Task::Alt(ctx, doc));
+                tasks.push(Task::Resolve(ctx, *doc2));
+                return Some((ctx, *doc1));
             }
-            DocNode::Align(doc) => {
+            DocNode::Align(d) => {
                 let indent = ctx.text_col();
-                let layout_set = self.resolve(Context { indent, ..ctx }, *doc);
-                indented(&mut self.content_arena.borrow_mut(), indent, layout_set)
+                tasks.push(Task::Indent(indent));
+                return Some((Context { indent, ..ctx }, *d));
             }
-        }
+        };
+        results.push(layout_set);
+        None
     }
+}
+
+enum Task {
+    Resolve(Context, DocId),
+    Indent(u32),
+    Dispreferred(Cost),
+    KeepTogether(Cost),
+    MultiLine,
+    ShortLastLine(u32),
+    Alt(Context, DocId),
+    ConcatStart(Context, DocId),
+    Concat(Context, DocId, u32),
 }
 
 /// The layouts rendered with `indent`; a layout ending with a line break keeps `last: None`, the next

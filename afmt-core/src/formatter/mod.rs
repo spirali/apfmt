@@ -7,7 +7,10 @@ mod trivia;
 
 use crate::comments::is_doc_comment;
 use crate::config::Config;
-use crate::doc::{AlignGroup, Cost, DocArena, DocId, DocNode, DocStrId, EMPTY_DOC, NEWLINE_DOC, NEWLINE_OR_SPACE_DOC};
+use crate::doc::{
+    AlignGroup, Cost, DocArena, DocId, DocNode, DocStrId, EMPTY_DOC, NEWLINE_DOC,
+    NEWLINE_OR_SPACE_DOC,
+};
 use crate::formatter::Edge::{Keyword, LineStart, Nothing, Word};
 use crate::resolver::Resolver;
 pub(crate) use builder::Builder;
@@ -437,11 +440,16 @@ impl<'a> Formatter<'a> {
         if let Some(lines) = multiline_comment_lines(token) {
             // The lines are aligned to the column of the comment start
             let mut lines = lines.into_iter().map(|line| trim_comment_line(line, doc));
-            let mut doc_id = self.make_node(DocNode::Text(self.make_string(lines.next().unwrap().into())));
+            let mut doc_id = self.make_node(DocNode::Text(
+                self.make_string(lines.next().unwrap().into()),
+            ));
             for line in lines {
                 doc_id = self.concat(doc_id, NEWLINE_DOC);
                 if !line.is_empty() {
-                    doc_id = self.concat(doc_id, self.make_node(DocNode::Text(self.make_string(line.into()))));
+                    doc_id = self.concat(
+                        doc_id,
+                        self.make_node(DocNode::Text(self.make_string(line.into()))),
+                    );
                 }
             }
             return self.make_node(DocNode::Align(doc_id));

@@ -151,8 +151,6 @@ fn format_file(
     }
 }
 
-const THREAD_STACK_SIZE: usize = 64 * 1024 * 1024;
-
 /// `f` of each of `items` on `threads` threads, which take the items in the order of the indices
 /// `order`; the results are in the order of `items`
 fn parallel_map<T: Sync, R: Send>(
@@ -165,14 +163,12 @@ fn parallel_map<T: Sync, R: Send>(
     let results = Mutex::new(Vec::with_capacity(items.len()));
     std::thread::scope(|scope| {
         for _ in 0..threads.min(items.len()) {
-            let thread = std::thread::Builder::new().stack_size(THREAD_STACK_SIZE);
-            let spawned = thread.spawn_scoped(scope, || {
+            scope.spawn(|| {
                 while let Some(&index) = order.get(next.fetch_add(1, Ordering::Relaxed)) {
                     let result = f(&items[index]);
                     results.lock().unwrap().push((index, result));
                 }
             });
-            spawned.expect("cannot start a thread");
         }
     });
     let mut results = results.into_inner().unwrap();

@@ -164,8 +164,9 @@ impl DocArena {
     /// Width of the doc on a single line, the narrowest of its alternatives; `None` if it cannot be on
     /// a single line, also because of a text with a line break (a multi-line string literal)
     pub fn flat_width(&mut self, doc: DocId) -> Option<usize> {
-        let text_width =
-            |text: &str| (!text.contains('\n')).then(|| unicode_width::UnicodeWidthStr::width(text));
+        let text_width = |text: &str| {
+            (!text.contains('\n')).then(|| unicode_width::UnicodeWidthStr::width(text))
+        };
         match self.get_node(doc) {
             DocNode::Token(token) => text_width(token.text()),
             DocNode::Text(t) => text_width(self.get_text(*t)),
@@ -235,7 +236,9 @@ impl DocArena {
             let node = self.get_node(doc);
             let (label, shape, color) = match node {
                 DocNode::Token(token) => (format!("'{}'", token.text()), "box", "lightblue"),
-                DocNode::Text(text) => (format!("'{}'", self.get_text(*text)), "box", "lightyellow"),
+                DocNode::Text(text) => {
+                    (format!("'{}'", self.get_text(*text)), "box", "lightyellow")
+                }
                 DocNode::Newline => ("Newline".into(), "rect", "gray"),
                 DocNode::Concat(..) => ("Concat".into(), "ellipse", "white"),
                 DocNode::Alt(..) => ("Alt".into(), "diamond", "orange"),
