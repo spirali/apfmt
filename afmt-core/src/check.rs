@@ -53,14 +53,18 @@ pub(crate) fn check_result(
 }
 
 /// Whether `node` is the block of a closure body or of a match arm body that holds just an
-/// expression, `|x| { x }`, `A => { x }`: the formatter removes its braces or adds them, so it is
-/// compared as if it had none
+/// expression, `|x| { x }`, `A => { x }`, or such a block in another one, `A => { { x } }`: the
+/// formatter removes its braces or adds them, so it is compared as if it had none
 fn is_optional_block(node: &SyntaxNode) -> bool {
-    if node.kind() != SyntaxKind::BLOCK_EXPR
-        || node
-            .parent()
-            .is_none_or(|p| !matches!(p.kind(), SyntaxKind::CLOSURE_EXPR | SyntaxKind::MATCH_ARM))
-    {
+    if node.kind() != SyntaxKind::BLOCK_EXPR {
+        return false;
+    }
+    let optional_position = node.parent().is_some_and(|p| match p.kind() {
+        SyntaxKind::CLOSURE_EXPR | SyntaxKind::MATCH_ARM => true,
+        SyntaxKind::STMT_LIST => p.parent().is_some_and(|b| is_optional_block(&b)),
+        _ => false,
+    });
+    if !optional_position {
         return false;
     }
     let Some(stmt_list) = node
@@ -117,7 +121,8 @@ fn steps(file: &SourceFile) -> Vec<(Step, TextSize)> {
             WalkEvent::Enter(NodeOrToken::Token(token))
                 if !token.kind().is_trivia()
                     && !is_trailing_comma(&token)
-                    && !is_leading_pipe(&token) =>
+                    && !is_leading_pipe(&token)
+                    && !is_empty_stmt(&token) =>
             {
                 // A shebang includes its line break, which is layout
                 let text = token.text().trim_end().to_string();
@@ -146,11 +151,12 @@ fn sort_use_runs(steps: &mut Vec<(Step, TextSize)>) {
     }
 }
 
-/// The source text of `node` without trivia
+/// The source text of `node` without trivia and trailing commas, which the formatter adds or removes
+/// (`#[cfg(any(a, b,))]`)
 fn code_text(node: &SyntaxNode) -> String {
     node.descendants_with_tokens()
         .filter_map(NodeOrToken::into_token)
-        .filter(|t| !t.kind().is_trivia())
+        .filter(|t| !t.kind().is_trivia() && !is_trailing_comma(t))
         .map(|t| t.text().to_string())
         .collect()
 }
@@ -204,6 +210,12 @@ fn canonical_use_tree(tree: &UseTree) -> Option<String> {
 }
 
 /// The `|` in front of the first pattern of an or-pattern, `| A | B`, which the formatter drops
+/// A stray `;` in a block, which is removed (`rewrite/empty_stmts.rs`)
+fn is_empty_stmt(token: &SyntaxToken) -> bool {
+    token.kind() == SyntaxKind::SEMICOLON
+        && token.parent().is_some_and(|p| p.kind() == SyntaxKind::STMT_LIST)
+}
+
 fn is_leading_pipe(token: &SyntaxToken) -> bool {
     token.kind() == SyntaxKind::PIPE
         && token.parent().is_some_and(|p| {
@@ -271,6 +283,33 @@ mod tests {
     }
 
     #[test]
+    fn removed_nested_arm_blocks_pass() {
+        let input = "fn f() { match x { A => { { { 1 } } } } }";
+        let output = "fn f() {\n    match x {\n        A => 1,\n    }\n}";
+        assert!(check_result_test(input, output).is_ok());
+    }
+
+    #[test]
+    fn removed_block_with_statement_fails() {
+        let input = "fn f() { match x { A => { { g(); 1 } } } }";
+        let output = "fn f() {\n    match x {\n        A => 1,\n    }\n}";
+        assert!(check_result_test(input, output).is_err());
+    }
+
+    #[test]
+    fn removed_empty_stmts_pass() {
+        let input = "fn f() { ;; g();; /* a */ ; // b\n}";
+        let output = "fn f() {\n    g(); /* a */ // b\n}";
+        assert!(check_result_test(input, output).is_ok());
+    }
+
+    #[test]
+    fn dropped_stmt_semicolon_fails() {
+        let error = check_result_test("fn f() { g(); }", "fn f() { g() }").unwrap_err();
+        assert!(error.contains("differs"), "{error}");
+    }
+
+    #[test]
     fn dropped_code_fails() {
         let error = check_result_test("pub fn f() {}", "fn f() {}").unwrap_err();
         assert!(error.contains("VISIBILITY"), "{error}");
@@ -316,6 +355,20 @@ mod tests {
         let input = "use c;\nuse a::{d, b::{}, c};\nuse a::{b};\nuse x::{};";
         let output = "use a::b;\nuse a::{c, d};\nuse c;";
         assert_eq!(check_result_test(input, output), Ok(()));
+    }
+
+    #[test]
+    fn import_attribute_trailing_comma_passes() {
+        let input = "#[cfg(any(a, b))]\nuse c;";
+        let output = "#[cfg(any(\n    a,\n    b,\n))]\nuse c;";
+        assert_eq!(check_result_test(input, output), Ok(()));
+    }
+
+    #[test]
+    fn changed_import_attribute_fails() {
+        let error = check_result_test("#[cfg(any(a, b))]\nuse c;", "#[cfg(any(a))]\nuse c;")
+            .unwrap_err();
+        assert!(error.contains("differs"), "{error}");
     }
 
     #[test]

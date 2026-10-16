@@ -130,6 +130,19 @@ fn arm_body_layouts(fmt: &Formatter, body: Expr) -> (Option<Frag>, Frag) {
     let (expr, braces) = match &body {
         Expr::BlockExpr(block) if plain_stmt_list(block).is_some() => {
             match single_line_block_expr(block) {
+                // `{ { ... } }`: the outer block is removed, the inner one is the body (as in
+                // rustfmt)
+                Some(Expr::BlockExpr(inner)) if plain_stmt_list(&inner).is_some() => {
+                    let close = block.stmt_list().unwrap().r_curly_token().unwrap();
+                    let (same_line, block) = arm_body_layouts(fmt, Expr::BlockExpr(inner));
+                    let skip_close = |frag: Frag| {
+                        let mut builder = Builder::new(fmt);
+                        builder.push(frag);
+                        builder.skip_to_token(close.clone());
+                        builder.into_frag()
+                    };
+                    return (same_line.map(skip_close), skip_close(block));
+                }
                 Some(expr) => (expr, Some(block.clone())),
                 None => return (None, format_block_expr(fmt, block.clone())),
             }
