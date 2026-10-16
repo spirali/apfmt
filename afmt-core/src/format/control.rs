@@ -3,8 +3,8 @@
 use super::attr::{format_attr, format_with_attrs};
 use super::common::push_label;
 use super::expr::{
-    ExprPosition, format_added_braces, format_expr, format_expr_at, format_head_expr,
-    format_head_with_block, plain_stmt_list, single_line_block_expr,
+    ExprPosition, NestedPlainBlocks, format_added_braces, format_expr, format_expr_at,
+    format_head_expr, format_head_with_block, plain_stmt_list, single_line_block_expr,
 };
 use super::pat::pat_layouts;
 use super::stmt::{format_block_expr, format_block_expr_with_tail};
@@ -125,44 +125,35 @@ fn is_control_flow(expr: &Expr) -> bool {
 /// that fits on one line in the block goes there, as in rustfmt; a control-flow expression is always
 /// in a block (Style Guide).
 fn arm_body_layouts(fmt: &Formatter, body: Expr) -> (Option<Frag>, Frag) {
-    // `braces`: the plain block around the expression in the source (`{ expr }`), removed when the
-    // body stays on the line of `=>`; a plain block that is not `{ expr }` stays a block
-    let (expr, braces) = match &body {
-        Expr::BlockExpr(block) if plain_stmt_list(block).is_some() => {
-            match single_line_block_expr(block) {
-                // `{ { ... } }`: the outer block is removed, the inner one is the body (as in
-                // rustfmt)
-                Some(Expr::BlockExpr(inner)) if plain_stmt_list(&inner).is_some() => {
-                    let close = block.stmt_list().unwrap().r_curly_token().unwrap();
-                    let (same_line, block) = arm_body_layouts(fmt, Expr::BlockExpr(inner));
-                    let skip_close = |frag: Frag| {
-                        let mut builder = Builder::new(fmt);
-                        builder.push(frag);
-                        builder.skip_to_token(close.clone());
-                        builder.into_frag()
-                    };
-                    return (same_line.map(skip_close), skip_close(block));
+    // `blocks`: the plain blocks around the expression in the source (`{ expr }`, `{ { expr } }`),
+    // removed when the body stays on the line of `=>`; a plain block that is not `{ expr }` stays a
+    // block (only the outer ones of nested blocks are removed)
+    let (expr, blocks) = match body {
+        Expr::BlockExpr(block) if plain_stmt_list(&block).is_some() => {
+            let blocks = NestedPlainBlocks::of(block);
+            match single_line_block_expr(&blocks.inner) {
+                Some(expr) => (expr, Some(blocks)),
+                None => {
+                    let block = format_block_expr(fmt, blocks.inner.clone());
+                    return (None, blocks.skip_outer_braces(fmt, block));
                 }
-                Some(expr) => (expr, Some(block.clone())),
-                None => return (None, format_block_expr(fmt, block.clone())),
             }
         }
-        _ => (body, None),
+        body => (body, None),
     };
     let control_flow = is_control_flow(&expr);
     let inner = format_expr_at(fmt, expr, ExprPosition::ArmBody);
     let inner = fmt.keep_together(inner);
-    let block = match &braces {
-        Some(block) => format_block_expr_with_tail(fmt, block.clone(), Some(inner.clone())),
+    let block = match &blocks {
+        Some(blocks) => {
+            let block = format_block_expr_with_tail(fmt, blocks.inner.clone(), Some(inner.clone()));
+            blocks.skip_outer_braces(fmt, block)
+        }
         None => format_added_braces(fmt, inner.clone()),
     };
-    let same_line = (!control_flow).then(|| {
-        let mut builder = Builder::new(fmt);
-        builder.push(inner);
-        if let Some(block) = braces {
-            builder.skip_to_token(block.stmt_list().unwrap().r_curly_token().unwrap());
-        }
-        builder.into_frag()
+    let same_line = (!control_flow).then(|| match &blocks {
+        Some(blocks) => blocks.skip_braces(fmt, inner),
+        None => inner,
     });
     (same_line, block)
 }
@@ -206,6 +197,8 @@ fn format_match_arm(fmt: &Formatter, arm: &MatchArm, group: Option<AlignGroup>) 
         } else {
             builder.skip_separator(SyntaxKind::COMMA);
         }
+        // The comments ending the line of the arm are its trailing comments, aligned in `group`
+        builder.push_comments_ending_line();
         builder.into_frag()
     };
     let mut layouts = with_body(lhs.clone(), block.clone(), false);

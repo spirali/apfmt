@@ -8,8 +8,7 @@ mod trivia;
 use crate::comments::is_doc_comment;
 use crate::config::Config;
 use crate::doc::{
-    AlignGroup, Cost, DocArena, DocId, DocNode, DocStrId, EMPTY_DOC, NEWLINE_DOC,
-    NEWLINE_OR_SPACE_DOC,
+    AlignGroup, Cost, DocArena, DocId, DocNode, EMPTY_DOC, NEWLINE_DOC, NEWLINE_OR_SPACE_DOC,
 };
 use crate::formatter::Edge::{Keyword, LineStart, Nothing, Word};
 use crate::resolver::Resolver;
@@ -84,8 +83,9 @@ impl<'a> Formatter<'a> {
     }
 
     #[inline]
-    fn make_string(&self, text: Box<str>) -> DocStrId {
-        self.doc_arena.borrow_mut().make_string(text)
+    /// A `Text` node of `text`
+    fn text_node(&self, text: impl Into<Box<str>>) -> DocId {
+        self.doc_arena.borrow_mut().make_text(text)
     }
 
     pub fn token(&self, token: SyntaxToken, edge: Edge) -> Frag {
@@ -115,8 +115,7 @@ impl<'a> Formatter<'a> {
 
     /// Text that is not in the source (e.g. an inserted `"C"`), without a cursor
     pub fn text(&self, text: &str, edge: Edge) -> Frag {
-        let str_id = self.make_string(text.into());
-        Frag::new_simple(self.make_node(DocNode::Text(str_id)), edge, None)
+        Frag::new_simple(self.text_node(text), edge, None)
     }
 
     /// The source text of `node` unchanged, comments included, with the edges of
@@ -143,13 +142,7 @@ impl<'a> Formatter<'a> {
             }
             token = t.next_token();
         }
-        let str_id = self.make_string(text.into());
-        Frag::new(
-            self.make_node(DocNode::Text(str_id)),
-            start,
-            end,
-            Some(last.clone()),
-        )
+        Frag::new(self.text_node(text), start, end, Some(last.clone()))
     }
 
     /// The source text from `first` to `last` unchanged (see `verbatim_range`), recorded as text that
@@ -446,16 +439,11 @@ impl<'a> Formatter<'a> {
         if let Some(lines) = multiline_comment_lines(token) {
             // The lines are aligned to the column of the comment start
             let mut lines = lines.into_iter().map(|line| trim_comment_line(line, doc));
-            let mut doc_id = self.make_node(DocNode::Text(
-                self.make_string(lines.next().unwrap().into()),
-            ));
+            let mut doc_id = self.text_node(lines.next().unwrap());
             for line in lines {
                 doc_id = self.concat(doc_id, NEWLINE_DOC);
                 if !line.is_empty() {
-                    doc_id = self.concat(
-                        doc_id,
-                        self.make_node(DocNode::Text(self.make_string(line.into()))),
-                    );
+                    doc_id = self.concat(doc_id, self.text_node(line));
                 }
             }
             return self.make_node(DocNode::Align(doc_id));
@@ -475,11 +463,11 @@ impl<'a> Formatter<'a> {
             .then(|| normalize_comment_sigil_spacing(&trimmed))
             .flatten();
         let text = normalized.map_or(trimmed, Cow::Owned);
-        self.make_node(if text == source {
-            DocNode::Token(token.clone())
+        if text == source {
+            self.make_node(DocNode::Token(token.clone()))
         } else {
-            DocNode::Text(self.make_string(text.into()))
-        })
+            self.text_node(text)
+        }
     }
 
     /// Width of the doc on a single line (see `DocArena::flat_width`)

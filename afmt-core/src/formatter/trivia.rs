@@ -243,7 +243,9 @@ impl<'a> Builder<'a> {
     }
 
     /// Pushes the separator `kind` (`,` or `;`, a generated one) and takes the source separator after the
-    /// cursor, if there is one, together with the comments around it; the comments are placed after it
+    /// cursor, if there is one, together with the comments in front of it, which are placed after it.
+    /// The trivia after the source separator is left for what follows (the cursor is the separator),
+    /// so the fragment ends with the separator, e.g. for measuring it.
     pub fn push_separator(&mut self, kind: SyntaxKind) {
         self.take_separator(kind, true);
     }
@@ -254,7 +256,7 @@ impl<'a> Builder<'a> {
     }
 
     /// Takes the source separator `kind` after the cursor (if there is one) together with the comments
-    /// around it, which are pushed after it; with `push`, a separator is pushed in front of them
+    /// in front of it, which are pushed after it; with `push`, a separator is pushed in front of them
     fn take_separator(&mut self, kind: SyntaxKind, push: bool) {
         // Pushed without processing the trivia after the cursor, which follows the separator
         let cursor = self.frag.cursor.take();
@@ -262,7 +264,7 @@ impl<'a> Builder<'a> {
             self.push(Frag::new_simple(separator_doc(kind), Comma, None));
         }
         self.frag.cursor = cursor;
-        self.push_trivia(Some(kind), TriviaStop::Code);
+        self.push_trivia(Some(kind), TriviaStop::Separator);
     }
 
     /// Pushes a separator `kind` after a list item (the cursor) and takes the source one, together with

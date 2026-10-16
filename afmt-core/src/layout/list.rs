@@ -37,6 +37,16 @@ pub(crate) enum Overflow {
 }
 
 impl<T> ListItem<T> {
+    /// The item `frag` without a comma, placed as any item and not overflowing
+    pub fn new(frag: T) -> Self {
+        ListItem {
+            frag,
+            comma: None,
+            own_line: false,
+            overflow: Overflow::Never,
+        }
+    }
+
     /// The item formatted by `format`, with the same comma, `own_line` and `overflow`
     pub fn map(&self, format: impl FnOnce(&T) -> Frag) -> ListItem {
         ListItem {
@@ -60,6 +70,14 @@ impl<T> ListItem<T> {
     }
 }
 
+/// The only item of a list may overflow with its own layouts (HugList), e.g. the pattern of
+/// `Some(Foo {` / `...` / `})`; a list with more items is left as it is
+pub(crate) fn hug_single_item(items: &mut [ListItem]) {
+    if let [item] = items {
+        item.overflow = Overflow::With(item.frag.clone());
+    }
+}
+
 /// The items of the comma-separated list `node` (an argument list, a parameter list, ...) with their
 /// commas. `format` formats a child node, or returns `None` for children that are not items.
 pub(crate) fn list_items<T>(
@@ -71,12 +89,7 @@ pub(crate) fn list_items<T>(
         match element {
             SyntaxElement::Node(child) => {
                 if let Some(frag) = format(child) {
-                    items.push(ListItem {
-                        frag,
-                        comma: None,
-                        own_line: false,
-                        overflow: Overflow::Never,
-                    });
+                    items.push(ListItem::new(frag));
                 }
             }
             SyntaxElement::Token(token) if token.kind() == SyntaxKind::COMMA => {

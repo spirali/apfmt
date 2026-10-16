@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use ra_ap_syntax::ast::{self, HasAttrs};
-use ra_ap_syntax::{AstNode, SyntaxKind, SyntaxNode, TextSize};
+use ra_ap_syntax::{AstNode, SyntaxKind, SyntaxNode, SyntaxToken, TextSize};
 
 /// Whether the node has attributes
 pub(crate) fn has_attrs(node: &impl HasAttrs) -> bool {
@@ -24,6 +24,29 @@ pub(crate) fn is_jump_expr(node: &SyntaxNode) -> bool {
         node.kind(),
         SyntaxKind::RETURN_EXPR | SyntaxKind::BREAK_EXPR | SyntaxKind::CONTINUE_EXPR
     )
+}
+
+/// The statement `return;`, `break;` or `continue;` ending a block without a tail expression, whose
+/// `;` the formatter adds or removes (`trailing_semicolon`)
+pub(crate) fn trailing_jump_stmt(stmt_list: &ast::StmtList) -> Option<ast::ExprStmt> {
+    if stmt_list.tail_expr().is_some() {
+        return None;
+    }
+    match stmt_list.statements().last()? {
+        ast::Stmt::ExprStmt(stmt) if stmt.expr().is_some_and(|e| is_jump_expr(e.syntax())) => {
+            Some(stmt)
+        }
+        _ => None,
+    }
+}
+
+/// A stray `;` in a block, not part of a statement (`;;`), which the formatter removes
+/// (`rewrite/empty_stmts.rs`)
+pub(crate) fn is_stray_semicolon(token: &SyntaxToken) -> bool {
+    token.kind() == SyntaxKind::SEMICOLON
+        && token
+            .parent()
+            .is_some_and(|p| p.kind() == SyntaxKind::STMT_LIST)
 }
 
 pub(crate) fn with_is_last<T>(items: &[T]) -> impl Iterator<Item = (&T, bool)> {

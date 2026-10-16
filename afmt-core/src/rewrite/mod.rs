@@ -5,7 +5,7 @@ mod empty_stmts;
 mod imports;
 mod sort;
 
-use ra_ap_syntax::{SourceFile, TextRange};
+use ra_ap_syntax::{SourceFile, TextRange, TextSize};
 
 /// The source after the rewrites, or `None` if none of them changes it
 pub(crate) fn rewrite_source(file: &SourceFile, source: &str) -> Option<String> {
@@ -35,4 +35,24 @@ fn apply_edits(source: &str, mut edits: Vec<(TextRange, String)>) -> Option<Stri
     }
     out.push_str(&source[pos..]);
     Some(out)
+}
+
+/// The whole line of `range` with its line break when only spaces and tabs surround `range` on it, so
+/// removing it leaves no blank line; otherwise `range` itself (code before or after it on its line
+/// stays on that line)
+pub(super) fn line_if_alone(source: &str, range: TextRange) -> TextRange {
+    let blank = [' ', '\t'];
+    let before = &source[..usize::from(range.start())];
+    let indent = before.len() - before.trim_end_matches(blank).len();
+    let after = &source[usize::from(range.end())..];
+    let rest = after.len() - after.trim_start_matches(blank).len();
+    let line_start = before.len() - indent;
+    let line_end = usize::from(range.end()) + rest;
+    let alone = (line_start == 0 || before[..line_start].ends_with('\n'))
+        && source[line_end..].starts_with('\n');
+    if !alone {
+        return range;
+    }
+    let size = |n: usize| TextSize::from(n as u32);
+    TextRange::new(size(line_start), size(line_end + 1))
 }

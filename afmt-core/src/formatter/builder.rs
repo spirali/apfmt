@@ -158,12 +158,22 @@ impl<'a> Builder<'a> {
         self.frag.cursor = Some(token);
     }
 
-    /// Pushes `text` that is not in the source, e.g. braces added around a closure body. The cursor
-    /// stays, so the trivia after it is placed after the text, and the source that follows is still
-    /// taken after it (e.g. a separator).
-    pub fn push_generated(&mut self, text: &str, edge: Edge) {
+    /// `frag` followed by the source up to `token` (inclusive) taken without output, see
+    /// `skip_to_token`
+    pub fn skip_to_token_after(fmt: &'a Formatter, frag: Frag, token: SyntaxToken) -> Frag {
+        let mut builder = Builder::new(fmt);
+        builder.push(frag);
+        builder.skip_to_token(token);
+        builder.into_frag()
+    }
+
+    /// Pushes `doc`, text that is not in the source, e.g. braces added around a closure body
+    /// (`OPEN_BRACE_DOC`, ...: generated text is preallocated). The cursor stays, so the trivia after
+    /// it is placed after the text, and the source that follows is still taken after it (e.g. a
+    /// separator).
+    pub fn push_generated(&mut self, doc: DocId, edge: Edge) {
         let cursor = self.frag.cursor.take();
-        let frag = self.fmt.text(text, edge);
+        let frag = Frag::new_simple(doc, edge, None);
         if self.frag.is_empty() {
             self.frag = frag;
         } else {

@@ -2,7 +2,6 @@ use crate::config::Config;
 use crate::content::{Content, ContentArena};
 use crate::doc::{AlignGroup, Cost, DocArena, DocId, DocNode};
 use smallvec::{SmallVec, smallvec};
-use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
@@ -388,10 +387,13 @@ impl<'a> Resolver<'a> {
         renderer.out
     }
 
-    /// The layouts of `doc` in `ctx`; it runs on an explicit stack of `Task`s instead of recursion, a
-    /// doc nests deeply (e.g. a long chain of `Concat`s) and the recursion would overflow the stack
-    pub fn resolve(&mut self) -> LayoutSet {
+    /// The layouts of the root doc at the start of a line; it runs on an explicit stack of `Task`s
+    /// instead of recursion, a doc nests deeply (e.g. a long chain of `Concat`s) and the recursion
+    /// would overflow the stack
+    fn resolve(&mut self) -> LayoutSet {
         let mut tasks = Vec::with_capacity(128);
+        // The doc resolved next: a fast path that avoids pushing and popping a `Task::Resolve`,
+        // which defers a doc until the tasks above it are done
         let mut next = Some((
             Context {
                 col: None,
@@ -413,11 +415,7 @@ impl<'a> Resolver<'a> {
                 Task::Resolve(ctx, doc) => next = Some((ctx, doc)),
                 Task::Indent(indent) => {
                     let layout_set = results.pop().unwrap();
-                    results.push(indented(
-                        &mut self.content_arena,
-                        indent,
-                        layout_set,
-                    ));
+                    results.push(indented(&mut self.content_arena, indent, layout_set));
                 }
                 Task::Dispreferred(cost) => {
                     for layout in &mut results.last_mut().unwrap().layouts {
@@ -449,9 +447,7 @@ impl<'a> Resolver<'a> {
                     let lb = results.pop().unwrap();
                     let la = results.pop().unwrap();
                     let layout_set = merge_layout_sets(la, lb);
-                    self.memo
-
-                        .insert((doc, ctx), layout_set.clone());
+                    self.memo.insert((doc, ctx), layout_set.clone());
                     results.push(layout_set);
                 }
                 Task::ConcatStart(ctx, doc2) => {

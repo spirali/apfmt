@@ -117,22 +117,42 @@ pub(crate) const NEWLINE_OR_SPACE_DOC: DocId = DocId(3);
 pub(crate) const EMPTYLINE_DOC: DocId = DocId(4);
 pub(crate) const COMMA_DOC: DocId = DocId(5);
 pub(crate) const SEMICOLON_DOC: DocId = DocId(6);
+pub(crate) const OPEN_BRACE_DOC: DocId = DocId(7);
+pub(crate) const CLOSE_BRACE_DOC: DocId = DocId(8);
 
 impl DocArena {
     pub fn new() -> Self {
-        DocArena {
-            nodes: vec![
-                DocNode::Newline,
-                DocNode::Empty,
-                DocNode::Text(DocStrId(0)),
-                DocNode::Alt(NEWLINE_DOC, SPACE_DOC),
-                DocNode::Concat(NEWLINE_DOC, NEWLINE_DOC),
-                DocNode::Text(DocStrId(1)),
-                DocNode::Text(DocStrId(2)),
-            ],
-            strings: vec![" ".into(), ",".into(), ";".into()],
+        let mut arena = DocArena {
+            nodes: Vec::new(),
+            strings: Vec::new(),
             alt_infos: HashMap::new(),
-        }
+        };
+        let preallocated = [
+            arena.make(DocNode::Newline),
+            arena.make(DocNode::Empty),
+            arena.make_text(" "),
+            arena.make(DocNode::Alt(NEWLINE_DOC, SPACE_DOC)),
+            arena.make(DocNode::Concat(NEWLINE_DOC, NEWLINE_DOC)),
+            arena.make_text(","),
+            arena.make_text(";"),
+            arena.make_text("{"),
+            arena.make_text("}"),
+        ];
+        assert_eq!(
+            preallocated,
+            [
+                NEWLINE_DOC,
+                EMPTY_DOC,
+                SPACE_DOC,
+                NEWLINE_OR_SPACE_DOC,
+                EMPTYLINE_DOC,
+                COMMA_DOC,
+                SEMICOLON_DOC,
+                OPEN_BRACE_DOC,
+                CLOSE_BRACE_DOC,
+            ]
+        );
+        arena
     }
 
     #[inline]
@@ -142,11 +162,11 @@ impl DocArena {
         id
     }
 
-    #[inline]
-    pub fn make_string(&mut self, str: Box<str>) -> DocStrId {
+    /// A `Text` node of `text`
+    pub fn make_text(&mut self, text: impl Into<Box<str>>) -> DocId {
         let id = DocStrId(self.strings.len() as u32);
-        self.strings.push(str);
-        id
+        self.strings.push(text.into());
+        self.make(DocNode::Text(id))
     }
 
     pub fn dump(&self, root: DocId) {

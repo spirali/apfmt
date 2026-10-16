@@ -2,6 +2,7 @@
 //! name of a list import moves together with its comments, so the formatter places them as in any other
 //! source.
 
+use super::line_if_alone;
 use super::sort::version_cmp;
 use crate::comments::{
     TriviaStop, comments_ending_line_end, count_newlines, first_code_token, has_comments,
@@ -341,10 +342,12 @@ fn is_removed(item: &Use) -> bool {
 }
 
 /// The source range of the group (see `use_range`) and its sorted, normalized text: the items on their
-/// own lines. If all of them are removed, their line break goes too.
+/// own lines. If all of them are removed and the group is alone on its line, the line goes too.
 fn group_text(source: &str, group: &[Use]) -> (TextRange, String) {
-    let start = use_range(&group[0]).start();
-    let mut end = use_range(group.last().unwrap()).end();
+    let mut range = TextRange::new(
+        use_range(&group[0]).start(),
+        use_range(group.last().unwrap()).end(),
+    );
     let mut items: Vec<Normalized> = group
         .iter()
         .filter(|item| !is_removed(item))
@@ -361,15 +364,11 @@ fn group_text(source: &str, group: &[Use]) -> (TextRange, String) {
         })
         .collect();
     if items.is_empty() {
-        let rest = &source[usize::from(end)..];
-        let blank = rest.len() - rest.trim_start_matches([' ', '\t']).len();
-        if rest[blank..].starts_with('\n') {
-            end += TextSize::from(blank as u32 + 1);
-        }
+        range = line_if_alone(source, range);
     }
     items.sort_by(|a, b| a.key.cmp(&b.key));
     let lines: Vec<String> = items.into_iter().map(|item| item.text).collect();
-    (TextRange::new(start, end), lines.join("\n"))
+    (range, lines.join("\n"))
 }
 
 #[cfg(test)]
@@ -431,5 +430,15 @@ mod tests {
             "use a;\n\nfn f() {}\n"
         );
         assert_eq!(rewrite("use b::{}; // kept\n"), None);
+        // With its indentation
+        assert_eq!(
+            rewrite("fn f() {\n    use a::{};\n    g();\n}\n").unwrap(),
+            "fn f() {\n    g();\n}\n"
+        );
+        // Code in front of it on its line: the line stays, the comment below stays on its own line
+        assert_eq!(
+            rewrite("fn f() {\n    g(); use a::{};\n    // c\n}\n").unwrap(),
+            "fn f() {\n    g(); \n    // c\n}\n"
+        );
     }
 }

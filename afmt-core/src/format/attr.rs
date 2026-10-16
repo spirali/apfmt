@@ -6,7 +6,7 @@ use crate::comments::has_comments;
 use crate::formatter::Edge::{BraceClose, BraceOpen, Close, Open, Operator, Tight, Word};
 use crate::formatter::{Builder, Formatter, Frag};
 use crate::layout::list::{
-    Delimiters, FlatLimit, ListItem, ListLayout, Overflow, delimited_list, list_items,
+    Delimiters, FlatLimit, ListItem, ListLayout, delimited_list, hug_single_item, list_items,
 };
 use ra_ap_syntax::ast::{
     Attr, CfgAtom, CfgAttrMeta, CfgPredicate, HasAttrs, KeyValueMeta, Meta, TokenTree,
@@ -130,8 +130,8 @@ fn format_meta_list(
     nested: bool,
     fill: bool,
 ) -> Frag {
-    if nested && let [item] = items.as_mut_slice() {
-        item.overflow = Overflow::With(item.frag.clone());
+    if nested {
+        hug_single_item(&mut items);
     }
     let delims = Delimiters::parens_of(node);
     let layout = ListLayout::tall(FlatLimit::Within(fmt.config().attr_fn_like_width)).fill_if(fill);
@@ -248,10 +248,8 @@ fn format_token_list(fmt: &Formatter, tree: TokenTree, fill_paths: bool) -> Frag
     let items = segments
         .into_iter()
         .map(|(segment, comma)| ListItem {
-            frag: format_meta_segment(fmt, segment),
             comma,
-            own_line: false,
-            overflow: Overflow::Never,
+            ..ListItem::new(format_meta_segment(fmt, segment))
         })
         .collect::<Vec<_>>();
     format_meta_list(fmt, tree.syntax(), items, nested, fill)

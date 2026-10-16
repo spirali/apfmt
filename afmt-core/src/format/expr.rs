@@ -10,6 +10,7 @@ use super::path::{format_generic_arg_list, format_name_ref, format_path};
 use super::stmt::{format_block_expr, format_block_expr_with_tail, push_block_prefix};
 use super::ty::{format_ret_type, format_type};
 use super::{format_unsupported_kind, format_unsupported_with_attrs};
+use crate::doc::{CLOSE_BRACE_DOC, OPEN_BRACE_DOC};
 use crate::format::common::{format_lifetime, format_repeat, push_modifiers};
 use crate::formatter::Edge::{BraceClose, BraceOpen, Comma, Operator, Tight, Word};
 use crate::formatter::{Builder, Formatter, Frag};
@@ -490,6 +491,51 @@ pub(super) fn plain_stmt_list(block: &BlockExpr) -> Option<StmtList> {
     (block.syntax().first_token() == stmt_list.l_curly_token()).then_some(stmt_list)
 }
 
+/// A plain block, or the innermost of nested plain blocks each holding just the next one,
+/// `{ { expr } }`: the outer braces are removed (as in rustfmt), the innermost ones are kept or
+/// removed as those of a single block
+pub(super) struct NestedPlainBlocks {
+    /// The innermost block
+    pub inner: BlockExpr,
+    /// The `}` of the outermost block
+    close: SyntaxToken,
+    nested: bool,
+}
+
+impl NestedPlainBlocks {
+    /// `block` and the plain blocks nested in it (`block` must be a plain one, see `plain_stmt_list`)
+    pub fn of(block: BlockExpr) -> Self {
+        let close = block.stmt_list().unwrap().r_curly_token().unwrap();
+        let mut inner = block;
+        let mut nested = false;
+        while let Some(Expr::BlockExpr(next)) = single_line_block_expr(&inner)
+            && plain_stmt_list(&next).is_some()
+        {
+            inner = next;
+            nested = true;
+        }
+        NestedPlainBlocks {
+            inner,
+            close,
+            nested,
+        }
+    }
+
+    /// A layout of the innermost block (or of its expression in braces), the braces around it skipped
+    pub fn skip_outer_braces(&self, fmt: &Formatter, frag: Frag) -> Frag {
+        if self.nested {
+            Builder::skip_to_token_after(fmt, frag, self.close.clone())
+        } else {
+            frag
+        }
+    }
+
+    /// The expression of the innermost block without braces, all the braces skipped
+    pub fn skip_braces(&self, fmt: &Formatter, frag: Frag) -> Frag {
+        Builder::skip_to_token_after(fmt, frag, self.close.clone())
+    }
+}
+
 /// The expression of a block that can be written as `{ expr }`: no statements, no comments and no
 /// attributes (`{` / `    #[cfg(x)]` / `    expr` / `}`); not a `try` block, which is copied (see `format_block_expr_with_tail`).
 /// Not a macro call with braces, which is a statement there (`is_brace_macro_expr`): its block is
@@ -595,12 +641,7 @@ pub(super) fn format_if_expr(fmt: &Formatter, expr: IfExpr, allow_single_line: b
 /// indented between the brackets, never before `[` (Style Guide "Array accesses, indexing, and
 /// slicing"): `target[` / `    index` / `]`
 fn format_index(fmt: &Formatter, expr: &IndexExpr) -> Frag {
-    let index = ListItem {
-        frag: format_expr(fmt, expr.index().unwrap()),
-        comma: None,
-        own_line: false,
-        overflow: Overflow::Never,
-    };
+    let index = ListItem::new(format_expr(fmt, expr.index().unwrap()));
     let layout =
         ListLayout::tall(FlatLimit::MaxWidth).trailing_separator(TrailingSeparator::Omitted);
     let delims = Delimiters::brackets_of(expr.syntax());
@@ -648,7 +689,8 @@ fn inline_and_broken_block(fmt: &Formatter, block: BlockExpr, tail: Frag) -> (Fr
 
 /// The body of a closure that may be written without braces: the only expression of a plain block
 /// `{ expr }` (no statements, comments, label or modifiers) of a closure without a return type, or a
-/// body that is not a plain block
+/// body that is not a plain block. Of nested plain blocks, `{ { g(); x } }`, the innermost one is the
+/// body when it is not `{ expr }`.
 fn unbraced_closure_body(expr: &ClosureExpr) -> Option<Expr> {
     let body = expr.body()?;
     let Expr::BlockExpr(block) = &body else {
@@ -660,7 +702,8 @@ fn unbraced_closure_body(expr: &ClosureExpr) -> Option<Expr> {
     if expr.ret_type().is_some() {
         return None;
     }
-    single_line_block_expr(block)
+    let inner = NestedPlainBlocks::of(block.clone()).inner;
+    single_line_block_expr(&inner).or_else(|| (inner != *block).then_some(Expr::BlockExpr(inner)))
 }
 
 /// Whether a closure body without braces may span more lines: a block-like expression (`|x| unsafe {`
@@ -751,28 +794,36 @@ fn closure_body_layouts(
         }
     };
     let block_like = is_block_like_expr(&inner);
+    let inner_node = inner.syntax().clone();
     let inner_frag = format_expr(fmt, inner);
-    let mut unbraced = Builder::new(fmt);
-    unbraced.push(if block_like {
+    let unbraced = if block_like {
         inner_frag.clone()
     } else {
         fmt.flat(inner_frag.clone())
-    });
+    };
     match body {
-        // The braces of the source are removed
+        // The braces of the source are removed, or only the outer ones of nested blocks
         Expr::BlockExpr(block) => {
-            let close = block.stmt_list().unwrap().r_curly_token().unwrap();
-            unbraced.skip_to_token(close);
-            if !keep_braces {
-                let braced = format_block_expr_with_tail(fmt, block, Some(inner_frag));
-                return (fmt.alt_frag(unbraced.into_frag(), braced), None);
+            let blocks = NestedPlainBlocks::of(block);
+            let unbraced = blocks.skip_braces(fmt, unbraced);
+            // The innermost block is the body, `{ { g(); x } }`: its braces are kept
+            if blocks.inner.syntax() == &inner_node {
+                return (unbraced.clone(), Some(unbraced));
             }
-            let (inline, braced) = inline_and_broken_block(fmt, block, inner_frag);
-            let all = fmt.alt_frag(unbraced.into_frag(), braced.clone());
+            if !keep_braces {
+                let braced =
+                    format_block_expr_with_tail(fmt, blocks.inner.clone(), Some(inner_frag));
+                let braced = blocks.skip_outer_braces(fmt, braced);
+                return (fmt.alt_frag(unbraced, braced), None);
+            }
+            let (inline, braced) = inline_and_broken_block(fmt, blocks.inner.clone(), inner_frag);
+            let inline = blocks.skip_outer_braces(fmt, inline);
+            let braced = blocks.skip_outer_braces(fmt, braced);
+            let all = fmt.alt_frag(unbraced, braced.clone());
             (all, Some(fmt.alt_frag(inline, braced)))
         }
         _ => {
-            let all = fmt.alt_frag(unbraced.into_frag(), format_added_braces(fmt, inner_frag));
+            let all = fmt.alt_frag(unbraced, format_added_braces(fmt, inner_frag));
             (all.clone(), Some(all))
         }
     }
@@ -782,12 +833,12 @@ fn closure_body_layouts(
 /// arm body that does not fit on the line
 pub(super) fn format_added_braces(fmt: &Formatter, inner: Frag) -> Frag {
     let mut braced = Builder::new(fmt);
-    braced.push_generated("{", BraceOpen);
+    braced.push_generated(OPEN_BRACE_DOC, BraceOpen);
     let mut line = Builder::new(fmt);
     line.push(inner);
     line.push_newline();
     braced.push(fmt.body_after_opener(false, line.into_frag()));
-    braced.push_generated("}", BraceClose);
+    braced.push_generated(CLOSE_BRACE_DOC, BraceClose);
     braced.into_frag()
 }
 
@@ -808,12 +859,7 @@ fn format_record_expr(fmt: &Formatter, expr: RecordExpr) -> Frag {
             if let Some(base) = list.spread() {
                 spread.push(format_expr(fmt, base));
             }
-            fields.push(ListItem {
-                frag: spread.into_frag(),
-                comma: None,
-                own_line: false,
-                overflow: Overflow::Never,
-            });
+            fields.push(ListItem::new(spread.into_frag()));
             TrailingSeparator::Omitted
         }
         None => TrailingSeparator::IfVertical,

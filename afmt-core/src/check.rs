@@ -1,4 +1,4 @@
-use crate::utils::{is_brace_macro_expr, is_jump_expr, line_column};
+use crate::utils::{is_brace_macro_expr, is_stray_semicolon, line_column, trailing_jump_stmt};
 use ra_ap_syntax::ast::{self, HasAttrs, HasVisibility, Use, UseTree};
 use ra_ap_syntax::{
     AstNode, Direction, NodeOrToken, SourceFile, SyntaxKind, SyntaxNode, SyntaxToken, TextSize,
@@ -124,12 +124,7 @@ fn steps(file: &SourceFile) -> Vec<(Step, TextSize)> {
                 }
                 out.push((Step::Leave(node.kind()), node.text_range().end()))
             }
-            WalkEvent::Enter(NodeOrToken::Token(token))
-                if !token.kind().is_trivia()
-                    && !is_trailing_comma(&token)
-                    && !is_leading_pipe(&token)
-                    && !is_empty_stmt(&token) =>
-            {
+            WalkEvent::Enter(NodeOrToken::Token(token)) if is_compared_token(&token) => {
                 // A shebang includes its line break, which is layout
                 let text = token.text().trim_end().to_string();
                 out.push((Step::Token(token.kind(), text), token.text_range().start()))
@@ -157,12 +152,12 @@ fn sort_use_runs(steps: &mut Vec<(Step, TextSize)>) {
     }
 }
 
-/// The source text of `node` without trivia and trailing commas, which the formatter adds or removes
-/// (`#[cfg(any(a, b,))]`)
+/// The source text of `node`, only the compared tokens (`is_compared_token`): `#[cfg(any(a, b,))]` is
+/// `#[cfg(any(a,b))]`
 fn code_text(node: &SyntaxNode) -> String {
     node.descendants_with_tokens()
         .filter_map(NodeOrToken::into_token)
-        .filter(|t| !t.kind().is_trivia() && !is_trailing_comma(t))
+        .filter(is_compared_token)
         .map(|t| t.text().to_string())
         .collect()
 }
@@ -215,25 +210,21 @@ fn canonical_use_tree(tree: &UseTree) -> Option<String> {
     Some(text)
 }
 
-/// The statement `return;`, `break;` or `continue;` ending a block, whose `;` the formatter adds or
-/// removes (`trailing_semicolon`)
+/// The statement `return;`, `break;` or `continue;` ending a block (see `trailing_jump_stmt`)
 fn is_trailing_jump_stmt(node: &SyntaxNode) -> bool {
-    let Some(stmt) = ast::ExprStmt::cast(node.clone()) else {
-        return false;
-    };
-    stmt.expr().is_some_and(|expr| is_jump_expr(expr.syntax()))
-        && node
-            .parent()
-            .is_some_and(|p| p.kind() == SyntaxKind::STMT_LIST)
-        && node.next_sibling().is_none()
+    node.parent()
+        .and_then(ast::StmtList::cast)
+        .and_then(|list| trailing_jump_stmt(&list))
+        .is_some_and(|stmt| stmt.syntax() == node)
 }
 
-/// A stray `;` in a block, which is removed (`rewrite/empty_stmts.rs`)
-fn is_empty_stmt(token: &SyntaxToken) -> bool {
-    token.kind() == SyntaxKind::SEMICOLON
-        && token
-            .parent()
-            .is_some_and(|p| p.kind() == SyntaxKind::STMT_LIST)
+/// A token that is compared: not trivia, and not a token the formatter adds or removes (a trailing
+/// comma, the leading `|` of an or-pattern, a stray `;`)
+fn is_compared_token(token: &SyntaxToken) -> bool {
+    !token.kind().is_trivia()
+        && !is_trailing_comma(token)
+        && !is_leading_pipe(token)
+        && !is_stray_semicolon(token)
 }
 
 /// The `|` in front of the first pattern of an or-pattern, `| A | B`, which the formatter drops

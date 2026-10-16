@@ -9,12 +9,13 @@ use super::format_unsupported;
 use super::item::format_item;
 use super::pat::format_pat;
 use super::ty::format_type;
+use crate::doc::SEMICOLON_DOC;
 use crate::format::common::{push_label, push_modifiers};
 use crate::formatter::Edge::{Comma, Operator, Word};
 use crate::formatter::{Builder, Formatter, Frag};
 use crate::layout::head::HeadLayouts;
 use crate::layout::list::Delimiters;
-use crate::utils::is_jump_expr;
+use crate::utils::{is_jump_expr, trailing_jump_stmt};
 use ra_ap_syntax::ast::{BlockExpr, ExprStmt, HasAttrs, LetStmt, Stmt, StmtList};
 use ra_ap_syntax::{AstNode, SyntaxKind};
 
@@ -30,6 +31,8 @@ fn format_let_stmt(fmt: &Formatter, stmt: LetStmt) -> Frag {
         lhs.push(format_type(fmt, ty));
     }
     let lhs = lhs.into_frag();
+    // `let pat = init else { expr };` on a single line (Style Guide), started like `builder`
+    let mut single_line = None;
     match (stmt.initializer(), stmt.let_else()) {
         (Some(init), Some(let_else)) => {
             let block = let_else.block_expr().unwrap();
@@ -37,30 +40,20 @@ fn format_let_stmt(fmt: &Formatter, stmt: LetStmt) -> Frag {
             let else_keyword = fmt.token(let_else.else_token().unwrap(), Word);
             let eq = fmt.token(stmt.eq_token().unwrap(), Operator);
             let init = format_head_expr(fmt, init);
-            // `let pat = init else { expr };` on a single line (Style Guide), the whole statement
-            // within `single_line_let_else_max_width` (as in rustfmt)
-            let single_line = match (tail.clone(), init.other.clone()) {
-                (Some(tail), Some(init)) => format_single_line_stmt(
-                    fmt,
-                    builder.clone(),
-                    [
-                        lhs.clone(),
-                        eq.clone(),
-                        init,
-                        else_keyword.clone(),
-                        format_braced_block(fmt, &block, tail),
-                    ],
-                    fmt.config().single_line_let_else_max_width,
-                ),
-                _ => None,
-            };
+            if let (Some(tail), Some(init)) = (tail.clone(), init.other.clone()) {
+                let mut flat = builder.clone();
+                flat.push(lhs.clone());
+                flat.push(eq.clone());
+                flat.push(init);
+                flat.push(else_keyword.clone());
+                flat.push(format_braced_block(fmt, &block, tail));
+                single_line = Some(flat);
+            }
             let else_block = Builder::concat(
                 fmt,
                 [else_keyword, format_block_expr_with_tail(fmt, block, tail)],
             );
             builder.push(format_let_else(fmt, lhs, eq, init, else_block));
-            builder.push_separator(SyntaxKind::SEMICOLON);
-            return fmt.alt_opt(builder.into_frag(), single_line);
         }
         (Some(init), None) => {
             builder.push(lhs);
@@ -69,27 +62,15 @@ fn format_let_stmt(fmt: &Formatter, stmt: LetStmt) -> Frag {
         }
         (None, _) => builder.push(lhs),
     }
-    builder.push_separator(SyntaxKind::SEMICOLON);
-    builder.into_frag()
-}
-
-/// The statement started in `builder`, followed by `parts` and `;`, on a single line at most
-/// `max_width` wide, `;` included. It is measured without `;`, whose separator takes the comments
-/// after it (the next own-line comment too).
-fn format_single_line_stmt(
-    fmt: &Formatter,
-    mut builder: Builder,
-    parts: impl IntoIterator<Item = Frag>,
-    max_width: u32,
-) -> Option<Frag> {
-    for part in parts {
-        builder.push(part);
-    }
-    let flat = fmt.flat_within(builder.into_frag(), max_width.checked_sub(1)?)?;
-    let mut builder = Builder::new(fmt);
-    builder.push(flat);
-    builder.push_separator(SyntaxKind::SEMICOLON);
-    Some(builder.into_frag())
+    let with_semicolon = |mut builder: Builder| {
+        builder.push_separator(SyntaxKind::SEMICOLON);
+        builder.into_frag()
+    };
+    // The whole statement within `single_line_let_else_max_width` (as in rustfmt)
+    let single_line = single_line.map(with_semicolon).and_then(|single_line| {
+        fmt.flat_within(single_line, fmt.config().single_line_let_else_max_width)
+    });
+    fmt.alt_opt(with_semicolon(builder), single_line)
 }
 
 /// `pat = init else {` of `let pat = init else { ... };` (Style Guide "else blocks (let-else
@@ -121,21 +102,31 @@ fn format_let_else(
         .into_iter()
         .flatten()
         .reduce(|a, b| fmt.alt_frag(a, b));
-    let flat_lhs = HeadLayouts {
-        hanging: hanging.clone(),
-        other: same_line.clone(),
+    // `else {` on its own line after a hanging initializer, shared by both left-hand sides
+    let hanging_else = hanging.map(|hanging| {
+        let head = HeadLayouts {
+            hanging: Some(hanging),
+            other: None,
+        };
+        format_head_followed_by(fmt, &head, else_block.clone())
+    });
+    // The initializer placed by `other`, then the hanging one
+    let init_else = |other: Option<Frag>| {
+        let other_else = other.map(|other| {
+            let head = HeadLayouts {
+                hanging: None,
+                other: Some(other),
+            };
+            format_head_followed_by(fmt, &head, else_block.clone())
+        });
+        fmt.alt_some(hanging_else.clone(), other_else)
+            .expect("an initializer has a layout")
     };
-    let broken_lhs = HeadLayouts {
-        hanging,
-        other: same_line.map(|same_line| fmt.multi_line(same_line)),
-    };
-    let with_init = |lhs: Frag, placed: &HeadLayouts| {
-        let init_else = format_head_followed_by(fmt, placed, else_block.clone());
-        Builder::concat(fmt, [lhs, eq.clone(), init_else])
-    };
+    let flat_lhs = init_else(same_line.clone());
+    let broken_lhs = init_else(same_line.map(|same_line| fmt.multi_line(same_line)));
     fmt.alt_frag(
-        with_init(fmt.flat(lhs.clone()), &flat_lhs),
-        with_init(fmt.multi_line(lhs), &broken_lhs),
+        Builder::concat(fmt, [fmt.flat(lhs.clone()), eq.clone(), flat_lhs]),
+        Builder::concat(fmt, [fmt.multi_line(lhs), eq, broken_lhs]),
     )
 }
 
@@ -182,23 +173,18 @@ fn format_stmt_list(fmt: &Formatter, stmt_list: StmtList, tail: Option<Frag>) ->
         }
         let mut builder = Builder::new(fmt);
         builder.push(tail);
-        builder.push_generated(";", Comma);
+        builder.push_generated(SEMICOLON_DOC, Comma);
         builder.into_frag()
     });
-    // The last statement `break;` of a block without a tail expression
-    let last_jump = (!trailing_semicolon && tail.is_none())
-        .then(|| stmt_list.statements().last())
-        .flatten()
-        .filter(|stmt| match stmt {
-            Stmt::ExprStmt(stmt) => stmt.expr().is_some_and(|e| is_jump_expr(e.syntax())),
-            _ => false,
-        });
+    let last_jump = (!trailing_semicolon)
+        .then(|| trailing_jump_stmt(&stmt_list))
+        .flatten();
     let lines = stmt_list
         .attrs()
         .map(|attr| format_attr(fmt, attr))
         .chain(stmt_list.statements().map(|stmt| match stmt {
-            Stmt::ExprStmt(expr_stmt) if last_jump.as_ref() == Some(&stmt) => {
-                format_expr_stmt(fmt, expr_stmt, false)
+            Stmt::ExprStmt(stmt) if last_jump.as_ref() == Some(&stmt) => {
+                format_expr_stmt(fmt, stmt, false)
             }
             stmt => format_stmt(fmt, stmt),
         }))

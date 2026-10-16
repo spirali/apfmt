@@ -11,8 +11,8 @@ use crate::formatter::{Builder, Formatter, Frag};
 use crate::layout::chain::{operator_chain, unindented_infix_chain, unindented_infix_fill};
 use crate::layout::head::HeadLayouts;
 use crate::layout::list::{
-    Delimiters, FlatLimit, ListLayout, Overflow, TrailingSeparator, delimited_list, list_items,
-    list_items_cast,
+    Delimiters, FlatLimit, ListLayout, TrailingSeparator, delimited_list, hug_single_item,
+    list_items, list_items_cast,
 };
 use ra_ap_syntax::ast::{
     HasName, IdentPat, LiteralPat, OrPat, ParenPat, Pat, RangePat, RecordPat, RecordPatField,
@@ -74,8 +74,7 @@ fn format_pat_list(fmt: &Formatter, node: &SyntaxNode, layout: ListLayout) -> Fr
     let hug = matches!(pats.as_slice(), [pat] if is_combinable_pat(pat));
     let mut items = list_items_cast(node, |p| format_pat(fmt, p));
     if hug {
-        let item = &mut items[0];
-        item.overflow = Overflow::With(item.frag.clone());
+        hug_single_item(&mut items);
     }
     delimited_list(fmt, &Delimiters::parens_of(node), &items, layout)
 }
