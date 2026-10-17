@@ -34,6 +34,9 @@ pub struct Config {
     pub trailing_semicolon: bool,
     /// The gap after which the widest list items do not align their trailing comments; 0 disables it
     pub trailing_comment_align_threshold: u32,
+    /// The cost of a line that overflows `max_width`, in columns of overflow: a layout with one more
+    /// overflowing line is preferred only when it overflows this many columns less
+    pub overflow_line_penalty: u32,
     /// Puts a single space after the opening sigil of a comment and before the closing one:
     /// `//a` -> `// a`, `/*a*/` -> `/* a */` (see `normalize_comment_sigil_spacing`)
     pub normalize_comment_sigil_spacing: bool,
@@ -67,6 +70,7 @@ impl Default for Config {
             short_array_element_width_threshold: 10,
             trailing_semicolon: true,
             trailing_comment_align_threshold: 40,
+            overflow_line_penalty: 20,
             normalize_comment_sigil_spacing: true,
             edition: Edition::CURRENT,
             disable_all_formatting: false,

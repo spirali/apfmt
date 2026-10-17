@@ -48,6 +48,7 @@ struct TomlConfig {
     disable_all_formatting: Option<bool>,
     // afmt's own options, not in rustfmt (or not in rustfmt's meaning)
     trailing_comment_align_threshold: Option<u32>,
+    overflow_line_penalty: Option<u32>,
     normalize_comment_sigil_spacing: Option<bool>,
     /// The options that afmt does not have
     #[serde(flatten)]
@@ -114,6 +115,10 @@ impl TomlConfig {
         set_value(
             &mut config.trailing_comment_align_threshold,
             self.trailing_comment_align_threshold,
+        );
+        set_value(
+            &mut config.overflow_line_penalty,
+            self.overflow_line_penalty,
         );
         set_value(
             &mut config.normalize_comment_sigil_spacing,
@@ -255,9 +260,11 @@ mod tests {
     #[test]
     fn afmt_options() {
         let config = apply(
-            "trailing_comment_align_threshold = 0\nnormalize_comment_sigil_spacing = false\n",
+            "trailing_comment_align_threshold = 0\nnormalize_comment_sigil_spacing = false\n\
+             overflow_line_penalty = 5\n",
         );
         assert_eq!(config.trailing_comment_align_threshold, 0);
+        assert_eq!(config.overflow_line_penalty, 5);
         assert!(!config.normalize_comment_sigil_spacing);
     }
 

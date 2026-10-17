@@ -11,28 +11,29 @@ struct Measure {
     /// line is written with the next text, at the indentation current there (`Renderer`), e.g. the
     /// outer one for `)` after a broken list whose last line break is inside its `Nest`
     last: Option<u32>,
-    /// The overflow beyond the page width, quadratic in its length; saturating, a single line can be
-    /// very long (e.g. an embedded blob of data)
+    /// The overflow beyond the page width: the columns beyond it, and `overflow_line_penalty` for each
+    /// line that overflows (see `overflow`); saturating, a single line can be very long (e.g. an
+    /// embedded blob of data)
     badness: u64,
     cost: Cost,
     height: u32,
 }
 
-/// The overflow of a line part from `col` to `last` beyond `page_width`, quadratic in its length
-fn overflow(col: u32, last: u32, page_width: u32) -> u64 {
+fn overflow(col: u32, last: u32, config: &Config) -> u64 {
+    let page_width = config.max_width;
     if last <= page_width {
         return 0;
     }
-    let m = page_width.max(col);
-    let a = u64::from(m - page_width);
-    let b = u64::from(last - m);
-    b.saturating_mul(a.saturating_mul(2).saturating_add(b))
+    let penalty = if col <= page_width {
+        config.overflow_line_penalty as u64
+    } else {
+        0
+    };
+    (last - page_width.max(col)) as u64 + penalty
 }
 
 impl Measure {
-    /// `text` starting at `col`; a text with line breaks (a multi-line string literal or comment) is
-    /// printed as it is, its following lines start at column 0
-    fn from_text(col: u32, page_width: u32, text: &str) -> Self {
+    fn from_text(col: u32, config: &Config, text: &str) -> Self {
         let mut badness = 0u64;
         let mut height = 0;
         let mut start = col;
@@ -43,7 +44,7 @@ impl Measure {
                 start = 0;
             }
             last = start + unicode_width::UnicodeWidthStr::width(line) as u32;
-            badness = badness.saturating_add(overflow(start, last, page_width));
+            badness = badness.saturating_add(overflow(start, last, config));
         }
         Measure {
             last: Some(last),
@@ -53,7 +54,6 @@ impl Measure {
         }
     }
 
-    /// A layout without text, e.g. an empty text
     fn empty(ctx: &Context) -> Self {
         Measure {
             last: ctx.col,
@@ -125,7 +125,6 @@ impl LayoutSet {
     }
 
     pub fn best(&self) -> Option<&Layout> {
-        //return Some(&self.layouts[0]);
         self.layouts
             .iter()
             .min_by(|a, b| a.measure.cost_cmp(&b.measure))
@@ -511,7 +510,7 @@ impl<'a> Resolver<'a> {
                 Measure::empty(&ctx)
             } else {
                 // A line break inside a token is not a layout line break, so `ctx.flat` allows it
-                Measure::from_text(ctx.text_col(), self.config.max_width, s)
+                Measure::from_text(ctx.text_col(), self.config, s)
             };
             LayoutSet::single(Layout {
                 measure,
