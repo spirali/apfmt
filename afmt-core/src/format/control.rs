@@ -9,6 +9,7 @@ use super::expr::{
 use super::pat::pat_layouts;
 use super::stmt::{format_block_expr, format_block_expr_with_tail};
 use crate::comments::has_comments;
+use crate::utils::has_attrs;
 use crate::doc::AlignGroup;
 use crate::formatter::Edge::{Operator, Word};
 use crate::formatter::{Builder, Formatter, Frag};
@@ -89,7 +90,19 @@ pub(super) fn format_for_expr(fmt: &Formatter, expr: ForExpr) -> Frag {
 
 /// `match scrutinee {`, the head as in `if`, then the arms, each on its own line (Style Guide "Match")
 pub(super) fn format_match_expr(fmt: &Formatter, expr: MatchExpr) -> Frag {
+    let (head, arms) = match_expr_parts(fmt, &expr);
+    format_head_with_block(fmt, expr.match_token().unwrap(), &head, arms)
+}
+
+/// The head and the arms of `match scrutinee { arms }`. A head broken over more lines costs a split:
+/// the Style Guide breaks a control line only when it does not fit, so `let x =` / `    match y {`
+/// is preferred to `let x = match y` / `    .z()` / `{`.
+fn match_expr_parts(fmt: &Formatter, expr: &MatchExpr) -> (HeadLayouts, Frag) {
     let head = format_head_expr(fmt, expr.expr().unwrap());
+    let head = HeadLayouts {
+        hanging: head.hanging.map(|head| fmt.keep_together(head)),
+        other: head.other.map(|head| fmt.keep_together(head)),
+    };
     let list = expr.match_arm_list().unwrap();
     let group = fmt.align_group();
     let lines = list.attrs().map(|attr| format_attr(fmt, attr)).chain(
@@ -97,7 +110,7 @@ pub(super) fn format_match_expr(fmt: &Formatter, expr: MatchExpr) -> Frag {
             .map(|arm| format_with_attrs(fmt, &arm, false, || format_match_arm(fmt, &arm, group))),
     );
     let arms = Delimiters::braces_of(list.syntax()).format_block(fmt, lines);
-    format_head_with_block(fmt, expr.match_token().unwrap(), &head, arms)
+    (head, arms)
 }
 
 /// `{}`, without comments
@@ -120,13 +133,25 @@ fn is_control_flow(expr: &Expr) -> bool {
     )
 }
 
-/// The layouts of a match arm body: on the line of `=>` (`None` if it may not be there), and in a
-/// block (`=> {` / `    body` / `}`). A body broken over more lines costs a split in both, so a body
-/// that fits on one line in the block goes there, as in rustfmt; in added braces, it costs one more,
-/// so a body broken anyway stays on the line of `=>` rather than moving into braces only to hug its
-/// arguments (`=> Compact(` / `    new(a, b),` / `),`, as rustfmt's `prefer_next_line`); a
-/// control-flow expression is always in a block (Style Guide).
-fn arm_body_layouts(fmt: &Formatter, body: Expr) -> (Option<Frag>, Frag) {
+/// The layouts of a match arm body, see `arm_body_layouts`
+struct ArmBodyLayouts {
+    /// On the line of `=>` (`None` if it may not be there)
+    same_line: Option<Frag>,
+    /// Whether the left-hand side must stay on one line before `same_line`
+    flat_lhs: bool,
+    /// In a block: `=> {` / `    body` / `}`
+    block: Frag,
+}
+
+/// The layouts of a match arm body: on the line of `=>`, and in a block. A body broken over more
+/// lines costs a split in both, so a body that fits on one line in the block goes there, as in
+/// rustfmt; in added braces, it costs one more, so a body broken anyway stays on the line of `=>`
+/// rather than moving into braces only to hug its arguments (`=> Compact(` / `    new(a, b),` /
+/// `),`, as rustfmt's `prefer_next_line`); a control-flow expression is always in a block (Style
+/// Guide). A `match` stays on the line of `=>` only if the whole line `pat => match x {` fits on
+/// one line, as in rustfmt: otherwise it goes in the block, also when a line inside it overflows
+/// anyway and the block indents it more.
+fn arm_body_layouts(fmt: &Formatter, body: Expr) -> ArmBodyLayouts {
     // `blocks`: the plain blocks around the expression in the source (`{ expr }`, `{ { expr } }`),
     // removed when the body stays on the line of `=>`; a plain block that is not `{ expr }` stays a
     // block (only the outer ones of nested blocks are removed)
@@ -137,27 +162,54 @@ fn arm_body_layouts(fmt: &Formatter, body: Expr) -> (Option<Frag>, Frag) {
                 Some(expr) => (expr, Some(blocks)),
                 None => {
                     let block = format_block_expr(fmt, blocks.inner.clone());
-                    return (None, blocks.skip_outer_braces(fmt, block));
+                    return ArmBodyLayouts {
+                        same_line: None,
+                        flat_lhs: false,
+                        block: blocks.skip_outer_braces(fmt, block),
+                    };
                 }
             }
         }
         body => (body, None),
     };
     let control_flow = is_control_flow(&expr);
-    let inner = format_expr_at(fmt, expr, ExprPosition::ArmBody);
-    let inner = fmt.keep_together(inner);
+    // A `match` on the line of `=>`: the left-hand side and its head on one line
+    let flat_lhs = matches!(&expr, Expr::MatchExpr(match_expr) if !has_attrs(match_expr));
+    let (inner, same_line_inner) = match &expr {
+        Expr::MatchExpr(match_expr) if flat_lhs => {
+            let (head, arms) = match_expr_parts(fmt, match_expr);
+            let keyword = match_expr.match_token().unwrap();
+            let flat_head = head.other.clone().map(|other| {
+                let mut builder = Builder::new(fmt);
+                builder.push_keyword(keyword.clone());
+                builder.push(fmt.flat(other));
+                builder.push(arms.clone());
+                fmt.keep_together(builder.into_frag())
+            });
+            let inner = format_head_with_block(fmt, keyword, &head, arms);
+            (fmt.keep_together(inner), flat_head)
+        }
+        _ => {
+            let inner = fmt.keep_together(format_expr_at(fmt, expr, ExprPosition::ArmBody));
+            (inner.clone(), Some(inner))
+        }
+    };
     let block = match &blocks {
         Some(blocks) => {
             let block = format_block_expr_with_tail(fmt, blocks.inner.clone(), Some(inner.clone()));
             blocks.skip_outer_braces(fmt, block)
         }
-        None => format_added_braces(fmt, fmt.keep_together(inner.clone())),
+        None => format_added_braces(fmt, fmt.keep_together(inner)),
     };
-    let same_line = (!control_flow).then(|| match &blocks {
+    let same_line = same_line_inner.filter(|_| !control_flow).map(|inner| match &blocks {
         Some(blocks) => blocks.skip_braces(fmt, inner),
         None => inner,
     });
-    (same_line, block)
+    ArmBodyLayouts {
+        same_line,
+        flat_lhs,
+        block,
+    }
 }
 
 /// `pat if guard => body,` (Style Guide "Match"): the body on the line of `=>` with a comma, or in a
@@ -177,7 +229,11 @@ fn format_match_arm(fmt: &Formatter, arm: &MatchArm, group: Option<AlignGroup>) 
         )
     });
     let arrow = fmt.token(arm.fat_arrow_token().unwrap(), Operator);
-    let (same_line, block) = arm_body_layouts(fmt, arm.expr().unwrap());
+    let ArmBodyLayouts {
+        same_line,
+        flat_lhs,
+        block,
+    } = arm_body_layouts(fmt, arm.expr().unwrap());
 
     let mut lhs = Builder::new(fmt);
     // A broken left-hand side with a guard breaks before `if`, so the guard stays on one line here,
@@ -205,6 +261,13 @@ fn format_match_arm(fmt: &Formatter, arm: &MatchArm, group: Option<AlignGroup>) 
     };
     let mut layouts = with_body(lhs.clone(), block.clone(), false);
     if let Some(same_line) = same_line {
+        let lhs = if flat_lhs {
+            let mut flat = Builder::new(fmt);
+            flat.push(fmt.flat(lhs.into_frag()));
+            flat
+        } else {
+            lhs
+        };
         layouts = fmt.alt_frag(with_body(lhs, same_line, true), layouts);
     }
     if let Some(guard) = guard {

@@ -9,9 +9,7 @@ fn f() {
     let value = a_long_target_expression_name[a_long_indexing_expression_name + another_long_one];
     let value =
         a_long_target_expression_name.method_call()[a_long_indexing_expression_name + another_long];
-    let value = self
-        .aaaaaaaaaaaaaaaaaaaaaa
-        .bbbbbbbbbbbbbbbbbbbbbbbbbbbbb[index]
+    let value = self.aaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbbbbb[index]
         .cccccccccccccccccccccccc()
         .ddddddd();
     let value = matrix[

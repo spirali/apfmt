@@ -192,6 +192,11 @@ fn is_fillable_list(fmt: &Formatter, exprs: &[Expr], items: &[ListItem]) -> bool
             .all(|i| fmt.flat_width(&i.frag).is_some_and(|w| w <= threshold))
 }
 
+/// Whether the expression is a literal spanning more lines: a string with line breaks
+fn is_multi_line_literal(expr: &Expr) -> bool {
+    matches!(expr, Expr::Literal(literal) if literal.token().text().contains('\n'))
+}
+
 /// Whether the last of more expressions may overflow: a closure if no other one is (Style Guide), or
 /// a block, also `unsafe`, `async` or labelled (`f(a, unsafe {` / `...` / `})`, as rustfmt does)
 fn is_overflowing_last(exprs: &[Expr]) -> bool {
@@ -222,6 +227,20 @@ fn format_expr_item(fmt: &Formatter, expr: Expr) -> (Frag, Overflow) {
                 .map_or(Overflow::Never, Overflow::With);
             (layouts.all(fmt), overflow)
         }
+        // The same for a chain with prefix operators or casts: hugged as a chain broken before every
+        // `.`, its lines would start at the indentation of the statement, the operator seemingly
+        // applying to the root only (`f(*rt` / `.worker(w)` / `.unwrap())`)
+        expr if !has_attrs(&expr)
+            && let Some(chain) = operand_chain(&expr) =>
+        {
+            let (prefix, suffix) = format_operators_around_chain(fmt, &expr);
+            let layouts = postfix_chain_parts(fmt, chain);
+            let around =
+                |chain: Frag| Builder::concat(fmt, [prefix.clone(), chain, suffix.clone()]);
+            let overflow = (layouts.other.clone())
+                .map_or(Overflow::Never, |other| Overflow::With(around(other)));
+            (around(layouts.all(fmt)), overflow)
+        }
         Expr::ClosureExpr(closure) if !has_attrs(&closure) => {
             let layouts = closure_layouts(fmt, closure);
             let overflow = layouts
@@ -248,7 +267,8 @@ fn format_expr_item(fmt: &Formatter, expr: Expr) -> (Frag, Overflow) {
 /// `is_combinable_expr`; a delimited list one does rather than break the list in as many lines, see
 /// `is_delimited_list_expr`), and so may a closure or a block after other arguments (`f(a, |x| {` /
 /// `...` / `})`, see `is_overflowing_last`);
-/// a single other expression is limited only by `max_width`. `refine` adjusts the layouts, e.g. the
+/// a single other expression is limited only by `max_width`. A list with a string literal spanning
+/// more lines is always broken (`is_multi_line_literal`). `refine` adjusts the layouts, e.g. the
 /// trailing separator.
 pub(super) fn format_expr_list(
     fmt: &Formatter,
@@ -285,13 +305,15 @@ pub(super) fn format_expr_list(
         })
         .collect::<Vec<ListItem>>();
     // A single argument that cannot overflow is not limited by `fn_call_width`, nor is a closure or
-    // a method call (the only postfix chains that can overflow are method calls and combinable
-    // expressions followed by `?`, see `is_combinable_expr`; the others, e.g. `a.b`, cannot).
-    // Another one that can (e.g. a call) is: when it does not fit, it is broken instead. All as
-    // rustfmt does; the Style Guide leaves what a small call is to the tool.
+    // a method call, also behind prefix operators or casts (see `operand_chain`). The only postfix
+    // chains that can overflow are method calls and combinable expressions followed by `?` (see
+    // `is_combinable_expr`); the others, e.g. `a.b`, cannot. Another one that can (e.g. a call) is:
+    // when it does not fit, it is broken instead. All as rustfmt does; the Style Guide leaves what a
+    // small call is to the tool.
     let unlimited = single.is_some_and(|e| {
+        let chain = operand_chain(e).unwrap_or_else(|| e.clone());
         !hug || matches!(
-            without_try(e),
+            without_try(&chain),
             Expr::ClosureExpr(_) | Expr::MethodCallExpr(_)
         )
     });
@@ -300,7 +322,12 @@ pub(super) fn format_expr_list(
     } else {
         FlatLimit::Within(width)
     };
-    let layout = ListLayout::tall(flat).fill_if(is_fillable_list(fmt, &exprs, &items));
+    // A string spanning lines is not hugged: "If ... any argument ... is multi-line, then format
+    // the call across multiple lines" (Style Guide; a literal is not combinable), as in rustfmt
+    let multi_line = exprs.iter().any(is_multi_line_literal);
+    let layout = ListLayout::tall(flat)
+        .fill_if(is_fillable_list(fmt, &exprs, &items))
+        .broken_if(multi_line);
     delimited_list(fmt, delims, &items, refine(layout))
 }
 
@@ -420,6 +447,23 @@ fn format_prefix_expr(fmt: &Formatter, expr: PrefixExpr) -> Frag {
     builder.into_frag()
 }
 
+/// The operator of `&x`, `&mut x`, `&raw const x`
+fn push_ref_operator(builder: &mut Builder, expr: &RefExpr) {
+    builder.push_token(expr.amp_token().unwrap(), Tight);
+    for token in [expr.raw_token(), expr.const_token(), expr.mut_token()]
+        .into_iter()
+        .flatten()
+    {
+        builder.push_keyword(token);
+    }
+}
+
+/// The `as Type` of `expr as Type`
+fn push_cast_type(fmt: &Formatter, builder: &mut Builder, expr: &CastExpr) {
+    builder.push_keyword(expr.as_token().unwrap());
+    builder.push(format_type(fmt, expr.ty().unwrap()));
+}
+
 fn format_paren_expr(fmt: &Formatter, expr: ParenExpr) -> Frag {
     let inner = format_expr(fmt, expr.expr().unwrap());
     Delimiters::parens_of(expr.syntax()).enclose(fmt, inner)
@@ -428,13 +472,7 @@ fn format_paren_expr(fmt: &Formatter, expr: ParenExpr) -> Frag {
 /// `&x`, `&mut x`, `&raw const x`
 fn format_ref_expr(fmt: &Formatter, expr: RefExpr) -> Frag {
     let mut builder = Builder::new(fmt);
-    builder.push_token(expr.amp_token().unwrap(), Tight);
-    for token in [expr.raw_token(), expr.const_token(), expr.mut_token()]
-        .into_iter()
-        .flatten()
-    {
-        builder.push_keyword(token);
-    }
+    push_ref_operator(&mut builder, &expr);
     builder.push(format_expr(fmt, expr.expr().unwrap()));
     builder.into_frag()
 }
@@ -443,9 +481,60 @@ fn format_ref_expr(fmt: &Formatter, expr: RefExpr) -> Frag {
 fn format_cast_expr(fmt: &Formatter, expr: CastExpr) -> Frag {
     let mut builder = Builder::new(fmt);
     builder.push(format_expr(fmt, expr.expr().unwrap()));
-    builder.push_keyword(expr.as_token().unwrap());
-    builder.push(format_type(fmt, expr.ty().unwrap()));
+    push_cast_type(fmt, &mut builder, &expr);
     builder.into_frag()
+}
+
+/// The postfix chain that is the operand of the prefix operators and casts `expr` consists of
+/// (`&a.b()`, `!a.b()`, `*a.b()`, `a.b() as T`, also nested: `&mut *a.b()`), if it is combinable;
+/// `None` for another expression, also a chain without operators
+fn operand_chain(expr: &Expr) -> Option<Expr> {
+    let operand = match expr {
+        Expr::RefExpr(expr) => expr.expr()?,
+        Expr::PrefixExpr(expr) => expr.expr()?,
+        Expr::CastExpr(expr) => expr.expr()?,
+        _ => return None,
+    };
+    match operand {
+        Expr::MethodCallExpr(_) | Expr::TryExpr(_)
+            if !has_attrs(&operand) && is_combinable_expr(&operand) =>
+        {
+            Some(operand)
+        }
+        operand => operand_chain(&operand),
+    }
+}
+
+/// The prefix operators in front of the chain of `expr` and the casts after it (see
+/// `operand_chain`): `&mut *` and `as T` of `&mut *a.b() as T`
+fn format_operators_around_chain(fmt: &Formatter, expr: &Expr) -> (Frag, Frag) {
+    let mut prefix = Builder::new(fmt);
+    let mut casts = Vec::new();
+    let mut expr = expr.clone();
+    loop {
+        expr = match expr {
+            Expr::RefExpr(e) => {
+                push_ref_operator(&mut prefix, &e);
+                e.expr().unwrap()
+            }
+            Expr::PrefixExpr(e) => {
+                prefix.push_token(prefix_op_token(&e), Tight);
+                e.expr().unwrap()
+            }
+            Expr::CastExpr(e) => {
+                let operand = e.expr().unwrap();
+                casts.push(e);
+                operand
+            }
+            _ => break,
+        };
+    }
+    // The innermost cast is the first one after the chain
+    let mut suffix = Builder::new(fmt);
+    for cast in casts.iter().rev() {
+        push_cast_type(fmt, &mut suffix, cast);
+    }
+    (prefix.into_frag(), suffix.into_frag())
 }
 
 /// `a..b`, `a..=b`, `a..`, `..b` or `..`, without spaces
@@ -737,15 +826,16 @@ fn format_index(fmt: &Formatter, expr: &IndexExpr) -> Frag {
     fmt.keep_together(delimited_list(fmt, &delims, &[index], layout))
 }
 
-/// Splits a postfix chain `a.b()?.c[0]` into its root (`a`, the return value) and the postfix
-/// expressions applied to it, innermost first
+/// Splits a postfix chain `a.b()?.c()` into its root (`a`, the return value) and the postfix
+/// expressions applied to it, innermost first. An index is not a part of a chain, as in rustfmt (the
+/// Style Guide's chain is of field accesses, method calls and `?`): it ends the root, so the root of
+/// `a.b[i].c()` is `a.b[i]`, itself a chain followed by an index (see `postfix_chain_parts`).
 fn collect_postfix_chain(expr: Expr, postfix: &mut Vec<Expr>) -> Expr {
     let inner = match &expr {
         Expr::MethodCallExpr(e) => e.receiver(),
         Expr::FieldExpr(e) => e.expr(),
         Expr::AwaitExpr(e) => e.expr(),
         Expr::TryExpr(e) => e.expr(),
-        Expr::IndexExpr(e) => e.base(),
         _ => return expr,
     };
     let root = collect_postfix_chain(inner.unwrap(), postfix);
@@ -979,14 +1069,42 @@ fn format_postfix_chain(fmt: &Formatter, expr: Expr) -> Frag {
     postfix_chain_parts(fmt, expr).all(fmt)
 }
 
-/// The layouts of a postfix chain, see `postfix_chain_layouts`. `?` and indexes stay with the element
-/// (or root) in front of them: `a.b()?[0]`.
+/// The layouts of a postfix chain, see `postfix_chain_layouts`. `?` stays with the element (or root)
+/// in front of it: `a.b()?`. An index follows the chain in front of it, whose `chain_width` it does
+/// not count, as in rustfmt: `a.b().c()[0]`, `a` / `.b()` / `.c()[0]`; a root ending with an index
+/// is such a chain itself (see `collect_postfix_chain`).
 fn postfix_chain_parts(fmt: &Formatter, expr: Expr) -> HeadLayouts {
     debug_assert_attrs_placed(fmt, &expr);
+    if let Expr::IndexExpr(index_expr) = &expr {
+        let base = index_expr.base().unwrap();
+        let index = format_index(fmt, index_expr);
+        let with_index = |base: Frag| Builder::concat(fmt, [base, index.clone()]);
+        let base = if is_postfix_expr(&base) && !has_attrs(&base) {
+            postfix_chain_parts(fmt, base)
+        } else {
+            HeadLayouts {
+                hanging: None,
+                other: Some(format_expr(fmt, base)),
+            }
+        };
+        return HeadLayouts {
+            hanging: base.hanging.map(with_index),
+            other: base.other.map(with_index),
+        };
+    }
     let mut postfix = Vec::new();
     let root_expr = collect_postfix_chain(expr, &mut postfix);
+    // A root ending with an index is a chain itself, see `postfix_chain_layouts`
+    let root_layouts = if is_postfix_expr(&root_expr) && !has_attrs(&root_expr) {
+        postfix_chain_parts(fmt, root_expr)
+    } else {
+        HeadLayouts {
+            hanging: None,
+            other: Some(format_expr(fmt, root_expr)),
+        }
+    };
+    // `?` following the root
     let mut root = Builder::new(fmt);
-    root.push(format_expr(fmt, root_expr));
     let mut elements: Vec<(Builder, Builder)> = Vec::new();
     for expr in postfix {
         let mut head = Builder::new(fmt);
@@ -1015,11 +1133,6 @@ fn postfix_chain_parts(fmt: &Formatter, expr: Expr) -> HeadLayouts {
                 let last = elements.last_mut().map_or(&mut root, |(_, tail)| tail);
                 last.push(fmt.postfix_token(e.question_mark_token().unwrap()));
             }
-            Expr::IndexExpr(e) => {
-                let index = format_index(fmt, &e);
-                let last = elements.last_mut().map_or(&mut root, |(_, tail)| tail);
-                last.push(index);
-            }
             _ => unreachable!("not a postfix expression: {expr:?}"),
         }
     }
@@ -1030,7 +1143,13 @@ fn postfix_chain_parts(fmt: &Formatter, expr: Expr) -> HeadLayouts {
             tail: tail.into_frag(),
         })
         .collect::<Vec<_>>();
-    let (hanging, other) = postfix_chain_layouts(fmt, root.into_frag(), &elements);
+    let root_suffix = root.into_frag();
+    let with_suffix = |root: Frag| Builder::concat(fmt, [root, root_suffix.clone()]);
+    let root = HeadLayouts {
+        hanging: root_layouts.hanging.map(with_suffix),
+        other: root_layouts.other.map(with_suffix),
+    };
+    let (hanging, other) = postfix_chain_layouts(fmt, root, &elements);
     HeadLayouts { hanging, other }
 }
 
@@ -1050,7 +1169,9 @@ fn is_postfix_expr(expr: &Expr) -> bool {
 /// after `=` with the expression on an indented line, which hangs (Style Guide). The expression broken
 /// over more lines costs a split in both, so it moves to the next line when it fits on one line there
 /// (as in rustfmt). A broken pattern costs a split; a broken or-pattern hangs too (see
-/// `pat_layouts`).
+/// `pat_layouts`). After a broken pattern, `{` follows only an expression spanning more lines, whose
+/// last line is then closing delimiters (Style Guide); after one on a single line (`} = x`), the head
+/// hangs and `{` goes on its own line, as `else {` of a `let`-`else` (see `format_let_else`).
 fn let_head_layouts(fmt: &Formatter, expr: &LetExpr) -> HeadLayouts {
     let pat = pat_layouts(fmt, expr.pat().unwrap());
     let all_pat = pat.clone().all(fmt);
@@ -1064,14 +1185,22 @@ fn let_head_layouts(fmt: &Formatter, expr: &LetExpr) -> HeadLayouts {
         other: rhs.other.map(|frag| fmt.keep_together(frag)),
     };
     let other = (rhs.other.clone())
-        .zip(pat.other)
-        .map(|(rhs, pat)| with_pat(pat, rhs));
+        .zip(pat.other.clone())
+        .map(|(rhs, pat)| {
+            fmt.alt_frag(
+                with_pat(fmt.flat(pat.clone()), rhs.clone()),
+                with_pat(fmt.multi_line(pat), fmt.multi_line(rhs)),
+            )
+        });
     let mut hanging = rhs
         .hanging
         .clone()
         .map(|rhs| with_pat(all_pat.clone(), rhs));
     if let (Some(pat), Some(rhs)) = (pat.hanging, rhs.other.clone()) {
         hanging = fmt.alt_some(hanging, Some(with_pat(pat, rhs)));
+    }
+    if let (Some(pat), Some(rhs)) = (pat.other, rhs.other.clone()) {
+        hanging = fmt.alt_some(hanging, Some(with_pat(fmt.multi_line(pat), fmt.flat(rhs))));
     }
     let next_line = Builder::concat(
         fmt,

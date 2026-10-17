@@ -2,6 +2,7 @@
 
 use crate::formatter::Edge::Operator;
 use crate::formatter::{Builder, Formatter, Frag};
+use crate::layout::head::HeadLayouts;
 use crate::layout::list::FlatLimit;
 use ra_ap_syntax::{NodeOrToken, SyntaxKind, SyntaxNode};
 
@@ -91,8 +92,8 @@ fn chain(fmt: &Formatter, first: Frag, rest: &[(Frag, Frag)], indent: bool) -> F
     fmt.alt_frag(fmt.flat(flat), vertical)
 }
 
-/// An element of a postfix chain: `.field`, `.method::<T>(args)` or `.await`, with the `?` and
-/// indexes following it. `head` stays on one line; `tail` (the arguments and what follows them, may
+/// An element of a postfix chain: `.field`, `.method::<T>(args)` or `.await`, with the `?`
+/// following it (an index is not a part of a chain, see `postfix_chain_parts` in `format/expr.rs`). `head` stays on one line; `tail` (the arguments and what follows them, may
 /// be empty) may break.
 pub(crate) struct ChainElement {
     pub head: Frag,
@@ -110,21 +111,36 @@ pub(crate) struct ChainElement {
 ///   their own lines, so this layout costs a split, as every broken element in the previous layout
 ///   does.
 ///
+/// `root` is a chain itself when it ends with an index (`a.b[i].c()`, see `postfix_chain_parts` in
+/// `format/expr.rs`): broken before its own elements (`root.hanging`), the elements follow on lines at
+/// the same indentation, as if it were one chain; `root.other` are its other layouts.
+///
 /// Returns the broken layout, with indented continuation lines (a hanging indent), and the others;
-/// without elements (`a?[0]`), there is only the root.
+/// without elements (`a?`), there is only the root.
 pub(crate) fn postfix_chain_layouts(
     fmt: &Formatter,
-    root: Frag,
+    root: HeadLayouts,
     elements: &[ChainElement],
 ) -> (Option<Frag>, Option<Frag>) {
-    let Some(last) = elements.last() else {
-        return (None, Some(root));
-    };
+    if elements.is_empty() {
+        return (root.hanging, root.other);
+    }
     let full = elements
         .iter()
         .map(|e| Builder::concat(fmt, [e.head.clone(), e.tail.clone()]))
         .collect::<Vec<_>>();
-    let vertical = vertical_chain(fmt, &root, &full);
+    // A broken root chain continued by the elements, see `vertical_chain`
+    let continued = root.hanging.map(|root| {
+        let mut builder = Builder::new(fmt);
+        builder.push(root);
+        builder.push_lines(full.iter().map(|e| fmt.keep_together(e.clone())), true);
+        builder.into_frag()
+    });
+    let Some(root) = root.other else {
+        return (continued, None);
+    };
+    let vertical = fmt.alt_some(Some(vertical_chain(fmt, &root, &full)), continued);
+    let last = elements.last().unwrap();
 
     let limit = if elements.len() >= 2 {
         FlatLimit::Within(fmt.config().chain_width)
@@ -161,7 +177,7 @@ pub(crate) fn postfix_chain_layouts(
         let overflow = Builder::concat(fmt, [line, fmt.multi_line(last.tail.clone())]);
         other = Some(fmt.alt_opt(fmt.dispreferred(overflow), other));
     }
-    (Some(vertical), other)
+    (vertical, other)
 }
 
 /// The chain broken before every element, see `postfix_chain_layouts`; `elements` are formatted. A
