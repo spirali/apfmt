@@ -164,7 +164,10 @@ pub(crate) fn postfix_chain_layouts(
     (Some(vertical), other)
 }
 
-/// The chain broken before every element, see `postfix_chain_layouts`; `elements` are formatted
+/// The chain broken before every element, see `postfix_chain_layouts`; `elements` are formatted. A
+/// short root takes the elements that follow it while it is short on a single line and no comment
+/// separates them (`x.baz?` / `    .qux()`); then the lines after this head are laid out by
+/// `lines_after_head`.
 fn vertical_chain(fmt: &Formatter, root: &Frag, elements: &[Frag]) -> Frag {
     // An element broken over more lines costs a split: the Style Guide prefers single-line elements;
     // so does the root (`foo(` / `    a,` / `).bar(...)`)
@@ -172,7 +175,58 @@ fn vertical_chain(fmt: &Formatter, root: &Frag, elements: &[Frag]) -> Frag {
         .iter()
         .map(|e| fmt.keep_together(e.clone()))
         .collect::<Vec<_>>();
-    vertical_lines(fmt, &fmt.keep_together(root.clone()), &lines)
+    let indent_width = fmt.config().tab_spaces as usize;
+    let mut head = fmt.keep_together(root.clone());
+    let mut layouts: Option<Frag> = None;
+    for k in 0..=lines.len() {
+        layouts = Some(fmt.alt_opt(lines_after_head(fmt, &head, &lines[k..]), layouts));
+        let short = fmt.flat_width(&head).is_some_and(|w| w <= indent_width);
+        if k == lines.len() || !short || head.comment_follows() {
+            break;
+        }
+        // Its last line, after what precedes the chain on it, ends at most at the next indentation
+        head = Builder::concat(fmt, [fmt.short_last_line(fmt.flat(head)), lines[k].clone()]);
+    }
+    layouts.unwrap()
+}
+
+/// `head` followed by `lines`, each on its own line: block-indented after a head on a single line;
+/// at the indentation of the head after a head broken over more lines, as in rustfmt (`foo(` /
+/// `    a,` / `)` / `.bar()` / `.baz()`). The Style Guide's `).bar()` / `    .baz()` mixes two
+/// indentations, so a head ending with a delimiter takes only a single line, the last one (`foo(` /
+/// `    a,` / `).await?`).
+///
+/// A head that is short on a single line (within `chain_width`, a small chain by itself) is not broken
+/// only to indent the lines less when one of them overflows anyway (`parse(` / `    text,` / `)` /
+/// `.map_err(...)`): after it, the lines are block-indented, also when it breaks.
+fn lines_after_head(fmt: &Formatter, head: &Frag, lines: &[Frag]) -> Frag {
+    if lines.is_empty() {
+        return head.clone();
+    }
+    let chain_width = fmt.config().chain_width as usize;
+    let short = fmt.flat_width(head).is_some_and(|w| w <= chain_width);
+    let mut indented = Builder::new(fmt);
+    indented.push(if short {
+        head.clone()
+    } else {
+        fmt.flat(head.clone())
+    });
+    indented.push_lines(lines.iter().cloned(), true);
+    let mut layout = indented.into_frag();
+    let broken_head = fmt.multi_line(head.clone());
+    if !short {
+        let mut unindented = Builder::new(fmt);
+        unindented.push(broken_head.clone());
+        unindented.push_lines(lines.iter().cloned(), false);
+        layout = fmt.alt_frag(layout, unindented.into_frag());
+    }
+    if let [line] = lines
+        && broken_head.may_end_with_delimiter()
+    {
+        let joined = Builder::concat(fmt, [fmt.short_last_line(broken_head), line.clone()]);
+        layout = fmt.alt_frag(layout, joined);
+    }
+    layout
 }
 
 /// `head` followed by `lines`, each on its own block-indented line. A short head takes the lines

@@ -122,8 +122,10 @@ fn is_control_flow(expr: &Expr) -> bool {
 
 /// The layouts of a match arm body: on the line of `=>` (`None` if it may not be there), and in a
 /// block (`=> {` / `    body` / `}`). A body broken over more lines costs a split in both, so a body
-/// that fits on one line in the block goes there, as in rustfmt; a control-flow expression is always
-/// in a block (Style Guide).
+/// that fits on one line in the block goes there, as in rustfmt; in added braces, it costs one more,
+/// so a body broken anyway stays on the line of `=>` rather than moving into braces only to hug its
+/// arguments (`=> Compact(` / `    new(a, b),` / `),`, as rustfmt's `prefer_next_line`); a
+/// control-flow expression is always in a block (Style Guide).
 fn arm_body_layouts(fmt: &Formatter, body: Expr) -> (Option<Frag>, Frag) {
     // `blocks`: the plain blocks around the expression in the source (`{ expr }`, `{ { expr } }`),
     // removed when the body stays on the line of `=>`; a plain block that is not `{ expr }` stays a
@@ -149,7 +151,7 @@ fn arm_body_layouts(fmt: &Formatter, body: Expr) -> (Option<Frag>, Frag) {
             let block = format_block_expr_with_tail(fmt, blocks.inner.clone(), Some(inner.clone()));
             blocks.skip_outer_braces(fmt, block)
         }
-        None => format_added_braces(fmt, inner.clone()),
+        None => format_added_braces(fmt, fmt.keep_together(inner.clone())),
     };
     let same_line = (!control_flow).then(|| match &blocks {
         Some(blocks) => blocks.skip_braces(fmt, inner),

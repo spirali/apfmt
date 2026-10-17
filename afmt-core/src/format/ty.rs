@@ -6,7 +6,7 @@ use super::format_unsupported_kind;
 use super::generics::{format_for_binder, format_type_bound_list};
 use super::item::{format_param_list, push_qualifiers};
 use super::path::format_path;
-use crate::format::common::{format_lifetime, format_repeat};
+use crate::format::common::format_repeat;
 use crate::formatter::Edge::{Operator, Tight, Word};
 use crate::formatter::{Builder, Formatter, Frag};
 use crate::layout::list::{Delimiters, FlatLimit, ListLayout, delimited_list, list_items_cast};
@@ -29,7 +29,8 @@ fn format_ref_type(fmt: &Formatter, ty: RefType) -> Frag {
     let mut builder = Builder::new(fmt);
     builder.push_token(ty.amp_token().unwrap(), Tight);
     if let Some(lifetime) = ty.lifetime() {
-        builder.push(format_lifetime(fmt, lifetime));
+        // always followed by a space, as a keyword: `&'a [T]`, `&'a (A, B)`
+        builder.push_keyword(lifetime.lifetime_ident_token().unwrap());
     }
     if let Some(token) = ty.mut_token() {
         builder.push_keyword(token);

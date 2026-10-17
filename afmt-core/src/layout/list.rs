@@ -1,6 +1,7 @@
 //! Delimited, comma-separated lists
 
 use crate::comments::{is_line_comment, own_line_comment_follows, trivia_from};
+use crate::doc::WeakPreference;
 use crate::formatter::Edge::{BraceClose, BraceOpen, Close, Comma, Open, Word};
 use crate::formatter::{Builder, Edge, Formatter, Frag};
 use crate::utils::with_is_last;
@@ -29,6 +30,11 @@ pub(crate) enum Overflow {
     Never,
     /// With these layouts of the item; the list layout with fewer lines wins
     With(Frag),
+    /// With these layouts of the item; the list layout with fewer lines wins, with as many lines
+    /// the overflow does: it is weakly preferred, `WeakPreference` (Style Guide: a single combinable
+    /// argument, `foo(bar(` / `...` / `))`, "apply this behavior recursively": the deepest one that
+    /// fits)
+    WeakPreference(Frag),
     /// With these layouts of the item, preferred whenever it fits: the broken layouts of the list
     /// cost a split (Style Guide: closures)
     Preferred(Frag),
@@ -714,18 +720,27 @@ pub(crate) fn delimited_list(
         return delims.format_empty(fmt);
     }
     let open = Some(delims.open.clone());
-    let (last_layouts, broken_is_fallback, overflow_only) = match &items.last().unwrap().overflow {
-        Overflow::Never => (None, false, false),
-        Overflow::With(layouts) => (Some(layouts), false, false),
-        Overflow::Preferred(layouts) => (Some(layouts), true, false),
-        Overflow::Only(layouts) => (Some(layouts), true, true),
+    let last_overflow = &items.last().unwrap().overflow;
+    let (last_layouts, overflow_only) = match last_overflow {
+        Overflow::Never => (None, false),
+        Overflow::With(layouts)
+        | Overflow::WeakPreference(layouts)
+        | Overflow::Preferred(layouts) => (Some(layouts), false),
+        Overflow::Only(layouts) => (Some(layouts), true),
     };
     // A line comment after the last item would end the line in front of the closing delimiter
     let overflow = last_layouts
         .filter(|_| !delims.has_own_line_comment() && !delims.has_line_comment_before_close())
         .and_then(|last_layouts| {
             let limit = layout.flat.unwrap_or(FlatLimit::MaxWidth);
-            overflow_layout(fmt, delims, items, last_layouts, limit, layout.trailing)
+            let overflow =
+                overflow_layout(fmt, delims, items, last_layouts, limit, layout.trailing)?;
+            Some(match last_overflow {
+                Overflow::WeakPreference(_) => {
+                    fmt.weak_preference(overflow, WeakPreference::PREFERRED)
+                }
+                _ => overflow,
+            })
         });
     let broken = (overflow.is_none() || !overflow_only).then(|| {
         let broken = match layout.broken {
@@ -741,10 +756,9 @@ pub(crate) fn delimited_list(
             BrokenList::Aligned => aligned_list(fmt, items, open.clone()),
         };
         // With a preferred overflow, the broken layouts are used only when it does not fit
-        if overflow.is_some() && broken_is_fallback {
-            fmt.dispreferred(broken)
-        } else {
-            broken
+        match (&overflow, last_overflow) {
+            (Some(_), Overflow::Preferred(_) | Overflow::Only(_)) => fmt.dispreferred(broken),
+            _ => broken,
         }
     });
     let mut layouts = fmt

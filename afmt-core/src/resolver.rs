@@ -1,6 +1,6 @@
 use crate::config::Config;
 use crate::content::{Content, ContentArena};
-use crate::doc::{AlignGroup, Cost, DocArena, DocId, DocNode};
+use crate::doc::{AlignGroup, DocArena, DocId, DocNode, Preference, WeakPreference};
 use smallvec::{SmallVec, smallvec};
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -14,27 +14,31 @@ struct Measure {
     /// The overflow beyond the page width: the columns beyond it, and `overflow_line_penalty` for each
     /// line that overflows (see `overflow`); saturating, a single line can be very long (e.g. an
     /// embedded blob of data)
-    badness: u64,
-    cost: Cost,
+    badness: u32,
+    /// Compared after `badness`, the higher the better: e.g. minus the splits (see
+    /// `DocNode::Preference`, `DocNode::KeepTogether`)
+    preference: Preference,
     height: u32,
+    /// Compared after `height`, the higher the better (see `DocNode::WeakPreference`)
+    weak_preference: WeakPreference,
 }
 
-fn overflow(col: u32, last: u32, config: &Config) -> u64 {
+fn overflow(col: u32, last: u32, config: &Config) -> u32 {
     let page_width = config.max_width;
     if last <= page_width {
         return 0;
     }
     let penalty = if col <= page_width {
-        config.overflow_line_penalty as u64
+        config.overflow_line_penalty
     } else {
         0
     };
-    (last - page_width.max(col)) as u64 + penalty
+    (last - page_width.max(col)) + penalty
 }
 
 impl Measure {
     fn from_text(col: u32, config: &Config, text: &str) -> Self {
-        let mut badness = 0u64;
+        let mut badness = 0u32;
         let mut height = 0;
         let mut start = col;
         let mut last = col;
@@ -49,8 +53,9 @@ impl Measure {
         Measure {
             last: Some(last),
             badness,
-            cost: Cost::new(0),
+            preference: Preference::NEUTRAL,
             height,
+            weak_preference: WeakPreference::NEUTRAL,
         }
     }
 
@@ -58,23 +63,28 @@ impl Measure {
         Measure {
             last: ctx.col,
             badness: 0,
-            cost: Cost::new(0),
+            preference: Preference::NEUTRAL,
             height: 0,
+            weak_preference: WeakPreference::NEUTRAL,
         }
     }
 
-    fn cost_le(&self, other: &Measure) -> bool {
-        match self.cost_cmp(other) {
+    /// Whether the layout ranks at least as well as `other` (see `rank_cmp`)
+    fn rank_le(&self, other: &Measure) -> bool {
+        match self.rank_cmp(other) {
             Ordering::Less | Ordering::Equal => true,
             Ordering::Greater => false,
         }
     }
 
-    fn cost_cmp(&self, other: &Measure) -> Ordering {
+    /// The order of layouts from the best (`Less`): the overflow, then the preference, then the
+    /// lines, then the weak preference
+    fn rank_cmp(&self, other: &Measure) -> Ordering {
         self.badness
             .cmp(&other.badness)
-            .then(self.cost.cmp(&other.cost))
+            .then(other.preference.cmp(&self.preference))
             .then(self.height.cmp(&other.height))
+            .then(other.weak_preference.cmp(&self.weak_preference))
     }
 }
 
@@ -127,7 +137,7 @@ impl LayoutSet {
     pub fn best(&self) -> Option<&Layout> {
         self.layouts
             .iter()
-            .min_by(|a, b| a.measure.cost_cmp(&b.measure))
+            .min_by(|a, b| a.measure.rank_cmp(&b.measure))
     }
 
     /*pub fn dump(&self) {
@@ -416,15 +426,24 @@ impl<'a> Resolver<'a> {
                     let layout_set = results.pop().unwrap();
                     results.push(indented(&mut self.content_arena, indent, layout_set));
                 }
-                Task::Dispreferred(cost) => {
+                Task::Preference(preference) => {
                     for layout in &mut results.last_mut().unwrap().layouts {
-                        layout.measure.cost = layout.measure.cost.saturating_add(cost);
+                        let measure = &mut layout.measure;
+                        measure.preference = measure.preference.saturating_add(preference);
                     }
                 }
-                Task::KeepTogether(cost) => {
+                Task::WeakPreference(preference) => {
                     for layout in &mut results.last_mut().unwrap().layouts {
-                        if layout.measure.height > 0 {
-                            layout.measure.cost = layout.measure.cost.saturating_add(cost);
+                        let measure = &mut layout.measure;
+                        measure.weak_preference =
+                            measure.weak_preference.saturating_add(preference);
+                    }
+                }
+                Task::KeepTogether(preference) => {
+                    for layout in &mut results.last_mut().unwrap().layouts {
+                        let measure = &mut layout.measure;
+                        if measure.height > 0 {
+                            measure.preference = measure.preference.saturating_add(preference);
                         }
                     }
                 }
@@ -434,6 +453,11 @@ impl<'a> Resolver<'a> {
                         .unwrap()
                         .layouts
                         .retain(|layout| layout.measure.height > 0);
+                }
+                Task::IgnoreOverflow => {
+                    for layout in &mut results.last_mut().unwrap().layouts {
+                        layout.measure.badness = 0;
+                    }
                 }
                 Task::ShortLastLine(max) => {
                     results
@@ -472,9 +496,15 @@ impl<'a> Resolver<'a> {
                                 .measure
                                 .badness
                                 .saturating_add(layout1.measure.badness);
-                            layout2.measure.cost =
-                                layout2.measure.cost.saturating_add(layout1.measure.cost);
+                            layout2.measure.preference = layout2
+                                .measure
+                                .preference
+                                .saturating_add(layout1.measure.preference);
                             layout2.measure.height += layout1.measure.height;
+                            layout2.measure.weak_preference = layout2
+                                .measure
+                                .weak_preference
+                                .saturating_add(layout1.measure.weak_preference);
                             let c2 = self.content_arena.make(layout2.content);
                             layout2.content = Content::Concat(c1, c2);
                         }
@@ -530,8 +560,9 @@ impl<'a> Resolver<'a> {
                 measure: Measure {
                     last: None,
                     badness: 0,
-                    cost: Cost::new(0),
+                    preference: Preference::NEUTRAL,
                     height: 1,
+                    weak_preference: WeakPreference::NEUTRAL,
                 },
                 content: Content::Newline,
             }),
@@ -547,12 +578,16 @@ impl<'a> Resolver<'a> {
             DocNode::Flat(d) => {
                 return Some((Context { flat: true, ..ctx }, *d));
             }
-            DocNode::Dispreferred(d, cost) => {
-                tasks.push(Task::Dispreferred(*cost));
+            DocNode::Preference(d, preference) => {
+                tasks.push(Task::Preference(*preference));
                 return Some((ctx, *d));
             }
-            DocNode::KeepTogether(d, cost) => {
-                tasks.push(Task::KeepTogether(*cost));
+            DocNode::WeakPreference(d, preference) => {
+                tasks.push(Task::WeakPreference(*preference));
+                return Some((ctx, *d));
+            }
+            DocNode::KeepTogether(d, preference) => {
+                tasks.push(Task::KeepTogether(*preference));
                 return Some((ctx, *d));
             }
             DocNode::MultiLine(d) => {
@@ -561,6 +596,10 @@ impl<'a> Resolver<'a> {
             }
             DocNode::ShortLastLine(d) => {
                 tasks.push(Task::ShortLastLine(ctx.indent + self.config.tab_spaces));
+                return Some((ctx, *d));
+            }
+            DocNode::IgnoreOverflow(d) => {
+                tasks.push(Task::IgnoreOverflow);
                 return Some((ctx, *d));
             }
             DocNode::Alt(doc1, doc2) => {
@@ -587,10 +626,12 @@ impl<'a> Resolver<'a> {
 enum Task {
     Resolve(Context, DocId),
     Indent(u32),
-    Dispreferred(Cost),
-    KeepTogether(Cost),
+    Preference(Preference),
+    WeakPreference(WeakPreference),
+    KeepTogether(Preference),
     MultiLine,
     ShortLastLine(u32),
+    IgnoreOverflow,
     Alt(Context, DocId),
     ConcatStart(Context, DocId),
     Concat(Context, DocId, u32),
@@ -605,7 +646,7 @@ fn indented(content_arena: &mut ContentArena, indent: u32, mut layout_set: Layou
     layout_set
 }
 
-/// The Pareto frontier of the layouts by (`last`, cost); a layout ending with a line break (`last: None`)
+/// The Pareto frontier of the layouts by (`last`, rank); a layout ending with a line break (`last: None`)
 /// counts as ending leftmost, it leaves the most room for what follows
 fn merge_layout_sets(a: LayoutSet, b: LayoutSet) -> LayoutSet {
     let mut out = LayoutVec::new();
@@ -632,12 +673,12 @@ fn merge_layout_sets(a: LayoutSet, b: LayoutSet) -> LayoutSet {
 
         match out.last() {
             Some(prev) if prev.measure.last == m.measure.last => {
-                if m.measure.cost_le(&prev.measure) {
+                if m.measure.rank_le(&prev.measure) {
                     out.pop();
                     out.push(m);
                 }
             }
-            Some(prev) if prev.measure.cost_le(&m.measure) => {}
+            Some(prev) if prev.measure.rank_le(&m.measure) => {}
             _ => out.push(m),
         }
     }

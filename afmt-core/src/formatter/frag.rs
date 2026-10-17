@@ -1,8 +1,9 @@
 //! Fragments: alternatives of a doc together with their edges, and the spacing between edges
 
+use crate::comments::trivia_from;
 use crate::doc::{DocId, EMPTY_DOC, NEWLINE_DOC, SPACE_DOC};
 use crate::formatter::Edge::Nothing;
-use ra_ap_syntax::SyntaxToken;
+use ra_ap_syntax::{SyntaxKind, SyntaxToken};
 use smallvec::{SmallVec, smallvec};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -72,6 +73,12 @@ impl Frag {
         self.branches
             .iter()
             .any(|b| matches!(b.end, Edge::Close | Edge::BraceClose))
+    }
+
+    /// Whether a comment follows the cursor in the source, before the next code token
+    pub fn comment_follows(&self) -> bool {
+        let next = self.cursor.as_ref().and_then(|c| c.next_token());
+        trivia_from(next).any(|t| t.kind() == SyntaxKind::COMMENT)
     }
 
     #[inline]

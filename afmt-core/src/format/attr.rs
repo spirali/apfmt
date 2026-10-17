@@ -122,7 +122,9 @@ fn format_key_value_meta(fmt: &Formatter, meta: KeyValueMeta) -> Frag {
 /// The comma-separated `items` of an attribute between the parentheses of `node`: on a single line
 /// if they fit within `attr_fn_like_width`, otherwise one per line, laid out as call arguments, or
 /// filled on lines with `fill`. A single item that is a list itself (`nested`) may overflow:
-/// `cfg(all(` / `...` / `))`.
+/// `cfg(all(` / `...` / `))`; as in rustfmt, its own items are measured, not the item, so the outer
+/// list is on a single line whenever the inner one is. Filled derives are on a single line whenever
+/// it fits within `max_width`, as in rustfmt.
 fn format_meta_list(
     fmt: &Formatter,
     node: &SyntaxNode,
@@ -134,7 +136,12 @@ fn format_meta_list(
         hug_single_item(&mut items);
     }
     let delims = Delimiters::parens_of(node);
-    let layout = ListLayout::tall(FlatLimit::Within(fmt.config().attr_fn_like_width)).fill_if(fill);
+    let limit = if nested || fill {
+        FlatLimit::MaxWidth
+    } else {
+        FlatLimit::Within(fmt.config().attr_fn_like_width)
+    };
+    let layout = ListLayout::tall(limit).fill_if(fill);
     delimited_list(fmt, &delims, &items, layout)
 }
 

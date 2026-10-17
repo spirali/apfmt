@@ -140,15 +140,19 @@ impl<'a> Builder<'a> {
         self.push_trivia(None, TriviaStop::Code);
     }
 
-    /// Pushes the comment `token`; a line comment ends the line (`Break`)
+    /// Pushes the comment `token`; a line comment ends the line (`Break`). A `trailing` comment (after
+    /// code, ending the line) on a single line does not count as overflow, so a long one does not
+    /// change the layout of the code in front of it, as in rustfmt; a comment after an opening
+    /// delimiter is not trailing, it moves to the next line when it does not fit (see
+    /// `Formatter::body_after_opener`).
     fn push_comment(&mut self, token: &SyntaxToken, trailing: bool) {
         let end = if is_line_comment(token) { Break } else { Word };
         let mut doc_id = self.fmt.comment_doc(token);
-        if let Some(group) = self.align_group
-            && trailing
-            && !token.text().contains('\n')
-        {
-            doc_id = self.fmt.concat(self.fmt.align_mark(group), doc_id);
+        if trailing && !token.text().contains('\n') {
+            if let Some(group) = self.align_group {
+                doc_id = self.fmt.concat(self.fmt.align_mark(group), doc_id);
+            }
+            doc_id = self.fmt.ignore_overflow(doc_id);
         }
         self.push(Frag::new(doc_id, Edge::Comment, end, None));
     }

@@ -32,7 +32,8 @@ fn format_path_segment(fmt: &Formatter, segment: PathSegment) -> Frag {
     }
     let mut builder = Builder::new(fmt);
     if let Some(token) = segment.coloncolon_token() {
-        builder.push_token(token, Tight);
+        // a word on the outside, spaced as the name it stands in front of: `impl ::std::X`, `&::a`
+        builder.push(fmt.token_with_edges(token, Word, Tight));
     }
     if let Some(name_ref) = segment.name_ref() {
         builder.push(format_name_ref(fmt, name_ref));

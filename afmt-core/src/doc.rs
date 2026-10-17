@@ -15,18 +15,40 @@ impl DocId {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct DocStrId(u32);
 
+/// How much a layout is preferred (`DocNode::Preference`, `DocNode::KeepTogether`): positive is
+/// preferred, negative dispreferred, in splits (`DISPREFERRED` is one); compared right after the
+/// overflow, before the number of lines
 #[derive(Debug, Clone, Copy, Ord, PartialOrd, Eq, PartialEq)]
-pub(crate) struct Cost(u32);
+pub(crate) struct Preference(i32);
 
-impl Cost {
+impl Preference {
+    pub const NEUTRAL: Preference = Preference(0);
+    pub const DISPREFERRED: Preference = Preference(-1);
+
     #[inline]
-    pub const fn new(value: u32) -> Self {
-        Cost(value)
+    pub const fn new(value: i32) -> Self {
+        Preference(value)
     }
 
     #[inline]
-    pub fn saturating_add(self, other: Cost) -> Self {
-        Cost::new(self.0.saturating_add(other.0))
+    pub fn saturating_add(self, other: Preference) -> Self {
+        Preference(self.0.saturating_add(other.0))
+    }
+}
+
+/// How much a layout is preferred among layouts that are otherwise equal (the same overflow, splits
+/// and lines, see `DocNode::WeakPreference`): positive is preferred, negative dispreferred; a type of
+/// its own, never mixed with a `Preference`
+#[derive(Debug, Clone, Copy, Ord, PartialOrd, Eq, PartialEq)]
+pub(crate) struct WeakPreference(i32);
+
+impl WeakPreference {
+    pub const NEUTRAL: WeakPreference = WeakPreference(0);
+    pub const PREFERRED: WeakPreference = WeakPreference(1);
+
+    #[inline]
+    pub fn saturating_add(self, other: WeakPreference) -> Self {
+        WeakPreference(self.0.saturating_add(other.0))
     }
 }
 
@@ -59,15 +81,24 @@ pub(crate) enum DocNode {
     Flat(DocId),
     /// Only layouts of the inner doc that span more than one line
     MultiLine(DocId),
-    /// The inner doc should stay on one line if possible
-    /// If broken, it adds into costs
-    KeepTogether(DocId, Cost),
-    /// Every layout of the inner doc costs a split: it is used only when the layouts without it are
-    /// worse, e.g. a layout the Style Guide accepts only as a fallback
-    Dispreferred(DocId, Cost),
+    /// The inner doc should stay on one line if possible: its layouts spanning more lines get the
+    /// preference (negative, e.g. a split)
+    KeepTogether(DocId, Preference),
+    /// Every layout of the inner doc gets the preference, compared right after the overflow: e.g. a
+    /// split, a layout the Style Guide accepts only as a fallback, used only when the layouts without
+    /// it are worse
+    Preference(DocId, Preference),
+    /// Every layout of the inner doc gets the preference, compared only after the number of lines:
+    /// it decides between layouts that are otherwise equally good, e.g. the Style Guide's preference
+    /// that does not justify a longer layout
+    WeakPreference(DocId, WeakPreference),
     /// Only layouts of the inner doc whose last line ends at most at the indentation of a nested line
     /// (`indent + indent_width`), e.g. a short chain root that the next element may follow: `x.baz?`
     ShortLastLine(DocId),
+    /// The inner doc does not count as overflow when it extends beyond the page width, e.g. a
+    /// comment after code that ends the line: a long comment does not change the layout of the code
+    /// in front of it (as in rustfmt)
+    IgnoreOverflow(DocId),
     /// Padded by the renderer to align the trailing comments of a group
     AlignMark(AlignGroup),
 }
@@ -194,8 +225,10 @@ impl DocArena {
             DocNode::Newline | DocNode::Nest(_) | DocNode::Align(_) | DocNode::MultiLine(_) => None,
             &DocNode::Flat(d)
             | &DocNode::KeepTogether(d, _)
-            | &DocNode::Dispreferred(d, _)
-            | &DocNode::ShortLastLine(d) => self.flat_width(d),
+            | &DocNode::Preference(d, _)
+            | &DocNode::WeakPreference(d, _)
+            | &DocNode::ShortLastLine(d)
+            | &DocNode::IgnoreOverflow(d) => self.flat_width(d),
             &DocNode::Concat(a, b) => {
                 let width1 = self.flat_width(a)?;
                 Some(width1 + self.flat_width(b)?)
@@ -216,8 +249,10 @@ impl DocArena {
             | &DocNode::Flat(d)
             | &DocNode::MultiLine(d)
             | &DocNode::KeepTogether(d, _)
-            | &DocNode::Dispreferred(d, _)
-            | &DocNode::ShortLastLine(d) => self.has_flat_layout(d),
+            | &DocNode::Preference(d, _)
+            | &DocNode::WeakPreference(d, _)
+            | &DocNode::ShortLastLine(d)
+            | &DocNode::IgnoreOverflow(d) => self.has_flat_layout(d),
             &DocNode::Concat(a, b) => self.has_flat_layout(a) && self.has_flat_layout(b),
             DocNode::Alt(..) => self.alt_info(doc).has_flat_layout(),
         }
@@ -266,13 +301,23 @@ impl DocArena {
                 DocNode::Align(_) => ("Align".into(), "parallelogram", "aquamarine"),
                 DocNode::Flat(_) => ("Flat".into(), "hexagon", "pink"),
                 DocNode::MultiLine(_) => ("MultiLine".into(), "octagon", "plum"),
-                DocNode::KeepTogether(_, cost) => {
-                    (format!("KeepTogether {}", cost.0), "doubleoctagon", "khaki")
-                }
-                DocNode::Dispreferred(_, cost) => {
-                    (format!("Dispreferred {}", cost.0), "tripleoctagon", "khaki")
-                }
+                DocNode::KeepTogether(_, preference) => (
+                    format!("KeepTogether {}", preference.0),
+                    "doubleoctagon",
+                    "khaki",
+                ),
+                DocNode::Preference(_, preference) => (
+                    format!("Preference {}", preference.0),
+                    "tripleoctagon",
+                    "khaki",
+                ),
+                DocNode::WeakPreference(_, preference) => (
+                    format!("WeakPreference {}", preference.0),
+                    "tripleoctagon",
+                    "lightyellow",
+                ),
                 DocNode::ShortLastLine(_) => ("ShortLastLine".into(), "house", "lightpink"),
+                DocNode::IgnoreOverflow(_) => ("IgnoreOverflow".into(), "invhouse", "lightblue"),
                 DocNode::Empty => ("<empty>".into(), "box", "lightyellow"),
                 DocNode::AlignMark(group) => {
                     (format!("AlignMark {}", group.0), "box", "lightyellow")
@@ -301,8 +346,10 @@ impl DocArena {
                 | DocNode::Flat(d)
                 | DocNode::MultiLine(d)
                 | DocNode::KeepTogether(d, _)
-                | DocNode::Dispreferred(d, _)
-                | DocNode::ShortLastLine(d) => vec![(*d, "")],
+                | DocNode::Preference(d, _)
+                | DocNode::WeakPreference(d, _)
+                | DocNode::ShortLastLine(d)
+                | DocNode::IgnoreOverflow(d) => vec![(*d, "")],
             };
             for (child, edge_label) in &children {
                 write!(out, "    n{} -> n{}", doc.0, child.0).unwrap();
@@ -358,20 +405,32 @@ impl DocArena {
                 make_ident();
                 println!(")");
             }
-            DocNode::Dispreferred(d, cost) => {
-                println!("Dispreferred[{}](", cost.0);
+            DocNode::Preference(d, preference) => {
+                println!("Preference[{}](", preference.0);
                 self.dump_helper(*d, indent + 1);
                 make_ident();
                 println!(")");
             }
-            DocNode::KeepTogether(d, cost) => {
-                println!("KeepTogether[{}](", cost.0);
+            DocNode::WeakPreference(d, preference) => {
+                println!("WeakPreference[{}](", preference.0);
+                self.dump_helper(*d, indent + 1);
+                make_ident();
+                println!(")");
+            }
+            DocNode::KeepTogether(d, preference) => {
+                println!("KeepTogether[{}](", preference.0);
                 self.dump_helper(*d, indent + 1);
                 make_ident();
                 println!(")");
             }
             DocNode::ShortLastLine(d) => {
                 println!("ShortLastLine(");
+                self.dump_helper(*d, indent + 1);
+                make_ident();
+                println!(")");
+            }
+            DocNode::IgnoreOverflow(d) => {
+                println!("IgnoreOverflow(");
                 self.dump_helper(*d, indent + 1);
                 make_ident();
                 println!(")");

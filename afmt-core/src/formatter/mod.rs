@@ -8,7 +8,8 @@ mod trivia;
 use crate::comments::{is_doc_comment, tokens_between};
 use crate::config::Config;
 use crate::doc::{
-    AlignGroup, Cost, DocArena, DocId, DocNode, EMPTY_DOC, NEWLINE_DOC, NEWLINE_OR_SPACE_DOC,
+    AlignGroup, DocArena, DocId, DocNode, EMPTY_DOC, NEWLINE_DOC, NEWLINE_OR_SPACE_DOC, Preference,
+    WeakPreference,
 };
 use crate::formatter::Edge::{Keyword, LineStart, Nothing, Word};
 use crate::resolver::Resolver;
@@ -22,9 +23,9 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use trivia::{multiline_comment_lines, normalize_comment_sigil_spacing, trim_comment_line};
 
-/// The cost of `Formatter::overflow_fallback`: more splits than any layout of real code has, and small
-/// enough that adding many of them does not saturate
-const OVERFLOW_FALLBACK_COST: Cost = Cost::new(10_000);
+/// The preference of `Formatter::overflow_fallback`: more splits than any layout of real code has,
+/// and small enough that adding many of them does not saturate
+const OVERFLOW_FALLBACK: Preference = Preference::new(-10_000);
 
 /// Source text that afmt cannot format yet, copied unchanged (see `Formatter::unsupported`)
 pub(crate) struct Unsupported {
@@ -305,8 +306,8 @@ impl<'a> Formatter<'a> {
 
     /// The two layouts of `same_or_indented_line`: on the current line, and on the next line
     pub fn same_and_indented_line(&self, frag: Frag) -> (Frag, Frag) {
-        let same = self.keep_together_with_cost(frag.clone(), Cost::new(1));
-        let next = self.keep_together_with_cost(frag, Cost::new(2));
+        let same = self.keep_together_with(frag.clone(), Preference::new(-1));
+        let next = self.keep_together_with(frag, Preference::new(-2));
         (same, self.indented_line(next))
     }
 
@@ -321,10 +322,7 @@ impl<'a> Formatter<'a> {
     /// The fragment is used only when every layout without it overflows `max_width`: it costs more
     /// splits than any layout of real code has (the resolver compares the overflow first)
     pub fn overflow_fallback(&self, frag: Frag) -> Frag {
-        self.map_branches(frag, |b| Branch {
-            doc_id: self.make_node(DocNode::Dispreferred(b.doc_id, OVERFLOW_FALLBACK_COST)),
-            ..b
-        })
+        self.preference(frag, OVERFLOW_FALLBACK)
     }
 
     /// The fragment is always followed by a space, e.g. an attribute in front of a parameter:
@@ -353,13 +351,13 @@ impl<'a> Formatter<'a> {
     /// The fragment should stay on one line if possible: a layout spanning more lines is used only when
     /// all single-line layouts overflow, e.g. a type
     pub fn keep_together(&self, frag: Frag) -> Frag {
-        self.keep_together_with_cost(frag, Cost::new(1))
+        self.keep_together_with(frag, Preference::DISPREFERRED)
     }
 
-    /// `keep_together` with a layout spanning more lines costing `cost`
-    fn keep_together_with_cost(&self, frag: Frag, cost: Cost) -> Frag {
+    /// `keep_together` with the layouts spanning more lines getting `preference`
+    fn keep_together_with(&self, frag: Frag, preference: Preference) -> Frag {
         self.map_branches(frag, |b| Branch {
-            doc_id: self.make_node(DocNode::KeepTogether(b.doc_id, cost)),
+            doc_id: self.make_node(DocNode::KeepTogether(b.doc_id, preference)),
             ..b
         })
     }
@@ -367,8 +365,24 @@ impl<'a> Formatter<'a> {
     /// The fragment costs a split, so it is used only when the layouts without it are worse: a layout
     /// the Style Guide accepts only as a fallback, e.g. `{` on its own line after an `if` head
     pub fn dispreferred(&self, frag: Frag) -> Frag {
+        self.preference(frag, Preference::DISPREFERRED)
+    }
+
+    /// The fragment gets the preference, compared right after the overflow, before the number of
+    /// lines (see `DocNode::Preference`)
+    pub fn preference(&self, frag: Frag, preference: Preference) -> Frag {
         self.map_branches(frag, |b| Branch {
-            doc_id: self.make_node(DocNode::Dispreferred(b.doc_id, Cost::new(1))),
+            doc_id: self.make_node(DocNode::Preference(b.doc_id, preference)),
+            ..b
+        })
+    }
+
+    /// The fragment gets the preference, compared only after the number of lines: it decides between
+    /// layouts that are otherwise equal, e.g. a call whose single argument overflows rather than a
+    /// broken one in as many lines
+    pub fn weak_preference(&self, frag: Frag, preference: WeakPreference) -> Frag {
+        self.map_branches(frag, |b| Branch {
+            doc_id: self.make_node(DocNode::WeakPreference(b.doc_id, preference)),
             ..b
         })
     }
@@ -381,6 +395,11 @@ impl<'a> Formatter<'a> {
             doc_id: self.make_node(DocNode::ShortLastLine(b.doc_id)),
             ..b
         })
+    }
+
+    /// The doc does not count as overflow beyond the page width (see `DocNode::IgnoreOverflow`)
+    pub(super) fn ignore_overflow(&self, doc_id: DocId) -> DocId {
+        self.make_node(DocNode::IgnoreOverflow(doc_id))
     }
 
     /// Restricts the fragment to layouts on a single line

@@ -208,14 +208,58 @@ fn has_trailing_comma(node: &SyntaxNode) -> bool {
     prev_code_token(&node.last_token().unwrap()).is_some_and(|t| t.kind() == SyntaxKind::COMMA)
 }
 
+/// The number of arguments of a list-like macro call (see `is_list_macro`), from the commas of its
+/// token tree outside nested delimiters, without a trailing one; a comma between closure parameters
+/// or generic arguments counts too, so it may be more; `None` for another expression
+pub(super) fn macro_argument_count(expr: &Expr) -> Option<usize> {
+    if !is_list_macro(expr) {
+        return None;
+    }
+    let Expr::MacroExpr(expr) = expr else {
+        return None;
+    };
+    let tree = expr.macro_call()?.token_tree()?;
+    let mut count = 0;
+    let mut in_argument = false;
+    // The nested delimiters and what they contain are child token trees; the tokens of this one are
+    // its delimiters, the commas and the tokens of the arguments
+    for child in tree.syntax().children_with_tokens() {
+        match child.kind() {
+            SyntaxKind::COMMA => {
+                count += usize::from(in_argument);
+                in_argument = false;
+            }
+            SyntaxKind::L_PAREN
+            | SyntaxKind::R_PAREN
+            | SyntaxKind::L_BRACK
+            | SyntaxKind::R_BRACK => {}
+            kind if kind.is_trivia() => {}
+            _ => in_argument = true,
+        }
+    }
+    Some(count + usize::from(in_argument))
+}
+
+/// The opening delimiter of the arguments of a macro call, `None` for another expression
+fn macro_delimiter(expr: &Expr) -> Option<SyntaxKind> {
+    let Expr::MacroExpr(expr) = expr else {
+        return None;
+    };
+    let tree = expr.macro_call()?.token_tree()?;
+    Some(tree.syntax().first_token()?.kind())
+}
+
 /// Whether the expression is a macro call whose arguments are laid out as a list (see
 /// `format_macro_call`), so it may overflow as the last argument of a call
 pub(super) fn is_list_macro(expr: &Expr) -> bool {
-    let Expr::MacroExpr(expr) = expr else {
-        return false;
-    };
-    expr.macro_call()
-        .and_then(|call| call.token_tree())
-        .and_then(|tree| tree.syntax().first_token())
-        .is_some_and(|t| matches!(t.kind(), SyntaxKind::L_PAREN | SyntaxKind::L_BRACK))
+    matches!(
+        macro_delimiter(expr),
+        Some(SyntaxKind::L_PAREN | SyntaxKind::L_BRACK)
+    )
+}
+
+/// Whether the expression is a macro call whose arguments are laid out as an array, `vec![a, b]`
+/// (see `format_macro_call`)
+pub(super) fn is_array_macro(expr: &Expr) -> bool {
+    macro_delimiter(expr) == Some(SyntaxKind::L_BRACK)
 }

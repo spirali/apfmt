@@ -4,7 +4,7 @@ use super::attr::{debug_assert_attrs_placed, format_skippable_with_attrs, format
 use super::control::{format_for_expr, format_loop_expr, format_match_expr, format_while_expr};
 use super::generics::format_for_binder;
 use super::item::closure_params_layouts;
-use super::macros::{format_macro_call, is_list_macro};
+use super::macros::{format_macro_call, is_array_macro, is_list_macro, macro_argument_count};
 use super::pat::{format_pat, pat_layouts};
 use super::path::{format_generic_arg_list, format_name_ref, format_path};
 use super::stmt::{format_block_expr, format_block_expr_with_tail, push_block_prefix};
@@ -55,6 +55,85 @@ fn is_combinable_expr(expr: &Expr) -> bool {
         Expr::TryExpr(expr) => expr.expr().is_some_and(|e| is_combinable_expr(&e)),
         _ => false,
     }
+}
+
+/// Whether the expression is a delimited list itself: a call, a list-like macro call, a struct
+/// literal or an array, also after `&` or followed by `?` (`f(&[` / `...` / `])`, `f(g(` / `...` /
+/// `)?)`); the Style Guide's examples of a combined single argument
+fn is_delimited_list_expr(expr: &Expr) -> bool {
+    match expr {
+        Expr::CallExpr(_) | Expr::ArrayExpr(_) | Expr::RecordExpr(_) => true,
+        expr if is_list_macro(expr) => true,
+        Expr::RefExpr(expr) => expr.expr().is_some_and(|e| is_delimited_list_expr(&e)),
+        Expr::TryExpr(expr) => expr.expr().is_some_and(|e| is_delimited_list_expr(&e)),
+        _ => false,
+    }
+}
+
+/// Whether the delimited list expression (see `is_delimited_list_expr`) has more than a single simple
+/// item (see `is_simple_expr`; a macro call more than a single argument): hugged, it puts more on
+/// lines of their own than one short argument (`Err(custom(` / `span,` / `"..."` / `))`, not
+/// `Compact(new_units(` / `value,` / `))`)
+fn has_list_content(expr: &Expr) -> bool {
+    let has_content = |exprs: &[Expr]| match exprs {
+        [] => false,
+        [single] => !is_simple_expr(single),
+        _ => true,
+    };
+    match expr {
+        Expr::RefExpr(expr) => expr.expr().is_some_and(|e| has_list_content(&e)),
+        Expr::TryExpr(expr) => expr.expr().is_some_and(|e| has_list_content(&e)),
+        Expr::CallExpr(call) => call
+            .arg_list()
+            .is_some_and(|args| has_content(&args.args().collect::<Vec<_>>())),
+        Expr::ArrayExpr(array) => has_content(&array.exprs().collect::<Vec<_>>()),
+        Expr::RecordExpr(record) => record.record_expr_field_list().is_some_and(|list| {
+            let values = list.fields().map(|f| f.expr()).collect::<Option<Vec<_>>>();
+            // A shorthand field (`a`) is simple
+            list.fields().count() > 1 || values.is_some_and(|values| has_content(&values))
+        }),
+        expr => macro_argument_count(expr).is_some_and(|n| n > 1),
+    }
+}
+
+/// Whether the call is a constructor: its callee is a path whose last segment starts with an
+/// uppercase letter, a tuple struct or an enum variant by Rust's naming conventions (`Ok`, `Some`,
+/// `Error::Io`)
+fn is_constructor_call(call: &CallExpr) -> bool {
+    let Some(Expr::PathExpr(callee)) = call.expr() else {
+        return false;
+    };
+    callee
+        .path()
+        .and_then(|path| path.segment())
+        .and_then(|segment| segment.name_ref())
+        .is_some_and(|name| name.text().starts_with(char::is_uppercase))
+}
+
+/// Whether the expression is an array or an array-like macro call (`vec![a, b]`), also after `&` or
+/// followed by `?`; not a repeat (`[a; n]`)
+fn is_array_like_expr(expr: &Expr) -> bool {
+    match expr {
+        Expr::ArrayExpr(array) => array.semicolon_token().is_none(),
+        Expr::RefExpr(expr) => expr.expr().is_some_and(|e| is_array_like_expr(&e)),
+        Expr::TryExpr(expr) => expr.expr().is_some_and(|e| is_array_like_expr(&e)),
+        expr => is_array_macro(expr),
+    }
+}
+
+/// Whether the single argument `expr` of the argument list `node` hugs it whenever it fits, also in
+/// more lines than the broken call (see `Overflow::Preferred`): a delimited list with more than a
+/// single short item (see `has_list_content`; not `X(Y(` / `value,` / `))` only to put it on its own
+/// line), after a constructor, which adds no information of its own (`Ok(X::new(` / `a,` / `b,` /
+/// `))`, not `Ok(` / `X::new(a, b),` / `)`), or an array, whose elements are best one per line
+/// (`f(&[` / `a,` / `b,` / `])`, the Style Guide's `combinable([`)
+fn is_preferred_hug(node: &SyntaxNode, expr: &Expr) -> bool {
+    let after_constructor =
+        || (node.parent().and_then(CallExpr::cast)).is_some_and(|call| is_constructor_call(&call));
+    ArgList::can_cast(node.kind())
+        && is_delimited_list_expr(expr)
+        && has_list_content(expr)
+        && (is_array_like_expr(expr) || after_constructor())
 }
 
 /// The expression without the `?` that follow it: `a` of `a??`
@@ -166,7 +245,8 @@ fn format_expr_item(fmt: &Formatter, expr: Expr) -> (Frag, Overflow) {
 /// The expressions of the comma-separated list `node` (call arguments, tuple fields, array elements)
 /// on a single line if they fit within `width`, otherwise one per line, or filled on lines if they
 /// are short (see `is_fillable_list`). A single combinable expression may overflow (see
-/// `is_combinable_expr`), and so may a closure or a block after other arguments (`f(a, |x| {` /
+/// `is_combinable_expr`; a delimited list one does rather than break the list in as many lines, see
+/// `is_delimited_list_expr`), and so may a closure or a block after other arguments (`f(a, |x| {` /
 /// `...` / `})`, see `is_overflowing_last`);
 /// a single other expression is limited only by `max_width`. `refine` adjusts the layouts, e.g. the
 /// trailing separator.
@@ -183,14 +263,23 @@ pub(super) fn format_expr_list(
         _ => None,
     };
     let hug = single.is_some_and(is_combinable_expr) || is_overflowing_last(&exprs);
+    let preferred_hug = single.is_some_and(|e| is_preferred_hug(node, e));
     let items = list_items_cast(node, |e| format_expr_item(fmt, e));
     let items = with_is_last(&items)
         .map(|(item, is_last)| {
             let (frag, overflow) = &item.frag;
-            let overflow = if hug && is_last {
-                overflow.clone()
-            } else {
-                Overflow::Never
+            let overflow = match overflow {
+                _ if !hug || !is_last => Overflow::Never,
+                // "Where a function call has a single argument, and that argument is formatted
+                // across multiple lines, format the outer call as if it were a single-line call"
+                // (Style Guide): `Err(anyhow!(` / `...` / `))` rather than `Err(` / `anyhow!(...),`
+                // / `)` in as many lines; the broken call is kept when it takes fewer lines, except
+                // after a constructor or around an array (see `is_preferred_hug`)
+                Overflow::With(frag) if preferred_hug => Overflow::Preferred(frag.clone()),
+                Overflow::With(frag) if single.is_some_and(is_delimited_list_expr) => {
+                    Overflow::WeakPreference(frag.clone())
+                }
+                overflow => overflow.clone(),
             };
             item.map(|_| frag.clone()).with_overflow(overflow)
         })
