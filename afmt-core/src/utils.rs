@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
-use ra_ap_syntax::ast::{self, HasAttrs};
-use ra_ap_syntax::{AstNode, SyntaxKind, SyntaxNode, SyntaxToken, TextSize};
+use ra_ap_syntax::ast::{self, HasAttrs, HasModuleItem};
+use ra_ap_syntax::{AstNode, Edition, SourceFile, SyntaxKind, SyntaxNode, SyntaxToken, TextSize};
 
 /// Whether the node has attributes
 pub(crate) fn has_attrs(node: &impl HasAttrs) -> bool {
@@ -47,6 +47,23 @@ pub(crate) fn is_stray_semicolon(token: &SyntaxToken) -> bool {
         && token
             .parent()
             .is_some_and(|p| p.kind() == SyntaxKind::STMT_LIST)
+}
+
+/// The token tree of a macro call, with its delimiters, parsed again as the node `N` (`(...)` as the
+/// arguments of a call `__afmt(...)`, `[...]` as an array); `None` if the text does not parse as
+/// exactly that node
+pub(crate) fn parse_token_tree<N: AstNode>(tree: &ast::TokenTree, edition: Edition) -> Option<N> {
+    let text = tree.syntax().text().to_string();
+    let prefix = if text.starts_with('(') { "__afmt" } else { "" };
+    let file = SourceFile::parse(&format!("const _: () = {prefix}{text};"), edition);
+    if !file.errors().is_empty() {
+        return None;
+    }
+    let Some(ast::Item::Const(item)) = file.tree().items().next() else {
+        return None;
+    };
+    let node = item.body()?.syntax().descendants().find_map(N::cast)?;
+    (node.syntax().text() == text.as_str()).then_some(node)
 }
 
 pub(crate) fn with_is_last<T>(items: &[T]) -> impl Iterator<Item = (&T, bool)> {

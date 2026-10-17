@@ -163,7 +163,7 @@ pub fn format_source_code(config: &Config, code: &str) -> Result<Formatted> {
                 errors
             )));
         }
-        if let Err(error) = check_result(&file, &out_parse.tree(), code, &out) {
+        if let Err(error) = check_result(&file, &out_parse.tree(), code, &out, config.edition) {
             return Err(Error::GenericError(error));
         }
     }

@@ -6,8 +6,9 @@ use crate::comments::{has_comments, prev_code_token};
 use crate::formatter::Edge::{BraceClose, BraceOpen, Close, Open, Tight, Word};
 use crate::formatter::{Builder, Formatter, Frag};
 use crate::layout::list::{Delimiters, TrailingSeparator};
-use ra_ap_syntax::ast::{ArgList, ArrayExpr, Expr, HasModuleItem, Item, MacroCall, TokenTree};
-use ra_ap_syntax::{AstNode, SourceFile, SyntaxKind, SyntaxNode};
+use crate::utils::parse_token_tree;
+use ra_ap_syntax::ast::{ArgList, ArrayExpr, Expr, MacroCall};
+use ra_ap_syntax::{AstNode, SyntaxKind, SyntaxNode};
 
 /// `name!(args)`, `name![args]` or `name! { tokens }` (Style Guide "Macro uses"): arguments that parse
 /// as expressions are laid out as call arguments (`()`) or as an array (`[]`); other arguments and
@@ -28,27 +29,28 @@ fn format_token_tree(fmt: &Formatter, call: &MacroCall) -> Frag {
     let tree = &call.token_tree().unwrap();
     let close = tree.syntax().last_token().unwrap();
     let parsed = match tree.syntax().first_token().unwrap().kind() {
-        SyntaxKind::L_PAREN => parse_token_tree::<ArgList>(fmt, tree, "__afmt").map(|args| {
-            // The trailing comma is kept as it is: a macro may not accept one, or require it
-            let trailing = if has_trailing_comma(args.syntax()) {
-                TrailingSeparator::Required
-            } else {
-                TrailingSeparator::Omitted
-            };
-            format_expr_list(
-                fmt,
-                args.syntax(),
-                &Delimiters::parens_of(args.syntax()),
-                fmt.config().fn_call_width,
-                |layout| {
-                    let lines = format_string_lines(call, &args);
-                    layout.trailing_separator(trailing).lines_if(lines)
-                },
-            )
-        }),
-        SyntaxKind::L_BRACK => {
-            parse_token_tree::<ArrayExpr>(fmt, tree, "").map(|array| format_array_expr(fmt, array))
+        SyntaxKind::L_PAREN => {
+            parse_token_tree::<ArgList>(tree, fmt.config().edition).map(|args| {
+                // The trailing comma is kept as it is: a macro may not accept one, or require it
+                let trailing = if has_trailing_comma(args.syntax()) {
+                    TrailingSeparator::Required
+                } else {
+                    TrailingSeparator::Omitted
+                };
+                format_expr_list(
+                    fmt,
+                    args.syntax(),
+                    &Delimiters::parens_of(args.syntax()),
+                    fmt.config().fn_call_width,
+                    |layout| {
+                        let lines = format_string_lines(call, &args);
+                        layout.trailing_separator(trailing).lines_if(lines)
+                    },
+                )
+            })
         }
+        SyntaxKind::L_BRACK => parse_token_tree::<ArrayExpr>(tree, fmt.config().edition)
+            .map(|array| format_array_expr(fmt, array)),
         _ => None,
     };
     match parsed {
@@ -111,24 +113,6 @@ fn format_string_lines(call: &MacroCall, args: &ArgList) -> Option<Vec<usize>> {
 /// Whether the list `node` ends with a comma before its closing delimiter: `(a, b,)`
 fn has_trailing_comma(node: &SyntaxNode) -> bool {
     prev_code_token(&node.last_token().unwrap()).is_some_and(|t| t.kind() == SyntaxKind::COMMA)
-}
-
-/// The token tree with its delimiters parsed again as the node `N`, after `prefix` (`__afmt` makes
-/// `(...)` the arguments of a call); `None` if the text does not parse as exactly that node
-fn parse_token_tree<N: AstNode>(fmt: &Formatter, tree: &TokenTree, prefix: &str) -> Option<N> {
-    let text = tree.syntax().text().to_string();
-    let file = SourceFile::parse(
-        &format!("const _: () = {prefix}{text};"),
-        fmt.config().edition,
-    );
-    if !file.errors().is_empty() {
-        return None;
-    }
-    let Some(Item::Const(item)) = file.tree().items().next() else {
-        return None;
-    };
-    let node = item.body()?.syntax().descendants().find_map(N::cast)?;
-    (node.syntax().text() == text.as_str()).then_some(node)
 }
 
 /// Whether the expression is a macro call whose arguments are laid out as a list (see

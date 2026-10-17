@@ -1,8 +1,10 @@
-use crate::utils::{is_brace_macro_expr, is_stray_semicolon, line_column, trailing_jump_stmt};
+use crate::utils::{
+    is_brace_macro_expr, is_stray_semicolon, line_column, parse_token_tree, trailing_jump_stmt,
+};
 use ra_ap_syntax::ast::{self, HasAttrs, HasVisibility, Use, UseTree};
 use ra_ap_syntax::{
-    AstNode, Direction, NodeOrToken, SourceFile, SyntaxKind, SyntaxNode, SyntaxToken, TextSize,
-    WalkEvent,
+    AstNode, Direction, Edition, NodeOrToken, SourceFile, SyntaxKind, SyntaxNode, SyntaxToken,
+    TextSize, WalkEvent,
 };
 
 #[derive(PartialEq, Eq, Debug)]
@@ -19,9 +21,10 @@ pub(crate) fn check_result(
     output: &SourceFile,
     input_text: &str,
     output_text: &str,
+    edition: Edition,
 ) -> Result<(), String> {
-    let input_steps = steps(input);
-    let output_steps = steps(output);
+    let input_steps = steps(input, edition);
+    let output_steps = steps(output, edition);
     let mismatch = input_steps
         .iter()
         .zip(&output_steps)
@@ -53,7 +56,7 @@ pub(crate) fn check_result(
 }
 
 /// Whether `node` is the block of a closure body or of a match arm body that holds just an
-/// expression, `|x| { x }`, `A => { x }`, or such a block in another one, `A => { { x } }`: the
+/// expression (or a jump statement), `|x| { x }`, `A => { x }`, or such a block in another one, `A => { { x } }`: the
 /// formatter removes its braces or adds them, so it is compared as if it had none
 fn is_optional_block(node: &SyntaxNode) -> bool {
     if node.kind() != SyntaxKind::BLOCK_EXPR {
@@ -73,22 +76,51 @@ fn is_optional_block(node: &SyntaxNode) -> bool {
     else {
         return false;
     };
-    // No label or modifier in front of `{`, and only an expression in it, not a statement `m! {}`
+    // No label or modifier in front of `{`, and only an expression in it, not a statement `m! {}`;
+    // or only `return x;`, compared as the expression `return x` (see `is_trailing_jump_stmt`)
     node.first_token() == stmt_list.first_token()
         && stmt_list.children().count() == 1
-        && stmt_list
-            .children()
-            .all(|c| ast::Expr::can_cast(c.kind()) && !is_brace_macro_expr(&c))
+        && stmt_list.children().all(|c| {
+            (ast::Expr::can_cast(c.kind()) && !is_brace_macro_expr(&c)) || is_trailing_jump_stmt(&c)
+        })
 }
 
 /// The preorder walk of the tree without trivia and without trailing commas, with source offsets
-fn steps(file: &SourceFile) -> Vec<(Step, TextSize)> {
+fn steps(file: &SourceFile, edition: Edition) -> Vec<(Step, TextSize)> {
     let mut out = Vec::new();
+    push_steps(file.syntax(), edition, &|offset| offset, &mut out);
+    sort_use_runs(&mut out);
+    out
+}
+
+/// The steps of the walk of `root` (see `steps`), with offsets mapped to the source by `source_offset`
+fn push_steps(
+    root: &SyntaxNode,
+    edition: Edition,
+    source_offset: &dyn Fn(TextSize) -> TextSize,
+    out: &mut Vec<(Step, TextSize)>,
+) {
     // The blocks of `is_optional_block` and their statement lists, walked as if not there
     let mut transparent: Vec<SyntaxNode> = Vec::new();
-    let mut walk = file.syntax().preorder_with_tokens();
+    let mut walk = root.preorder_with_tokens();
     while let Some(event) = walk.next() {
         match event {
+            // The arguments of a macro call that parse as expressions are formatted as such (see
+            // `format_macro_call`), so they are compared parsed
+            WalkEvent::Enter(NodeOrToken::Node(node)) if node.kind() == SyntaxKind::TOKEN_TREE => {
+                if let Some(parsed) = parse_macro_arguments(&node, edition) {
+                    let (start, parsed_start) =
+                        (node.text_range().start(), parsed.text_range().start());
+                    let offset = |o: TextSize| source_offset(start + (o - parsed_start));
+                    push_steps(&parsed, edition, &offset, out);
+                    walk.skip_subtree();
+                } else {
+                    out.push((
+                        Step::Enter(node.kind()),
+                        source_offset(node.text_range().start()),
+                    ))
+                }
+            }
             WalkEvent::Enter(NodeOrToken::Node(node)) if is_optional_block(&node) => {
                 transparent.push(node.first_child().unwrap());
                 transparent.push(node);
@@ -105,13 +137,17 @@ fn steps(file: &SourceFile) -> Vec<(Step, TextSize)> {
             WalkEvent::Enter(NodeOrToken::Node(node)) if node.kind() == SyntaxKind::USE => {
                 // Imports are sorted and normalized, so they are compared in a canonical form
                 let canonical = canonical_use(&Use::cast(node.clone()).unwrap());
-                out.push((Step::Use(canonical), node.text_range().start()));
+                out.push((
+                    Step::Use(canonical),
+                    source_offset(node.text_range().start()),
+                ));
                 walk.skip_subtree();
             }
             WalkEvent::Leave(NodeOrToken::Node(node)) if node.kind() == SyntaxKind::USE => {}
-            WalkEvent::Enter(NodeOrToken::Node(node)) => {
-                out.push((Step::Enter(node.kind()), node.text_range().start()))
-            }
+            WalkEvent::Enter(NodeOrToken::Node(node)) => out.push((
+                Step::Enter(node.kind()),
+                source_offset(node.text_range().start()),
+            )),
             WalkEvent::Leave(NodeOrToken::Node(node)) => {
                 // `extern` is `extern "C"`: the formatter writes the ABI out
                 if node.kind() == SyntaxKind::ABI
@@ -120,20 +156,42 @@ fn steps(file: &SourceFile) -> Vec<(Step, TextSize)> {
                         .any(|c| c.kind() == SyntaxKind::STRING)
                 {
                     let step = Step::Token(SyntaxKind::STRING, "\"C\"".to_string());
-                    out.push((step, node.text_range().end()));
+                    out.push((step, source_offset(node.text_range().end())));
                 }
-                out.push((Step::Leave(node.kind()), node.text_range().end()))
+                out.push((
+                    Step::Leave(node.kind()),
+                    source_offset(node.text_range().end()),
+                ))
             }
             WalkEvent::Enter(NodeOrToken::Token(token)) if is_compared_token(&token) => {
                 // A shebang includes its line break, which is layout
                 let text = token.text().trim_end().to_string();
-                out.push((Step::Token(token.kind(), text), token.text_range().start()))
+                out.push((
+                    Step::Token(token.kind(), text),
+                    source_offset(token.text_range().start()),
+                ))
             }
             _ => {}
         }
     }
-    sort_use_runs(&mut out);
-    out
+}
+
+/// The token tree of a macro call parsed as the formatter parses it (see `format_token_tree`): the
+/// arguments of a call for `(...)`, an array for `[...]`
+fn parse_macro_arguments(node: &SyntaxNode, edition: Edition) -> Option<SyntaxNode> {
+    if node.parent()?.kind() != SyntaxKind::MACRO_CALL {
+        return None;
+    }
+    let tree = ast::TokenTree::cast(node.clone())?;
+    match node.first_token()?.kind() {
+        SyntaxKind::L_PAREN => {
+            parse_token_tree::<ast::ArgList>(&tree, edition).map(|n| n.syntax().clone())
+        }
+        SyntaxKind::L_BRACK => {
+            parse_token_tree::<ast::ArrayExpr>(&tree, edition).map(|n| n.syntax().clone())
+        }
+        _ => None,
+    }
 }
 
 /// Consecutive `use` items may be reordered, and an empty one (`use a::{};`) removed, so each run of
@@ -277,7 +335,7 @@ mod tests {
         let file_b = SourceFile::parse(b, Edition::CURRENT);
         assert!(file_a.errors().is_empty());
         assert!(file_b.errors().is_empty());
-        check_result(&file_a.tree(), &file_b.tree(), a, b)
+        check_result(&file_a.tree(), &file_b.tree(), a, b, Edition::CURRENT)
     }
 
     #[test]
@@ -330,6 +388,19 @@ mod tests {
     }
 
     #[test]
+    fn removed_braces_of_trailing_jump_pass() {
+        let input = "fn f() { match x { A => { return g() } } }";
+        let output =
+            "fn f() {\n    match x {\n        A => {\n            return g();\n        }\n    }\n}";
+        assert_eq!(check_result_test(input, output), Ok(()));
+        let output = "fn f() {\n    match x {\n        A => return g(),\n    }\n}";
+        let input = "fn f() { match x { A => { return g(); } } }";
+        assert_eq!(check_result_test(input, output), Ok(()));
+        let input = "fn f() { match x { A => { g(); } } }";
+        assert!(check_result_test(input, "fn f() { match x { A => g() } }").is_err());
+    }
+
+    #[test]
     fn semicolon_after_other_tail_fails() {
         assert!(check_result_test("fn f() { g() }", "fn f() { g(); }").is_err());
         assert!(check_result_test("fn f() { break; g() }", "fn f() { break g() }").is_err());
@@ -349,6 +420,32 @@ mod tests {
         let input = "fn f() { match x { A => { m!() } } }";
         let output = "fn f() {\n    match x {\n        A => m!(),\n    }\n}";
         assert_eq!(check_result_test(input, output), Ok(()));
+    }
+
+    #[test]
+    fn normalized_macro_arguments_pass() {
+        let input = "fn f() { assert!(x.all(|a| { a.b() }), \"m\"); }";
+        let output = "fn f() {\n    assert!(x.all(|a| a.b()), \"m\");\n}";
+        assert_eq!(check_result_test(input, output), Ok(()));
+        let input = "fn f() { m!(match x { A => { 1 } B => 2 }); }";
+        let output = "fn f() {\n    m!(match x {\n        A => 1,\n        B => 2,\n    });\n}";
+        assert_eq!(check_result_test(input, output), Ok(()));
+        let input = "fn f() { v![g(1, 2), n!(h(3, 4))]; }";
+        let output = "fn f() {\n    v![g(1, 2,), n!(h(3, 4,))];\n}";
+        assert_eq!(check_result_test(input, output), Ok(()));
+    }
+
+    #[test]
+    fn changed_macro_arguments_fail() {
+        let error = check_result_test("fn f() { m!(a, |x| { x }); }", "fn f() { m!(a, |x| y); }")
+            .unwrap_err();
+        assert!(
+            error.contains("at input 1:22 vs. Token(IDENT, \"y\") at output 1:20"),
+            "{error}"
+        );
+        assert!(check_result_test("fn f() { m!(a, b); }", "fn f() { m!(a b); }").is_err());
+        let input = "fn f() { m! { |x| { x } } }";
+        assert!(check_result_test(input, "fn f() { m! { |x| x } }").is_err());
     }
 
     #[test]
