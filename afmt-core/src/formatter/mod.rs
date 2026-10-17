@@ -21,6 +21,10 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use trivia::{multiline_comment_lines, normalize_comment_sigil_spacing, trim_comment_line};
 
+/// The cost of `Formatter::overflow_fallback`: more splits than any layout of real code has, and small
+/// enough that adding many of them does not saturate
+const OVERFLOW_FALLBACK_COST: Cost = Cost::new(10_000);
+
 /// Source text that afmt cannot format yet, copied unchanged (see `Formatter::unsupported`)
 pub(crate) struct Unsupported {
     /// The copied source text
@@ -254,6 +258,23 @@ impl<'a> Formatter<'a> {
         let same = self.keep_together_with_cost(frag.clone(), Cost::new(1));
         let next = self.keep_together_with_cost(frag, Cost::new(2));
         (same, self.indented_line(next))
+    }
+
+    /// The fragment continues the current line, broken there if needed, and starts an indented next
+    /// line only when every layout on the current line overflows (`overflow_fallback`), e.g. the value
+    /// of a struct literal field (as rustfmt does): `name:` / `    long::path::Value`
+    pub fn same_or_indented_line_on_overflow(&self, frag: Frag) -> Frag {
+        let next = self.indented_line(self.keep_together(frag.clone()));
+        self.alt_frag(frag, self.overflow_fallback(next))
+    }
+
+    /// The fragment is used only when every layout without it overflows `max_width`: it costs more
+    /// splits than any layout of real code has (the resolver compares the overflow first)
+    pub fn overflow_fallback(&self, frag: Frag) -> Frag {
+        self.map_branches(frag, |b| Branch {
+            doc_id: self.make_node(DocNode::Dispreferred(b.doc_id, OVERFLOW_FALLBACK_COST)),
+            ..b
+        })
     }
 
     /// The fragment is always followed by a space, e.g. an attribute in front of a parameter:

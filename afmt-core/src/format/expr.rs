@@ -871,14 +871,17 @@ fn format_record_expr(fmt: &Formatter, expr: RecordExpr) -> Frag {
     builder.into_frag()
 }
 
-/// `name: value`, or `name` (the shorthand)
+/// `name: value`, the value on the next line only if it overflows on the line of the name (RhsBreak, as
+/// rustfmt), or `name` (the shorthand)
 fn format_record_expr_field(fmt: &Formatter, field: &RecordExprField) -> Frag {
+    let value = format_expr(fmt, field.expr().unwrap());
+    let Some(colon) = field.colon_token() else {
+        return value;
+    };
     let mut builder = Builder::new(fmt);
-    if let Some(colon) = field.colon_token() {
-        builder.push(format_name_ref(fmt, field.name_ref().unwrap()));
-        builder.push_token(colon, Comma);
-    }
-    builder.push(format_expr(fmt, field.expr().unwrap()));
+    builder.push(format_name_ref(fmt, field.name_ref().unwrap()));
+    builder.push_token(colon, Comma);
+    builder.push(fmt.same_or_indented_line_on_overflow(value));
     builder.into_frag()
 }
 

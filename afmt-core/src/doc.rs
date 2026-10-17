@@ -20,7 +20,7 @@ pub(crate) struct Cost(u32);
 
 impl Cost {
     #[inline]
-    pub fn new(value: u32) -> Self {
+    pub const fn new(value: u32) -> Self {
         Cost(value)
     }
 

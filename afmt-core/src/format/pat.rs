@@ -178,14 +178,18 @@ fn is_small_pat(pat: &Pat, allow_tuple: bool) -> bool {
     }
 }
 
-/// `name`, `ref mut name` or `name: pat`
+/// `name`, `ref mut name` or `name: pat`, the pattern on the line of the name or on the next line
+/// (RhsBreak, as rustfmt; but a pattern broken on the next line, `name:` / `    Foo {`, is not preferred
+/// to one broken on the line of the name)
 fn format_record_pat_field(fmt: &Formatter, field: RecordPatField) -> Frag {
+    let pat = format_pat(fmt, field.pat().unwrap());
+    let Some(name_ref) = field.name_ref() else {
+        return pat;
+    };
     let mut builder = Builder::new(fmt);
-    if let Some(name_ref) = field.name_ref() {
-        builder.push(format_name_ref(fmt, name_ref));
-        builder.push_token(field.colon_token().unwrap(), Comma);
-    }
-    builder.push(format_pat(fmt, field.pat().unwrap()));
+    builder.push(format_name_ref(fmt, name_ref));
+    builder.push_token(field.colon_token().unwrap(), Comma);
+    builder.push(fmt.same_or_indented_line(pat));
     builder.into_frag()
 }
 

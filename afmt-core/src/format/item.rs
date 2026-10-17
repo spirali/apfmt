@@ -275,7 +275,8 @@ fn format_visibility(fmt: &Formatter, visibility: Visibility) -> Frag {
     builder.into_frag()
 }
 
-/// `pub name: Type`, with its attributes on their own lines
+/// `pub name: Type`, with its attributes on their own lines; the type moves to the next line if it does
+/// not fit on the line of the name (RhsBreak)
 fn format_record_field(fmt: &Formatter, field: RecordField) -> Frag {
     format_with_attrs(fmt, &field, false, || format_record_field_body(fmt, &field))
 }
@@ -287,7 +288,7 @@ fn format_record_field_body(fmt: &Formatter, field: &RecordField) -> Frag {
     }
     builder.push(format_name(fmt, field.name().unwrap()));
     builder.push_token(field.colon_token().unwrap(), Comma);
-    builder.push(format_type(fmt, field.ty().unwrap()));
+    builder.push(fmt.same_or_indented_line(format_type(fmt, field.ty().unwrap())));
     builder.into_frag()
 }
 
