@@ -1,8 +1,9 @@
-use super::Builder;
 use super::frag::{Edge, Frag};
+use super::{Builder, Formatter};
 use crate::comments::{
     TriviaStop, count_newlines, is_leading_block_comment, is_line_comment, line_ends_after,
-    next_code_token, post_comments_stop, rest_of_line_is_comments, trivia_end, trivia_from,
+    line_indentation, next_code_token, post_comments_stop, rest_of_line_is_comments,
+    tokens_between, trivia_end, trivia_from,
 };
 use crate::doc::{COMMA_DOC, DocId, EMPTY_DOC, EMPTYLINE_DOC, NEWLINE_DOC, SEMICOLON_DOC};
 use crate::formatter::Edge::{Break, Comma, Nothing, Word};
@@ -311,6 +312,42 @@ impl<'a> Builder<'a> {
             .as_ref()
             .is_some_and(|c| rest_of_line_is_comments(c, None));
         ends_line && self.push_trivia(None, TriviaStop::OwnLine)
+    }
+}
+
+impl Formatter<'_> {
+    /// The source text from `first` to `last` (inclusive) as lines, with the indentation of the source
+    /// line of `first` removed from the following lines, so they can be indented as the line the text is
+    /// placed on. A line break inside a token (a multi-line string literal or block comment) is kept in
+    /// its line unchanged; trailing whitespace is removed and blank lines are empty. `None` when a line
+    /// starts with less indentation than the line of `first`, or with a tab. A placeholder token is
+    /// written as the text it stands for (see `Formatter::format_reparsed`).
+    pub(super) fn reindented_lines(
+        &self,
+        first: &SyntaxToken,
+        last: &SyntaxToken,
+    ) -> Option<Vec<String>> {
+        let base = line_indentation(first);
+        if base.contains(|c| c != ' ') {
+            return None;
+        }
+        let base = base.len();
+        let mut lines = vec![String::new()];
+        for token in tokens_between(first, last) {
+            let text = token.text();
+            match text.rfind('\n') {
+                Some(pos) if token.kind() == SyntaxKind::WHITESPACE => {
+                    let indent = &text[pos + 1..];
+                    if indent.len() < base || indent.contains(|c| c != ' ') {
+                        return None;
+                    }
+                    lines.extend((1..count_newlines(&token)).map(|_| String::new()));
+                    lines.push(indent[base..].to_string());
+                }
+                _ => lines.last_mut().unwrap().push_str(&self.token_text(&token)),
+            }
+        }
+        Some(lines)
     }
 }
 

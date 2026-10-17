@@ -5,13 +5,14 @@ mod builder;
 mod frag;
 mod trivia;
 
-use crate::comments::is_doc_comment;
+use crate::comments::{is_doc_comment, tokens_between};
 use crate::config::Config;
 use crate::doc::{
     AlignGroup, Cost, DocArena, DocId, DocNode, EMPTY_DOC, NEWLINE_DOC, NEWLINE_OR_SPACE_DOC,
 };
 use crate::formatter::Edge::{Keyword, LineStart, Nothing, Word};
 use crate::resolver::Resolver;
+use crate::utils::{Placeholders, Reparsed};
 pub(crate) use builder::Builder;
 use frag::{Branch, Branches};
 pub(crate) use frag::{Edge, Frag};
@@ -40,6 +41,8 @@ pub(crate) struct Formatter<'a> {
     align_group_id_counter: Cell<AlignGroup>,
     /// The source ranges of the nodes recorded by `mark_placed` (debug builds only)
     placed: RefCell<HashSet<TextRange>>,
+    /// The placeholders of the nodes parsed again that are being formatted (see `format_reparsed`)
+    placeholders: RefCell<Placeholders>,
 }
 
 impl<'a> Formatter<'a> {
@@ -50,6 +53,7 @@ impl<'a> Formatter<'a> {
             unsupported: RefCell::new(Vec::new()),
             align_group_id_counter: Cell::new(AlignGroup::new(0)),
             placed: RefCell::new(HashSet::new()),
+            placeholders: RefCell::new(Placeholders::new()),
         }
     }
 
@@ -92,23 +96,54 @@ impl<'a> Formatter<'a> {
         self.doc_arena.borrow_mut().make_text(text)
     }
 
+    /// The node parsed again by `reparse` (given the placeholders in effect, e.g. `|placeholders|
+    /// parse_token_tree(tree, edition, placeholders)`) formatted by `format`; while it runs, its
+    /// placeholders are written as the text they stand for (`$x`, see `token_text`), and they are
+    /// dropped after, since the docs have the text. `None` if `reparse` does not parse the node.
+    pub fn format_reparsed<N>(
+        &self,
+        reparse: impl FnOnce(&Placeholders) -> Option<Reparsed<N>>,
+        format: impl FnOnce(N) -> Frag,
+    ) -> Option<Frag> {
+        let Reparsed { node, placeholders } = reparse(&self.placeholders.borrow())?;
+        let added: Vec<_> = placeholders
+            .iter()
+            .map(|(token, _)| token.clone())
+            .collect();
+        self.placeholders.borrow_mut().extend(placeholders);
+        let frag = format(node);
+        let mut placeholders = self.placeholders.borrow_mut();
+        for token in &added {
+            placeholders.remove(token);
+        }
+        Some(frag)
+    }
+
+    /// The text a token is written as: its own, or the text of a placeholder (see `format_reparsed`)
+    fn token_text<'t>(&self, token: &'t SyntaxToken) -> Cow<'t, str> {
+        match self.placeholders.borrow().get(token) {
+            Some(text) => Cow::Owned(text.clone()),
+            None => Cow::Borrowed(token.text()),
+        }
+    }
+
+    /// The doc of a token: the token, or the text it is written as (see `format_reparsed`)
+    fn token_node(&self, token: SyntaxToken) -> DocId {
+        let placeholders = self.placeholders.borrow();
+        match placeholders.get(&token) {
+            Some(text) => self.text_node(text.as_str()),
+            None => self.make_node(DocNode::Token(token)),
+        }
+    }
+
     pub fn token(&self, token: SyntaxToken, edge: Edge) -> Frag {
-        Frag::new_simple(
-            self.make_node(DocNode::Token(token.clone())),
-            edge,
-            Some(token),
-        )
+        Frag::new_simple(self.token_node(token.clone()), edge, Some(token))
     }
 
     /// A token with different edges on its sides, e.g. the negative `!` of `impl !Send`: a space in
     /// front of it (`Word`), none after it (`Tight`)
     pub fn token_with_edges(&self, token: SyntaxToken, start: Edge, end: Edge) -> Frag {
-        Frag::new(
-            self.make_node(DocNode::Token(token.clone())),
-            start,
-            end,
-            Some(token),
-        )
+        Frag::new(self.token_node(token.clone()), start, end, Some(token))
     }
 
     /// A postfix operator, `?` or a `..` without an end: no space in front of it, spaced like a word
@@ -122,14 +157,40 @@ impl<'a> Formatter<'a> {
         Frag::new_simple(self.text_node(text), edge, None)
     }
 
-    /// The source text of `node` unchanged, comments included, with the edges of
-    /// its first and last token; its last token is the cursor
-    pub fn verbatim(&self, node: &SyntaxNode, start: Edge, end: Edge) -> Frag {
-        let (first, last) = (node.first_token().unwrap(), node.last_token().unwrap());
-        self.verbatim_range(&first, &last, start, end)
+    /// The source text from `first` to `last` (inclusive), its lines after the first shifted by the
+    /// change of indentation of the line it starts on (`reindented_lines`); the text unchanged (see
+    /// `verbatim_range`) when they cannot be
+    pub fn reindented_range(
+        &self,
+        first: &SyntaxToken,
+        last: &SyntaxToken,
+        start: Edge,
+        end: Edge,
+    ) -> Frag {
+        let Some(lines) = self.reindented_lines(first, last) else {
+            return self.verbatim_range(first, last, start, end);
+        };
+        Frag::new(self.lines_doc(lines), start, end, Some(last.clone()))
     }
 
-    /// The source text from `first` to `last` (inclusive) unchanged, see `verbatim`
+    /// The lines one below another, each at the indentation of the doc; a blank line is empty
+    fn lines_doc<S: AsRef<str> + Into<Box<str>>>(
+        &self,
+        lines: impl IntoIterator<Item = S>,
+    ) -> DocId {
+        let mut lines = lines.into_iter();
+        let mut doc_id = lines.next().map_or(EMPTY_DOC, |line| self.text_node(line));
+        for line in lines {
+            doc_id = self.concat(doc_id, NEWLINE_DOC);
+            if !line.as_ref().is_empty() {
+                doc_id = self.concat(doc_id, self.text_node(line));
+            }
+        }
+        doc_id
+    }
+
+    /// The source text from `first` to `last` (inclusive) unchanged, comments included, with the
+    /// edges of its first and last token; its last token is the cursor
     pub fn verbatim_range(
         &self,
         first: &SyntaxToken,
@@ -137,26 +198,20 @@ impl<'a> Formatter<'a> {
         start: Edge,
         end: Edge,
     ) -> Frag {
-        let mut text = String::new();
-        let mut token = Some(first.clone());
-        while let Some(t) = token {
-            text.push_str(t.text());
-            if &t == last {
-                break;
-            }
-            token = t.next_token();
-        }
+        let text: String = (tokens_between(first, last))
+            .map(|t| self.token_text(&t).into_owned())
+            .collect();
         Frag::new(self.text_node(text), start, end, Some(last.clone()))
     }
 
-    /// The source text from `first` to `last` unchanged (see `verbatim_range`), recorded as text that
+    /// The source text from `first` to `last` reindented (see `reindented_range`), recorded as text that
     /// cannot be formatted yet because of `what` (see `take_unsupported`)
     pub fn unsupported(&self, first: &SyntaxToken, last: &SyntaxToken, what: String) -> Frag {
         let range = TextRange::new(first.text_range().start(), last.text_range().end());
         self.unsupported
             .borrow_mut()
             .push(Unsupported { range, what });
-        self.verbatim_range(first, last, Word, Word)
+        self.reindented_range(first, last, Word, Word)
     }
 
     /// The text recorded by `unsupported`, in the order it was copied
@@ -166,17 +221,12 @@ impl<'a> Formatter<'a> {
 
     /// Just the token, without a cursor: the caller places the trivia (comments) that follow it
     pub fn token_without_cursor(&self, token: SyntaxToken, edge: Edge) -> Frag {
-        Frag::new_simple(self.make_node(DocNode::Token(token)), edge, None)
+        Frag::new_simple(self.token_node(token), edge, None)
     }
 
     /// Keyword that is always followed by a space, e.g. `let (a, b)`
     pub fn keyword(&self, token: SyntaxToken) -> Frag {
-        Frag::new(
-            self.make_node(DocNode::Token(token.clone())),
-            Word,
-            Keyword,
-            Some(token),
-        )
+        Frag::new(self.token_node(token.clone()), Word, Keyword, Some(token))
     }
 
     fn concat(&self, doc1: DocId, doc2: DocId) -> DocId {
@@ -459,15 +509,8 @@ impl<'a> Formatter<'a> {
         let doc = is_doc_comment(token.text());
         if let Some(lines) = multiline_comment_lines(token) {
             // The lines are aligned to the column of the comment start
-            let mut lines = lines.into_iter().map(|line| trim_comment_line(line, doc));
-            let mut doc_id = self.text_node(lines.next().unwrap());
-            for line in lines {
-                doc_id = self.concat(doc_id, NEWLINE_DOC);
-                if !line.is_empty() {
-                    doc_id = self.concat(doc_id, self.text_node(line));
-                }
-            }
-            return self.make_node(DocNode::Align(doc_id));
+            let lines = lines.into_iter().map(|line| trim_comment_line(line, doc));
+            return self.make_node(DocNode::Align(self.lines_doc(lines)));
         }
         let source = token.text();
         // Allocated only when the text changes

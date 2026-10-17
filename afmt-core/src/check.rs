@@ -1,5 +1,6 @@
 use crate::utils::{
-    is_brace_macro_expr, is_stray_semicolon, line_column, parse_token_tree, trailing_jump_stmt,
+    MacroRule, Placeholders, Reparsed, is_brace_macro_expr, is_stray_semicolon, line_column,
+    macro_rules_rules, parse_token_tree, parse_transcriber, trailing_jump_stmt,
 };
 use ra_ap_syntax::ast::{self, HasAttrs, HasVisibility, Use, UseTree};
 use ra_ap_syntax::{
@@ -88,16 +89,25 @@ fn is_optional_block(node: &SyntaxNode) -> bool {
 /// The preorder walk of the tree without trivia and without trailing commas, with source offsets
 fn steps(file: &SourceFile, edition: Edition) -> Vec<(Step, TextSize)> {
     let mut out = Vec::new();
-    push_steps(file.syntax(), edition, &|offset| offset, &mut out);
+    let placeholders = Placeholders::new();
+    push_steps(
+        file.syntax(),
+        edition,
+        &|offset| offset,
+        &placeholders,
+        &mut out,
+    );
     sort_use_runs(&mut out);
     out
 }
 
-/// The steps of the walk of `root` (see `steps`), with offsets mapped to the source by `source_offset`
+/// The steps of the walk of `root` (see `steps`), with offsets mapped to the source by `source_offset`;
+/// the `placeholders` of a parsed transcriber of `macro_rules!` are compared as their source text
 fn push_steps(
     root: &SyntaxNode,
     edition: Edition,
     source_offset: &dyn Fn(TextSize) -> TextSize,
+    placeholders: &Placeholders,
     out: &mut Vec<(Step, TextSize)>,
 ) {
     // The blocks of `is_optional_block` and their statement lists, walked as if not there
@@ -106,13 +116,19 @@ fn push_steps(
     while let Some(event) = walk.next() {
         match event {
             // The arguments of a macro call that parse as expressions are formatted as such (see
-            // `format_macro_call`), so they are compared parsed
+            // `format_macro_call`), so they are compared parsed; `macro_rules!` rule by rule
             WalkEvent::Enter(NodeOrToken::Node(node)) if node.kind() == SyntaxKind::TOKEN_TREE => {
-                if let Some(parsed) = parse_macro_arguments(&node, edition) {
-                    let (start, parsed_start) =
-                        (node.text_range().start(), parsed.text_range().start());
-                    let offset = |o: TextSize| source_offset(start + (o - parsed_start));
-                    push_steps(&parsed, edition, &offset, out);
+                let tree = ast::TokenTree::cast(node.clone()).unwrap();
+                if let Some(parsed) = parse_macro_arguments(&tree, edition, placeholders) {
+                    push_reparsed_steps(&node, parsed, edition, source_offset, out);
+                    walk.skip_subtree();
+                } else if let Some(rules) = macro_rules_tree_rules(&tree) {
+                    let rules = MacroRulesSteps {
+                        tree: &tree,
+                        rules: &rules,
+                        placeholders,
+                    };
+                    rules.push(edition, source_offset, out);
                     walk.skip_subtree();
                 } else {
                     out.push((
@@ -164,33 +180,125 @@ fn push_steps(
                 ))
             }
             WalkEvent::Enter(NodeOrToken::Token(token)) if is_compared_token(&token) => {
-                // A shebang includes its line break, which is layout
-                let text = token.text().trim_end().to_string();
-                out.push((
-                    Step::Token(token.kind(), text),
-                    source_offset(token.text_range().start()),
-                ))
+                out.push(token_step(&token, source_offset, placeholders))
             }
             _ => {}
         }
     }
 }
 
+/// The step of a compared token (see `is_compared_token`); a placeholder is compared as the text it
+/// stands for
+fn token_step(
+    token: &SyntaxToken,
+    source_offset: &dyn Fn(TextSize) -> TextSize,
+    placeholders: &Placeholders,
+) -> (Step, TextSize) {
+    // A shebang includes its line break, which is layout
+    let text = match placeholders.get(token) {
+        Some(source) => source.clone(),
+        None => token.text().trim_end().to_string(),
+    };
+    let step = Step::Token(token.kind(), text);
+    (step, source_offset(token.text_range().start()))
+}
+
+/// The steps of `parsed`, the token tree `node` parsed again, with offsets mapped to `node`
+fn push_reparsed_steps(
+    node: &SyntaxNode,
+    parsed: Reparsed<SyntaxNode>,
+    edition: Edition,
+    source_offset: &dyn Fn(TextSize) -> TextSize,
+    out: &mut Vec<(Step, TextSize)>,
+) {
+    let (start, parsed_start) = (node.text_range().start(), parsed.node.text_range().start());
+    let offset = |o: TextSize| source_offset(start + (o - parsed_start));
+    let placeholders = parsed.placeholders.into_iter().collect();
+    push_steps(&parsed.node, edition, &offset, &placeholders, out);
+}
+
 /// The token tree of a macro call parsed as the formatter parses it (see `format_token_tree`): the
 /// arguments of a call for `(...)`, an array for `[...]`
-fn parse_macro_arguments(node: &SyntaxNode, edition: Edition) -> Option<SyntaxNode> {
-    if node.parent()?.kind() != SyntaxKind::MACRO_CALL {
+fn parse_macro_arguments(
+    tree: &ast::TokenTree,
+    edition: Edition,
+    placeholders: &Placeholders,
+) -> Option<Reparsed<SyntaxNode>> {
+    if tree.syntax().parent()?.kind() != SyntaxKind::MACRO_CALL {
         return None;
     }
-    let tree = ast::TokenTree::cast(node.clone())?;
-    match node.first_token()?.kind() {
+    match tree.syntax().first_token()?.kind() {
         SyntaxKind::L_PAREN => {
-            parse_token_tree::<ast::ArgList>(&tree, edition).map(|n| n.syntax().clone())
+            parse_token_tree::<ast::ArgList>(tree, edition, placeholders).map(Reparsed::into_syntax)
         }
-        SyntaxKind::L_BRACK => {
-            parse_token_tree::<ast::ArrayExpr>(&tree, edition).map(|n| n.syntax().clone())
-        }
+        SyntaxKind::L_BRACK => parse_token_tree::<ast::ArrayExpr>(tree, edition, placeholders)
+            .map(Reparsed::into_syntax),
         _ => None,
+    }
+}
+
+/// The rules of the token tree of `macro_rules!` (see `macro_rules_rules`)
+fn macro_rules_tree_rules(tree: &ast::TokenTree) -> Option<Vec<MacroRule>> {
+    if tree.syntax().parent()?.kind() != SyntaxKind::MACRO_RULES {
+        return None;
+    }
+    macro_rules_rules(tree)
+}
+
+/// The steps of the token tree of `macro_rules!` as the formatter formats it (see
+/// `format_macro_rules`): rule by rule, without the `;` after them, which the formatter writes
+/// after each rule; a transcriber that parses is compared parsed (see `parse_transcriber`)
+struct MacroRulesSteps<'a> {
+    tree: &'a ast::TokenTree,
+    rules: &'a [MacroRule],
+    placeholders: &'a Placeholders,
+}
+
+impl MacroRulesSteps<'_> {
+    fn push(
+        &self,
+        edition: Edition,
+        source_offset: &dyn Fn(TextSize) -> TextSize,
+        out: &mut Vec<(Step, TextSize)>,
+    ) {
+        let node = self.tree.syntax();
+        let placeholders = self.placeholders;
+        out.push((
+            Step::Enter(node.kind()),
+            source_offset(node.text_range().start()),
+        ));
+        out.push(token_step(
+            &node.first_token().unwrap(),
+            source_offset,
+            placeholders,
+        ));
+        for rule in self.rules {
+            push_steps(
+                rule.matcher.syntax(),
+                edition,
+                source_offset,
+                placeholders,
+                out,
+            );
+            out.push(token_step(&rule.arrow.0, source_offset, placeholders));
+            out.push(token_step(&rule.arrow.1, source_offset, placeholders));
+            let transcriber = rule.transcriber.syntax();
+            match parse_transcriber(rule, edition, placeholders) {
+                Some(parsed) => {
+                    push_reparsed_steps(transcriber, parsed, edition, source_offset, out)
+                }
+                None => push_steps(transcriber, edition, source_offset, placeholders, out),
+            }
+        }
+        out.push(token_step(
+            &node.last_token().unwrap(),
+            source_offset,
+            placeholders,
+        ));
+        out.push((
+            Step::Leave(node.kind()),
+            source_offset(node.text_range().end()),
+        ));
     }
 }
 

@@ -32,6 +32,9 @@ pub struct Config {
     pub short_array_element_width_threshold: u32,
     /// `;` after a `return`, `break` or `continue` ending a broken block (`break;`), or none (`break`)
     pub trailing_semicolon: bool,
+    /// Formats the transcribers of `macro_rules!` that parse as items, statements or an expression
+    /// (rustfmt's `format_macro_bodies`); otherwise they are copied
+    pub format_macro_bodies: bool,
     /// The gap after which the widest list items do not align their trailing comments; 0 disables it
     pub trailing_comment_align_threshold: u32,
     /// The cost of a line that overflows `max_width`, in columns of overflow: a layout with one more
@@ -69,6 +72,7 @@ impl Default for Config {
             single_line_let_else_max_width: 50,
             short_array_element_width_threshold: 10,
             trailing_semicolon: true,
+            format_macro_bodies: true,
             trailing_comment_align_threshold: 40,
             overflow_line_penalty: 20,
             normalize_comment_sigil_spacing: true,

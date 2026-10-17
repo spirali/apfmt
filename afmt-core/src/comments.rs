@@ -9,6 +9,17 @@ pub(crate) fn trivia_from(token: Option<SyntaxToken>) -> impl Iterator<Item = Sy
     std::iter::successors(token, |t| t.next_token()).take_while(|t| t.kind().is_trivia())
 }
 
+/// The tokens from `first` to `last`, both included (`last` follows `first` in the source)
+pub(crate) fn tokens_between(
+    first: &SyntaxToken,
+    last: &SyntaxToken,
+) -> impl Iterator<Item = SyntaxToken> {
+    let last = last.clone();
+    std::iter::successors(Some(first.clone()), move |t| {
+        (*t != last).then(|| t.next_token()).flatten()
+    })
+}
+
 pub(crate) fn count_newlines(token: &SyntaxToken) -> u32 {
     token.text().bytes().filter(|c| *c == b'\n').count() as u32
 }
@@ -102,6 +113,21 @@ pub(crate) fn first_code_token(node: &SyntaxNode) -> SyntaxToken {
         .last()
         .map_or(Some(first), |t| t.next_token())
         .unwrap()
+}
+
+/// The whitespace at the start of the source line of `token`. The line starts after the last line
+/// break in front of `token`, which is in a single token (a whitespace token, or a multi-line string
+/// literal or comment), or at the start of the file
+pub(crate) fn line_indentation(token: &SyntaxToken) -> String {
+    let leading_whitespace = |text: &str| text[..text.len() - text.trim_start().len()].to_string();
+    let mut line_start = None;
+    for t in std::iter::successors(token.prev_token(), |t| t.prev_token()) {
+        if let Some(pos) = t.text().rfind('\n') {
+            return leading_whitespace(&t.text()[pos + 1..]);
+        }
+        line_start = Some(t);
+    }
+    line_start.map_or_else(String::new, |t| leading_whitespace(t.text()))
 }
 
 /// The first token after `token` that is not trivia

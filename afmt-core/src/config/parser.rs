@@ -44,6 +44,7 @@ struct TomlConfig {
     blank_lines_upper_bound: Option<u32>,
     short_array_element_width_threshold: Option<u32>,
     trailing_semicolon: Option<bool>,
+    format_macro_bodies: Option<bool>,
     edition: Option<EditionSetting>,
     disable_all_formatting: Option<bool>,
     // afmt's own options, not in rustfmt (or not in rustfmt's meaning)
@@ -112,6 +113,7 @@ impl TomlConfig {
             self.short_array_element_width_threshold,
         );
         set_value(&mut config.trailing_semicolon, self.trailing_semicolon);
+        set_value(&mut config.format_macro_bodies, self.format_macro_bodies);
         set_value(
             &mut config.trailing_comment_align_threshold,
             self.trailing_comment_align_threshold,

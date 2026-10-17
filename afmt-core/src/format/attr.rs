@@ -3,7 +3,7 @@
 use super::expr::format_expr;
 use super::path::format_path;
 use crate::comments::has_comments;
-use crate::formatter::Edge::{BraceClose, BraceOpen, Close, Open, Operator, Tight, Word};
+use crate::formatter::Edge::{Operator, Tight, Word};
 use crate::formatter::{Builder, Formatter, Frag};
 use crate::layout::list::{
     Delimiters, FlatLimit, ListItem, ListLayout, delimited_list, hug_single_item, list_items,
@@ -230,12 +230,7 @@ fn format_token_tree_meta(fmt: &Formatter, meta: TokenTreeMeta) -> Frag {
 /// exception to the Style Guide, as in rustfmt.
 fn format_token_list(fmt: &Formatter, tree: TokenTree, fill_paths: bool) -> Frag {
     let Some(segments) = meta_segments(&tree) else {
-        let (start, end) = if tree.l_paren_token().is_some() || tree.l_brack_token().is_some() {
-            (Open, Close)
-        } else {
-            (BraceOpen, BraceClose)
-        };
-        return fmt.verbatim(tree.syntax(), start, end);
+        return Delimiters::of_token_tree(&tree).format_reindented(fmt);
     };
     // A single `a(...)`: a path followed by a token tree
     let nested = match &segments[..] {

@@ -18,7 +18,7 @@ use crate::comments::{count_newlines, first_code_token, next_code_token, trivia_
 use crate::formatter::Edge::Word;
 use crate::formatter::{Builder, Formatter, Frag};
 use ra_ap_syntax::ast::{HasAttrs, HasModuleItem};
-use ra_ap_syntax::{AstNode, NodeOrToken, SourceFile, SyntaxKind, SyntaxNode};
+use ra_ap_syntax::{AstNode, NodeOrToken, SourceFile, SyntaxKind, SyntaxNode, SyntaxToken};
 
 pub(crate) fn format_source_file(fmt: &Formatter, node: &SourceFile) -> Frag {
     let mut builder = Builder::new(fmt);
@@ -52,22 +52,33 @@ pub(crate) fn format_source_file(fmt: &Formatter, node: &SourceFile) -> Frag {
     builder.into_frag()
 }
 
-/// `node` copied unchanged from the source and recorded as not supported yet because of `what` (see
-/// `Formatter::unsupported`): from its first token after the leading comments and attributes, which
-/// the caller places (see `format_with_attrs`), to its last token
-pub(super) fn format_unsupported(
-    fmt: &Formatter,
-    node: &SyntaxNode,
-    what: impl Into<String>,
-) -> Frag {
-    let first = node
-        .children_with_tokens()
+/// The first token of `node` after its leading comments and attributes, which the caller places (see
+/// `format_with_attrs`)
+fn first_token_after_attrs(node: &SyntaxNode) -> SyntaxToken {
+    node.children_with_tokens()
         .find(|e| !e.kind().is_trivia() && e.kind() != SyntaxKind::ATTR)
         .and_then(|e| match e {
             NodeOrToken::Token(token) => Some(token),
             NodeOrToken::Node(node) => node.first_token(),
         })
-        .unwrap();
+        .unwrap()
+}
+
+/// `node` copied from the source, reindented (see `Formatter::reindented_range`), from its first token
+/// after the leading comments and attributes (see `first_token_after_attrs`) to its last token
+pub(super) fn format_reindented(fmt: &Formatter, node: &SyntaxNode) -> Frag {
+    let (first, last) = (first_token_after_attrs(node), node.last_token().unwrap());
+    fmt.reindented_range(&first, &last, Word, Word)
+}
+
+/// `node` copied from the source as `format_reindented` does, and recorded as not supported yet
+/// because of `what` (see `Formatter::unsupported`)
+pub(super) fn format_unsupported(
+    fmt: &Formatter,
+    node: &SyntaxNode,
+    what: impl Into<String>,
+) -> Frag {
+    let first = first_token_after_attrs(node);
     fmt.unsupported(&first, &node.last_token().unwrap(), what.into())
 }
 

@@ -4,6 +4,7 @@ use crate::comments::{is_line_comment, own_line_comment_follows, trivia_from};
 use crate::formatter::Edge::{BraceClose, BraceOpen, Close, Comma, Open, Word};
 use crate::formatter::{Builder, Edge, Formatter, Frag};
 use crate::utils::with_is_last;
+use ra_ap_syntax::ast::TokenTree;
 use ra_ap_syntax::{AstNode, SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken};
 
 /// An item of a comma-separated list with the source comma following it. The item is usually
@@ -381,6 +382,29 @@ impl Delimiters {
             close: token(close).last()?,
             kind,
         })
+    }
+
+    /// The delimiters of a token tree: `(...)`, `[...]` or `{...}`
+    pub fn of_token_tree(tree: &TokenTree) -> Self {
+        let (open, close) = (tree.syntax().first_token(), tree.syntax().last_token());
+        let kind = match open.as_ref().map(|t| t.kind()) {
+            Some(SyntaxKind::L_CURLY) => DelimiterKind::Braces,
+            Some(SyntaxKind::L_BRACK) => DelimiterKind::Brackets,
+            _ => DelimiterKind::Parens,
+        };
+        Delimiters {
+            open: open.unwrap(),
+            close: close.unwrap(),
+            kind,
+        }
+    }
+
+    /// The source from the opening to the closing delimiter, reindented (see
+    /// `Formatter::reindented_range`), spaced by the delimiters: `{ ... }` as a block, `(...)` and
+    /// `[...]` as a list
+    pub fn format_reindented(&self, fmt: &Formatter) -> Frag {
+        let (start, end) = self.edges();
+        fmt.reindented_range(&self.open, &self.close, start, end)
     }
 
     fn edges(&self) -> (Edge, Edge) {
