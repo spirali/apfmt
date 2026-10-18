@@ -54,5 +54,6 @@ fn f() {
         aaaaaaaaaaaaaaaaaaaaaa,
         bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb,
         cccccccccc,
-    }) in x {}
+    }) in x
+    {}
 }

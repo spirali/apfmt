@@ -424,6 +424,12 @@ impl<'a> Formatter<'a> {
             .any(|b| self.has_flat_layout_doc(b.doc_id))
     }
 
+    /// Whether a single-line layout of the fragment still spans more lines: it has one, but no
+    /// single-line width, so it contains a token with a line break (e.g. a string literal)
+    pub fn flat_spans_lines(&self, frag: &Frag) -> bool {
+        self.has_flat_layout(frag) && self.flat_width(frag).is_none()
+    }
+
     fn has_flat_layout_doc(&self, doc_id: DocId) -> bool {
         self.doc_arena.borrow_mut().has_flat_layout(doc_id)
     }

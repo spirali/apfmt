@@ -35,4 +35,13 @@ not be removed. Use `--force` if you want to remove the queue anyway"));
 second line", a);
     let x = query(a, "first line \
              second");
+    // Also under an operator, and in a struct literal, a tuple or a macro
+    process_message(&"first line of the message \
+second line");
+    let message = Message { text: "first line \
+second line" };
+    let pair = (first_value, "first line \
+second line");
+    process_message(format!("first line {} \
+second line", a));
 }

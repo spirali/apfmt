@@ -9,12 +9,12 @@ use super::expr::{
 use super::pat::pat_layouts;
 use super::stmt::{format_block_expr, format_block_expr_with_tail};
 use crate::comments::has_comments;
-use crate::utils::has_attrs;
 use crate::doc::AlignGroup;
 use crate::formatter::Edge::{Operator, Word};
 use crate::formatter::{Builder, Formatter, Frag};
-use crate::layout::head::HeadLayouts;
+use crate::layout::head::{HeadLayouts, pattern_head};
 use crate::layout::list::Delimiters;
+use crate::utils::has_attrs;
 use ra_ap_syntax::ast::{
     Expr, ForExpr, HasAttrs, HasLoopBody, LoopExpr, MatchArm, MatchExpr, WhileExpr,
 };
@@ -45,8 +45,8 @@ pub(super) fn format_while_expr(fmt: &Formatter, expr: WhileExpr) -> Frag {
 }
 
 /// `'a: for pat in iterable {`; a broken head is preferably broken before `in` (Style Guide): `for pat`
-/// / `    in iterable` / `{`; a broken pattern costs a split, a broken or-pattern hangs (see
-/// `pat_layouts`)
+/// / `    in iterable` / `{`; a broken pattern costs a split (see `pat_layouts`), and after it `{`
+/// follows only an iterable spanning more lines (see `pattern_head`): `} in items` / `{`
 pub(super) fn format_for_expr(fmt: &Formatter, expr: ForExpr) -> Frag {
     let mut builder = Builder::new(fmt);
     push_label(fmt, &mut builder, expr.label());
@@ -56,18 +56,12 @@ pub(super) fn format_for_expr(fmt: &Formatter, expr: ForExpr) -> Frag {
     let iterable = format_head_expr(fmt, expr.iterable().unwrap());
     let head =
         |pat: Frag, iterable: Frag| Builder::concat(fmt, [pat, in_keyword.clone(), iterable]);
-    let other = (iterable.other.clone())
-        .zip(pat.other)
-        .map(|(iterable, pat)| head(pat, iterable));
     // Broken before `in` is preferred to a hanging iterable on the line of `for`
-    let mut hanging = iterable
-        .hanging
-        .clone()
-        .map(|iterable| fmt.dispreferred(head(all_pat.clone(), iterable)));
-    // A broken or-pattern, `in` on its last line
-    if let (Some(pat), Some(iterable)) = (pat.hanging, iterable.other.clone()) {
-        hanging = fmt.alt_some(hanging, Some(head(pat, iterable)));
-    }
+    let on_line = HeadLayouts {
+        hanging: iterable.hanging.clone().map(|i| fmt.dispreferred(i)),
+        other: iterable.other.clone(),
+    };
+    let HeadLayouts { hanging, other } = pattern_head(fmt, &pat, &all_pat, &on_line, head);
     // The `in` line hangs
     let in_line = Builder::concat(
         fmt,
@@ -94,15 +88,10 @@ pub(super) fn format_match_expr(fmt: &Formatter, expr: MatchExpr) -> Frag {
     format_head_with_block(fmt, expr.match_token().unwrap(), &head, arms)
 }
 
-/// The head and the arms of `match scrutinee { arms }`. A head broken over more lines costs a split:
-/// the Style Guide breaks a control line only when it does not fit, so `let x =` / `    match y {`
-/// is preferred to `let x = match y` / `    .z()` / `{`.
+/// The head and the arms of `match scrutinee { arms }`; a head broken over more lines costs a split
+/// (see `format_head_with_block`)
 fn match_expr_parts(fmt: &Formatter, expr: &MatchExpr) -> (HeadLayouts, Frag) {
     let head = format_head_expr(fmt, expr.expr().unwrap());
-    let head = HeadLayouts {
-        hanging: head.hanging.map(|head| fmt.keep_together(head)),
-        other: head.other.map(|head| fmt.keep_together(head)),
-    };
     let list = expr.match_arm_list().unwrap();
     let group = fmt.align_group();
     let lines = list.attrs().map(|attr| format_attr(fmt, attr)).chain(
@@ -201,10 +190,12 @@ fn arm_body_layouts(fmt: &Formatter, body: Expr) -> ArmBodyLayouts {
         }
         None => format_added_braces(fmt, fmt.keep_together(inner)),
     };
-    let same_line = same_line_inner.filter(|_| !control_flow).map(|inner| match &blocks {
-        Some(blocks) => blocks.skip_braces(fmt, inner),
-        None => inner,
-    });
+    let same_line = same_line_inner
+        .filter(|_| !control_flow)
+        .map(|inner| match &blocks {
+            Some(blocks) => blocks.skip_braces(fmt, inner),
+            None => inner,
+        });
     ArmBodyLayouts {
         same_line,
         flat_lhs,

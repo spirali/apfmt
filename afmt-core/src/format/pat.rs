@@ -31,10 +31,7 @@ pub(super) fn pat_layouts(fmt: &Formatter, pat: Pat) -> HeadLayouts {
             other: Some(fmt.flat(frag)),
         }
     } else {
-        HeadLayouts {
-            hanging: None,
-            other: Some(frag),
-        }
+        HeadLayouts::other(frag)
     }
 }
 

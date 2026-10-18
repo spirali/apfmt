@@ -113,11 +113,7 @@ fn format_let_else(
     // The initializer placed by `other`, then the hanging one
     let init_else = |other: Option<Frag>| {
         let other_else = other.map(|other| {
-            let head = HeadLayouts {
-                hanging: None,
-                other: Some(other),
-            };
-            format_head_followed_by(fmt, &head, else_block.clone())
+            format_head_followed_by(fmt, &HeadLayouts::other(other), else_block.clone())
         });
         fmt.alt_some(hanging_else.clone(), other_else)
             .expect("an initializer has a layout")

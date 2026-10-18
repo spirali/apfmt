@@ -93,8 +93,8 @@ fn chain(fmt: &Formatter, first: Frag, rest: &[(Frag, Frag)], indent: bool) -> F
 }
 
 /// An element of a postfix chain: `.field`, `.method::<T>(args)` or `.await`, with the `?`
-/// following it (an index is not a part of a chain, see `postfix_chain_parts` in `format/expr.rs`). `head` stays on one line; `tail` (the arguments and what follows them, may
-/// be empty) may break.
+/// following it (an index is not a part of a chain, see `postfix_chain_parts` in `format/expr.rs`).
+/// `head` stays on one line; `tail` (the arguments and what follows them, may be empty) may break.
 pub(crate) struct ChainElement {
     pub head: Frag,
     pub tail: Frag,
@@ -115,31 +115,39 @@ pub(crate) struct ChainElement {
 /// `format/expr.rs`): broken before its own elements (`root.hanging`), the elements follow on lines at
 /// the same indentation, as if it were one chain; `root.other` are its other layouts.
 ///
-/// Returns the broken layout, with indented continuation lines (a hanging indent), and the others;
-/// without elements (`a?`), there is only the root.
+/// Returns the broken layout as `hanging` (indented continuation lines) and the others as `other`;
+/// without elements (`a?`), the root.
 pub(crate) fn postfix_chain_layouts(
     fmt: &Formatter,
     root: HeadLayouts,
     elements: &[ChainElement],
-) -> (Option<Frag>, Option<Frag>) {
+) -> HeadLayouts {
     if elements.is_empty() {
-        return (root.hanging, root.other);
+        return root;
     }
     let full = elements
         .iter()
         .map(|e| Builder::concat(fmt, [e.head.clone(), e.tail.clone()]))
         .collect::<Vec<_>>();
+    // An element broken over more lines costs a split: the Style Guide prefers single-line elements
+    let lines = full
+        .iter()
+        .map(|e| fmt.keep_together(e.clone()))
+        .collect::<Vec<_>>();
     // A broken root chain continued by the elements, see `vertical_chain`
     let continued = root.hanging.map(|root| {
         let mut builder = Builder::new(fmt);
         builder.push(root);
-        builder.push_lines(full.iter().map(|e| fmt.keep_together(e.clone())), true);
+        builder.push_lines(lines.iter().cloned(), true);
         builder.into_frag()
     });
     let Some(root) = root.other else {
-        return (continued, None);
+        return HeadLayouts {
+            hanging: continued,
+            other: None,
+        };
     };
-    let vertical = fmt.alt_some(Some(vertical_chain(fmt, &root, &full)), continued);
+    let vertical = fmt.alt_some(Some(vertical_chain(fmt, &root, &lines)), continued);
     let last = elements.last().unwrap();
 
     let limit = if elements.len() >= 2 {
@@ -177,20 +185,18 @@ pub(crate) fn postfix_chain_layouts(
         let overflow = Builder::concat(fmt, [line, fmt.multi_line(last.tail.clone())]);
         other = Some(fmt.alt_opt(fmt.dispreferred(overflow), other));
     }
-    (vertical, other)
+    HeadLayouts {
+        hanging: vertical,
+        other,
+    }
 }
 
-/// The chain broken before every element, see `postfix_chain_layouts`; `elements` are formatted. A
-/// short root takes the elements that follow it while it is short on a single line and no comment
-/// separates them (`x.baz?` / `    .qux()`); then the lines after this head are laid out by
-/// `lines_after_head`.
-fn vertical_chain(fmt: &Formatter, root: &Frag, elements: &[Frag]) -> Frag {
-    // An element broken over more lines costs a split: the Style Guide prefers single-line elements;
-    // so does the root (`foo(` / `    a,` / `).bar(...)`)
-    let lines = elements
-        .iter()
-        .map(|e| fmt.keep_together(e.clone()))
-        .collect::<Vec<_>>();
+/// The chain broken before every element, see `postfix_chain_layouts`; `lines` are the formatted
+/// elements. A short root takes the elements that follow it while it is short on a single line and
+/// no comment separates them (`x.baz?` / `    .qux()`); then the lines after this head are laid out
+/// by `lines_after_head`.
+fn vertical_chain(fmt: &Formatter, root: &Frag, lines: &[Frag]) -> Frag {
+    // A broken root costs a split, as a broken element does (`foo(` / `    a,` / `).bar(...)`)
     let indent_width = fmt.config().tab_spaces as usize;
     let mut head = fmt.keep_together(root.clone());
     let mut layouts: Option<Frag> = None;
@@ -245,10 +251,10 @@ fn lines_after_head(fmt: &Formatter, head: &Frag, lines: &[Frag]) -> Frag {
     layout
 }
 
-/// `head` followed by `lines`, each on its own block-indented line. A short head takes the lines
-/// that follow it while its last line ends at most at the indentation of the next line, so it is
-/// not left alone on its line: `x.baz?` / `    .qux()`, `a + b` / `    + c`, also `foo(` / `...` /
-/// `).baz?`
+/// `head` followed by `lines`, each on its own block-indented line (an operator chain; a postfix
+/// chain is laid out by `vertical_chain`). A short head takes the lines that follow it while its
+/// last line ends at most at the indentation of the next line, so it is not left alone on its line:
+/// `a + b` / `    + c`, also `foo(` / `...` / `) + c`
 fn vertical_lines(fmt: &Formatter, head: &Frag, lines: &[Frag]) -> Frag {
     let indent_width = fmt.config().tab_spaces as usize;
     let mut head = head.clone();

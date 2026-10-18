@@ -30,10 +30,10 @@ pub(crate) enum Overflow {
     Never,
     /// With these layouts of the item; the list layout with fewer lines wins
     With(Frag),
-    /// With these layouts of the item; the list layout with fewer lines wins, with as many lines
-    /// the overflow does: it is weakly preferred, `WeakPreference` (Style Guide: a single combinable
-    /// argument, `foo(bar(` / `...` / `))`, "apply this behavior recursively": the deepest one that
-    /// fits)
+    /// With these layouts of the item; the list layout with fewer lines wins, and of layouts with
+    /// as many lines the overflowing one (it gets a `WeakPreference`; Style Guide: a single
+    /// combinable argument, `foo(bar(` / `...` / `))`, "apply this behavior recursively": the deepest
+    /// one that fits)
     WeakPreference(Frag),
     /// With these layouts of the item, preferred whenever it fits: the broken layouts of the list
     /// cost a split (Style Guide: closures)
@@ -41,6 +41,19 @@ pub(crate) enum Overflow {
     /// With these layouts of the item, the only broken layout of the list unless a comment rules
     /// the overflow out (a single closure parameter hugged by the pipes: `|(` / `    a,` / `)|`)
     Only(Frag),
+}
+
+impl Overflow {
+    /// The layouts of the overflowing item, if it may overflow
+    fn layouts(&self) -> Option<&Frag> {
+        match self {
+            Overflow::Never => None,
+            Overflow::With(layouts)
+            | Overflow::WeakPreference(layouts)
+            | Overflow::Preferred(layouts)
+            | Overflow::Only(layouts) => Some(layouts),
+        }
+    }
 }
 
 impl<T> ListItem<T> {
@@ -721,15 +734,8 @@ pub(crate) fn delimited_list(
     }
     let open = Some(delims.open.clone());
     let last_overflow = &items.last().unwrap().overflow;
-    let (last_layouts, overflow_only) = match last_overflow {
-        Overflow::Never => (None, false),
-        Overflow::With(layouts)
-        | Overflow::WeakPreference(layouts)
-        | Overflow::Preferred(layouts) => (Some(layouts), false),
-        Overflow::Only(layouts) => (Some(layouts), true),
-    };
     // A line comment after the last item would end the line in front of the closing delimiter
-    let overflow = last_layouts
+    let overflow = (last_overflow.layouts())
         .filter(|_| !delims.has_own_line_comment() && !delims.has_line_comment_before_close())
         .and_then(|last_layouts| {
             let limit = layout.flat.unwrap_or(FlatLimit::MaxWidth);
@@ -742,6 +748,7 @@ pub(crate) fn delimited_list(
                 _ => overflow,
             })
         });
+    let overflow_only = matches!(last_overflow, Overflow::Only(_));
     let broken = (overflow.is_none() || !overflow_only).then(|| {
         let broken = match layout.broken {
             BrokenList::Vertical { keep_blank_lines } => vertical_list(

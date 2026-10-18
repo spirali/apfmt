@@ -43,8 +43,7 @@ fn format_token_tree(fmt: &Formatter, call: &MacroCall) -> Frag {
             |placeholders| parse_token_tree::<ArgList>(tree, edition, placeholders),
             |args| {
                 // The trailing comma is kept as it is: a macro may not accept one, or require it
-                let trailing_comma = has_trailing_comma(args.syntax());
-                let trailing = if trailing_comma {
+                let trailing = if has_trailing_comma(args.syntax()) {
                     TrailingSeparator::Required
                 } else {
                     TrailingSeparator::Omitted
@@ -56,9 +55,7 @@ fn format_token_tree(fmt: &Formatter, call: &MacroCall) -> Frag {
                     fmt.config().fn_call_width,
                     |layout| {
                         let lines = format_string_lines(call, &args);
-                        layout
-                            .trailing_separator(trailing)
-                            .lines_if(lines)
+                        layout.trailing_separator(trailing).lines_if(lines)
                     },
                 )
             },
