@@ -41,7 +41,8 @@ pub struct Config {
     /// overflowing line is preferred only when it overflows this many columns less
     pub overflow_line_penalty: u32,
     /// Puts a single space after the opening sigil of a comment and before the closing one:
-    /// `//a` -> `// a`, `/*a*/` -> `/* a */` (see `normalize_comment_sigil_spacing`)
+    /// `//a` -> `// a`, `/*a*/` -> `/* a */` (see `normalize_comment_sigil_spacing`); off by default,
+    /// as rustfmt leaves the text of comments alone
     pub normalize_comment_sigil_spacing: bool,
     /// The edition of the syntax
     pub edition: Edition,
@@ -75,7 +76,7 @@ impl Default for Config {
             format_macro_bodies: true,
             trailing_comment_align_threshold: 40,
             overflow_line_penalty: 20,
-            normalize_comment_sigil_spacing: true,
+            normalize_comment_sigil_spacing: false,
             edition: Edition::CURRENT,
             disable_all_formatting: false,
             dump_parse_tree: false,

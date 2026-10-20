@@ -4,5 +4,5 @@ fn main() {
         bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb, // b
         cc,                                                               // c
     ];
-    let x = 1; /* b */
+    let x = 1; /*b*/
 }

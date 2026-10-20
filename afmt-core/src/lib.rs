@@ -249,18 +249,19 @@ mod tests {
     fn normalize_comment_sigil_spacing() {
         // empty comments (`/**/`, `//`) get no space
         let code = "fn/*a*/f() { g(/**/ 1 /*  b  */, /** c*/ 2); //c\n //\n}";
+        // off by default, as in rustfmt
         let config = Config::default();
         assert_eq!(
             format_source_code(&config, code).unwrap().code,
-            "fn /* a */ f() {\n    g(/**/ 1 /* b */, /** c*/ 2); // c\n    //\n}"
+            "fn /*a*/ f() {\n    g(/**/ 1 /*  b  */, /** c*/ 2); //c\n    //\n}"
         );
         let config = Config {
-            normalize_comment_sigil_spacing: false,
+            normalize_comment_sigil_spacing: true,
             ..Config::default()
         };
         assert_eq!(
             format_source_code(&config, code).unwrap().code,
-            "fn /*a*/ f() {\n    g(/**/ 1 /*  b  */, /** c*/ 2); //c\n    //\n}"
+            "fn /* a */ f() {\n    g(/**/ 1 /* b */, /** c*/ 2); // c\n    //\n}"
         );
     }
 }

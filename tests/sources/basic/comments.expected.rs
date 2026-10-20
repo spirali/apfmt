@@ -1,13 +1,13 @@
 fn main() {
     // Hello
-    // Comment2
+    //Comment2
 
     /* aa */
 
     /* foo */ f(); /* bar */ /* baz */ /* end */
 
     let a = 10; /* hello */
-    test1(); /* a */ /* c */
+    test1(); /*a*/ /*c*/
     test2();
 
     a(); // a
