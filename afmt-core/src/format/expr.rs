@@ -173,16 +173,15 @@ fn is_literal_or_name(expr: &Expr) -> bool {
 }
 
 /// Whether a broken list of the expressions `exprs` (formatted as `items`) is filled on lines instead
-/// of one item per line: all items are simple and at most `short_array_element_width_threshold` wide,
-/// as in rustfmt. This is an explicit exception to the Style Guide. For call arguments now, arrays
-/// and `vec![]` later.
+/// of one item per line: all items are simple and at most `short_array_element_width_threshold` wide
+/// on a single line, as in rustfmt. This is an explicit exception to the Style Guide.
 fn is_fillable_list(fmt: &Formatter, exprs: &[Expr], items: &[ListItem]) -> bool {
-    let threshold = fmt.config().short_array_element_width_threshold as usize;
+    let threshold = fmt.config().short_array_element_width_threshold;
     threshold > 0
         && exprs.iter().all(is_simple_expr)
         && items
             .iter()
-            .all(|i| fmt.flat_width(&i.frag).is_some_and(|w| w <= threshold))
+            .all(|i| fmt.min_flat_width(&i.frag).is_some_and(|w| w <= threshold))
 }
 
 /// Whether the last of more expressions may overflow: a closure if no other one is (Style Guide), or
@@ -244,7 +243,7 @@ fn format_expr_item(fmt: &Formatter, expr: Expr) -> (Frag, Overflow) {
 /// `is_delimited_list_expr`), and so may a closure or a block after other arguments (`f(a, |x| {` /
 /// `...` / `})`, see `is_overflowing_last`);
 /// a single other expression is limited only by `max_width`. A list with an item spanning more
-/// lines on a single line (a string literal, see `Formatter::flat_spans_lines`) is always broken.
+/// lines on a single line (a string literal, see `Formatter::has_multi_line_text`) is always broken.
 /// `refine` adjusts the layouts, e.g. the
 /// trailing separator.
 pub(super) fn format_expr_list(
@@ -285,14 +284,15 @@ pub(super) fn format_expr_list(
     // a method call, also behind operators (see `without_operators`). The only postfix
     // chains that can overflow are method calls and combinable expressions followed by `?` (see
     // `is_combinable_expr`); the others, e.g. `a.b`, cannot. Another one that can (e.g. a call) is:
-    // when it does not fit, it is broken instead. All as rustfmt does; the Style Guide leaves what a
-    // small call is to the tool.
+    // when it does not fit, it is broken instead. Nor is one with no layout spanning more lines,
+    // which has nothing to overflow with (`f(a::B::new())`, a macro call copied unchanged). All as
+    // rustfmt does; the Style Guide leaves what a small call is to the tool.
     let unlimited = single.is_some_and(|e| {
         !hug || matches!(
             without_operators(e),
             Expr::ClosureExpr(_) | Expr::MethodCallExpr(_)
         )
-    });
+    }) || matches!(items.as_slice(), [item] if !fmt.has_line_break(&item.frag));
     let flat = if unlimited {
         FlatLimit::MaxWidth
     } else {
@@ -301,7 +301,7 @@ pub(super) fn format_expr_list(
     // A string spanning lines, also under an operator (`&"a⏎b"`), is not hugged: "If ... any
     // argument ... is multi-line, then format the call across multiple lines" (Style Guide; a
     // literal is not combinable), as in rustfmt
-    let multi_line = items.iter().any(|item| fmt.flat_spans_lines(&item.frag));
+    let multi_line = items.iter().any(|item| fmt.has_multi_line_text(&item.frag));
     let layout = ListLayout::tall(flat)
         .fill_if(is_fillable_list(fmt, &exprs, &items))
         .broken_if(multi_line);
@@ -984,7 +984,15 @@ fn closure_body_layouts(
             (all, Some(fmt.alt_frag(inline, braced)))
         }
         _ => {
-            let all = fmt.alt_frag(unbraced, format_added_braces(fmt, inner_frag));
+            // Braces added around a block-like body, which needs none, cost a split, as in a match
+            // arm (see `arm_body_layouts`): `|x| Foo {` / `...` / `}` rather than `|x| {` / `Foo {`
+            let braced = format_added_braces(fmt, inner_frag);
+            let braced = if block_like {
+                fmt.dispreferred(braced)
+            } else {
+                braced
+            };
+            let all = fmt.alt_frag(unbraced, braced);
             (all.clone(), Some(all))
         }
     }

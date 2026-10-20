@@ -3,7 +3,6 @@
 use crate::formatter::Edge::Operator;
 use crate::formatter::{Builder, Formatter, Frag};
 use crate::layout::head::HeadLayouts;
-use crate::layout::list::FlatLimit;
 use ra_ap_syntax::{NodeOrToken, SyntaxKind, SyntaxNode};
 
 /// `a op b op c` on one line, or broken before every operator with indented continuation lines;
@@ -150,39 +149,26 @@ pub(crate) fn postfix_chain_layouts(
     let vertical = fmt.alt_some(Some(vertical_chain(fmt, &root, &lines)), continued);
     let last = elements.last().unwrap();
 
-    let limit = if elements.len() >= 2 {
-        FlatLimit::Within(fmt.config().chain_width)
-    } else {
-        FlatLimit::MaxWidth
-    };
-    // The single-line width of the root and the elements in front of the last one, measured once; the
-    // layouts are checked exactly by `FlatLimit::apply` (comments in between count too)
+    // Within `chain_width` with two or more elements (as rustfmt); on one line also without a line
+    // break inside a token (a multi-line string literal)
+    let chain_width = (elements.len() >= 2).then_some(fmt.config().chain_width);
     let rest = &full[..full.len() - 1];
-    let rest_width = std::iter::once(&root)
-        .chain(rest)
-        .try_fold(0, |w, f| Some(w + fmt.flat_width(f)?));
-    let fits = |last: &Frag| {
-        let width = rest_width.zip(fmt.flat_width(last)).map(|(a, b)| a + b);
-        width.is_some_and(|w| match limit {
-            FlatLimit::Within(limit) => w <= limit as usize,
-            FlatLimit::MaxWidth => true,
-        })
-    };
     let line = |last: &Frag| {
         let frags = std::iter::once(&root).chain(rest).chain([last]);
-        limit.apply(fmt, Builder::concat(fmt, frags.cloned()))
+        Builder::concat(fmt, frags.cloned())
     };
-
-    let mut other = None;
-    let full_last = full.last().unwrap();
-    if fits(full_last) {
-        other = line(full_last);
-    }
+    let width = chain_width.unwrap_or(u32::MAX);
+    let mut other = fmt.flat_within(line(full.last().unwrap()), width);
+    // Not built if the line up to the last arguments is too wide already
     if !last.tail.is_empty()
-        && fits(&last.head)
-        && let Some(line) = line(&last.head)
+        && let Some(line) = fmt.flat_within(line(&last.head), width)
     {
-        let overflow = Builder::concat(fmt, [line, fmt.multi_line(last.tail.clone())]);
+        let mut overflow = Builder::concat(fmt, [line, fmt.multi_line(last.tail.clone())]);
+        // Within `chain_width` up to the first line break, the start of the arguments included, as
+        // rustfmt measures it: `a.b().c(|x| {`
+        if let Some(width) = chain_width {
+            overflow = fmt.first_line_within(overflow, width);
+        }
         other = Some(fmt.alt_opt(fmt.dispreferred(overflow), other));
     }
     HeadLayouts {
@@ -197,17 +183,19 @@ pub(crate) fn postfix_chain_layouts(
 /// by `lines_after_head`.
 fn vertical_chain(fmt: &Formatter, root: &Frag, lines: &[Frag]) -> Frag {
     // A broken root costs a split, as a broken element does (`foo(` / `    a,` / `).bar(...)`)
-    let indent_width = fmt.config().tab_spaces as usize;
     let mut head = fmt.keep_together(root.clone());
     let mut layouts: Option<Frag> = None;
     for k in 0..=lines.len() {
         layouts = Some(fmt.alt_opt(lines_after_head(fmt, &head, &lines[k..]), layouts));
-        let short = fmt.flat_width(&head).is_some_and(|w| w <= indent_width);
-        if k == lines.len() || !short || head.comment_follows() {
+        if k == lines.len() || head.comment_follows() {
             break;
         }
-        // Its last line, after what precedes the chain on it, ends at most at the next indentation
-        head = Builder::concat(fmt, [fmt.short_last_line(fmt.flat(head)), lines[k].clone()]);
+        // Short on a single line (no line break in a token either), it ends, after what precedes
+        // the chain on its line, at most at the next indentation
+        let Some(flat_head) = fmt.flat_within(head, fmt.config().tab_spaces) else {
+            break;
+        };
+        head = Builder::concat(fmt, [fmt.short_last_line(flat_head), lines[k].clone()]);
     }
     layouts.unwrap()
 }
@@ -225,8 +213,8 @@ fn lines_after_head(fmt: &Formatter, head: &Frag, lines: &[Frag]) -> Frag {
     if lines.is_empty() {
         return head.clone();
     }
-    let chain_width = fmt.config().chain_width as usize;
-    let short = fmt.flat_width(head).is_some_and(|w| w <= chain_width);
+    let chain_width = fmt.config().chain_width;
+    let short = fmt.min_flat_width(head).is_some_and(|w| w <= chain_width);
     let mut indented = Builder::new(fmt);
     indented.push(if short {
         head.clone()
@@ -256,7 +244,6 @@ fn lines_after_head(fmt: &Formatter, head: &Frag, lines: &[Frag]) -> Frag {
 /// last line ends at most at the indentation of the next line, so it is not left alone on its line:
 /// `a + b` / `    + c`, also `foo(` / `...` / `) + c`
 fn vertical_lines(fmt: &Formatter, head: &Frag, lines: &[Frag]) -> Frag {
-    let indent_width = fmt.config().tab_spaces as usize;
     let mut head = head.clone();
     let mut layouts: Option<Frag> = None;
     for k in 0..=lines.len() {
@@ -268,14 +255,16 @@ fn vertical_lines(fmt: &Formatter, head: &Frag, lines: &[Frag]) -> Frag {
         if k == lines.len() {
             break;
         }
-        // The head may take the next line only if its last line can be short: it is short on a
-        // single line, or it is the first fragment ending with a delimiter (`foo(` / `...` / `)`)
-        let short = (k == 0 && head.may_end_with_delimiter())
-            || fmt.flat_width(&head).is_some_and(|w| w <= indent_width);
-        if !short {
+        // The head may take the next line only if its last line is short: the first fragment
+        // ending with a delimiter (`foo(` / `...` / `)`), otherwise a head on a single line
+        let short_head = if k == 0 && head.may_end_with_delimiter() {
+            head
+        } else if let Some(flat_head) = fmt.flat_within(head, fmt.config().tab_spaces) {
+            flat_head
+        } else {
             break;
-        }
-        head = Builder::concat(fmt, [fmt.short_last_line(head), lines[k].clone()]);
+        };
+        head = Builder::concat(fmt, [fmt.short_last_line(short_head), lines[k].clone()]);
     }
     layouts.unwrap()
 }

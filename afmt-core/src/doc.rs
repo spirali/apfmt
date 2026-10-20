@@ -95,6 +95,11 @@ pub(crate) enum DocNode {
     /// Only layouts of the inner doc whose last line ends at most at the indentation of a nested line
     /// (`indent + indent_width`), e.g. a short chain root that the next element may follow: `x.baz?`
     ShortLastLine(DocId),
+    /// Only layouts of the inner doc whose first line spans at most the given number of columns from
+    /// where the doc starts (the lines after its first line break are free), e.g. a width heuristic
+    /// (`fn_call_width`) under `Flat`, or a chain with its last arguments broken within `chain_width`
+    /// up to its first line break, as rustfmt measures it
+    FirstLineWithin(DocId, u32),
     /// The inner doc does not count as overflow when it extends beyond the page width, e.g. a
     /// comment after code that ends the line: a long comment does not change the layout of the code
     /// in front of it (as in rustfmt)
@@ -103,34 +108,52 @@ pub(crate) enum DocNode {
     AlignMark(AlignGroup),
 }
 
-/// What the single-line walks (`DocArena::flat_width`, `DocArena::has_flat_layout`) need to know
-/// about an `Alt` node, computed the first time a walk reaches it and kept in `DocArena::alt_infos`: a
-/// doc shared by many alternatives is then walked once, not once per path to it (exponential in the
-/// nesting)
+/// What the walks (`DocArena::has_flat_layout`, `DocArena::has_multi_line_text`,
+/// `DocArena::has_line_break`) need to know about an `Alt` node, computed the first time a walk
+/// reaches it and kept in `DocArena::alt_infos`: a doc shared by many alternatives is then walked
+/// once, not once per path to it (exponential in the nesting)
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct AltFlatInfo {
-    /// The width of the narrowest single-line branch, `u32::MAX` if no branch has one
-    width: u32,
     /// Whether a branch may have a layout under `Flat`
     has_flat_layout: bool,
+    /// The lower bound of the single-line width (see `DocArena::min_flat_width`), `u32::MAX` if no
+    /// branch has a single line without a line break
+    min_flat_width: u32,
+    /// Whether a text of a branch contains a line break
+    has_multi_line_text: bool,
+    /// Whether a branch may have a line break outside `Flat`
+    has_line_break: bool,
 }
 
 impl AltFlatInfo {
-    pub fn new(width: Option<usize>, has_flat_layout: bool) -> Self {
-        // A width that does not fit in `u32` (never in practice) is saturated, not lost
-        let width = width.map_or(u32::MAX, |w| u32::try_from(w).unwrap_or(u32::MAX - 1));
+    pub fn new(
+        has_flat_layout: bool,
+        has_multi_line_text: bool,
+        min_flat_width: Option<u32>,
+        has_line_break: bool,
+    ) -> Self {
         AltFlatInfo {
-            width,
+            has_line_break,
             has_flat_layout,
+            has_multi_line_text,
+            min_flat_width: min_flat_width.unwrap_or(u32::MAX),
         }
     }
 
-    pub fn width(self) -> Option<usize> {
-        (self.width != u32::MAX).then_some(self.width as usize)
+    pub fn min_flat_width(self) -> Option<u32> {
+        (self.min_flat_width != u32::MAX).then_some(self.min_flat_width)
     }
 
     pub fn has_flat_layout(self) -> bool {
         self.has_flat_layout
+    }
+
+    pub fn has_multi_line_text(self) -> bool {
+        self.has_multi_line_text
+    }
+
+    pub fn has_line_break(self) -> bool {
+        self.has_line_break
     }
 }
 
@@ -212,34 +235,41 @@ impl DocArena {
         &self.strings[str_id.0 as usize]
     }
 
-    /// Width of the doc on a single line, the narrowest of its alternatives; `None` if it cannot be on
-    /// a single line, also because of a text with a line break (a multi-line string literal)
-    pub fn flat_width(&mut self, doc: DocId) -> Option<usize> {
+    /// The width of the narrowest single line of the doc without any line break (also not in a
+    /// token): the narrowest alternative of every `Alt`, which are chosen independently, so this line
+    /// exists; `None` if there is none (also because of a `FirstLineWithin` it does not fit). Exact
+    /// for whether the doc can be on one line within a width (only `ShortLastLine`, which depends on
+    /// the column, is not checked), not the width of the layout placed: that is the resolver's.
+    pub fn min_flat_width(&mut self, doc: DocId) -> Option<u32> {
         let text_width = |text: &str| {
-            (!text.contains('\n')).then(|| unicode_width::UnicodeWidthStr::width(text))
+            (!text.contains('\n')).then(|| unicode_width::UnicodeWidthStr::width(text) as u32)
         };
         match self.get_node(doc) {
             DocNode::Token(token) => text_width(token.text()),
             DocNode::Text(t) => text_width(self.get_text(*t)),
             DocNode::Empty | DocNode::AlignMark(_) => Some(0),
-            DocNode::Newline | DocNode::Nest(_) | DocNode::Align(_) | DocNode::MultiLine(_) => None,
+            DocNode::Newline | DocNode::MultiLine(_) => None,
+            // Without a line break, the indentation does not apply
             &DocNode::Flat(d)
+            | &DocNode::Nest(d)
+            | &DocNode::Align(d)
             | &DocNode::KeepTogether(d, _)
             | &DocNode::Preference(d, _)
             | &DocNode::WeakPreference(d, _)
             | &DocNode::ShortLastLine(d)
-            | &DocNode::IgnoreOverflow(d) => self.flat_width(d),
+            | &DocNode::IgnoreOverflow(d) => self.min_flat_width(d),
+            &DocNode::FirstLineWithin(d, width) => self.min_flat_width(d).filter(|&w| w <= width),
             &DocNode::Concat(a, b) => {
-                let width1 = self.flat_width(a)?;
-                Some(width1 + self.flat_width(b)?)
+                let width1 = self.min_flat_width(a)?;
+                Some(width1.saturating_add(self.min_flat_width(b)?))
             }
-            DocNode::Alt(..) => self.alt_info(doc).width(),
+            DocNode::Alt(..) => self.alt_info(doc).min_flat_width(),
         }
     }
 
     /// Whether the doc may have a layout under `Flat`: false only if a line break is forced in all of
-    /// its alternatives (unlike `flat_width`, a multi-line token, e.g. a string literal, is allowed, as
-    /// the resolver allows it)
+    /// its alternatives (a multi-line token, e.g. a string literal, is allowed, as the resolver allows
+    /// it), or a `FirstLineWithin` of it cannot fit (see `min_flat_width`)
     pub fn has_flat_layout(&mut self, doc: DocId) -> bool {
         match self.get_node(doc) {
             DocNode::Newline => false,
@@ -253,8 +283,53 @@ impl DocArena {
             | &DocNode::WeakPreference(d, _)
             | &DocNode::ShortLastLine(d)
             | &DocNode::IgnoreOverflow(d) => self.has_flat_layout(d),
+            // Under `Flat`, a single line within the width
+            &DocNode::FirstLineWithin(d, width) => {
+                self.min_flat_width(d).is_some_and(|w| w <= width)
+            }
             &DocNode::Concat(a, b) => self.has_flat_layout(a) && self.has_flat_layout(b),
             DocNode::Alt(..) => self.alt_info(doc).has_flat_layout(),
+        }
+    }
+
+    /// Whether a text of the doc, in any of its alternatives, contains a line break (a multi-line
+    /// string literal, or source copied unchanged)
+    pub fn has_multi_line_text(&mut self, doc: DocId) -> bool {
+        match self.get_node(doc) {
+            DocNode::Token(token) => token.text().contains('\n'),
+            DocNode::Text(t) => self.get_text(*t).contains('\n'),
+            DocNode::Empty | DocNode::AlignMark(_) | DocNode::Newline => false,
+            &DocNode::Nest(d)
+            | &DocNode::Align(d)
+            | &DocNode::Flat(d)
+            | &DocNode::MultiLine(d)
+            | &DocNode::KeepTogether(d, _)
+            | &DocNode::Preference(d, _)
+            | &DocNode::WeakPreference(d, _)
+            | &DocNode::ShortLastLine(d)
+            | &DocNode::IgnoreOverflow(d)
+            | &DocNode::FirstLineWithin(d, _) => self.has_multi_line_text(d),
+            &DocNode::Concat(a, b) => self.has_multi_line_text(a) || self.has_multi_line_text(b),
+            DocNode::Alt(..) => self.alt_info(doc).has_multi_line_text(),
+        }
+    }
+
+    /// Whether a layout of the doc may have a line break (outside `Flat`)
+    pub fn has_line_break(&mut self, doc: DocId) -> bool {
+        match self.get_node(doc) {
+            DocNode::Newline => true,
+            DocNode::Token(_) | DocNode::Text(_) | DocNode::Empty | DocNode::AlignMark(_) | DocNode::Flat(_) => false,
+            &DocNode::Nest(d)
+            | &DocNode::Align(d)
+            | &DocNode::MultiLine(d)
+            | &DocNode::KeepTogether(d, _)
+            | &DocNode::Preference(d, _)
+            | &DocNode::WeakPreference(d, _)
+            | &DocNode::ShortLastLine(d)
+            | &DocNode::IgnoreOverflow(d)
+            | &DocNode::FirstLineWithin(d, _) => self.has_line_break(d),
+            &DocNode::Concat(a, b) => self.has_line_break(a) || self.has_line_break(b),
+            DocNode::Alt(..) => self.alt_info(doc).has_line_break(),
         }
     }
 
@@ -266,13 +341,19 @@ impl DocArena {
         let &DocNode::Alt(doc1, doc2) = self.get_node(doc) else {
             panic!("alt_info of a node that is not `Alt`");
         };
-        // Width of the narrowest single-line branch
-        let width = match (self.flat_width(doc1), self.flat_width(doc2)) {
+        let has_flat_layout = self.has_flat_layout(doc1) || self.has_flat_layout(doc2);
+        let has_multi_line_text = self.has_multi_line_text(doc1) || self.has_multi_line_text(doc2);
+        let min_flat_width = match (self.min_flat_width(doc1), self.min_flat_width(doc2)) {
             (Some(width1), Some(width2)) => Some(width1.min(width2)),
             (width1, width2) => width1.or(width2),
         };
-        let has_flat_layout = self.has_flat_layout(doc1) || self.has_flat_layout(doc2);
-        let info = AltFlatInfo::new(width, has_flat_layout);
+        let has_line_break = self.has_line_break(doc1) || self.has_line_break(doc2);
+        let info = AltFlatInfo::new(
+            has_flat_layout,
+            has_multi_line_text,
+            min_flat_width,
+            has_line_break,
+        );
         self.alt_infos.insert(doc, info);
         info
     }
@@ -317,6 +398,9 @@ impl DocArena {
                     "lightyellow",
                 ),
                 DocNode::ShortLastLine(_) => ("ShortLastLine".into(), "house", "lightpink"),
+                DocNode::FirstLineWithin(_, width) => {
+                    (format!("FirstLineWithin {width}"), "invhouse", "lightpink")
+                }
                 DocNode::IgnoreOverflow(_) => ("IgnoreOverflow".into(), "invhouse", "lightblue"),
                 DocNode::Empty => ("<empty>".into(), "box", "lightyellow"),
                 DocNode::AlignMark(group) => {
@@ -349,6 +433,7 @@ impl DocArena {
                 | DocNode::Preference(d, _)
                 | DocNode::WeakPreference(d, _)
                 | DocNode::ShortLastLine(d)
+                | DocNode::FirstLineWithin(d, _)
                 | DocNode::IgnoreOverflow(d) => vec![(*d, "")],
             };
             for (child, edge_label) in &children {
@@ -425,6 +510,12 @@ impl DocArena {
             }
             DocNode::ShortLastLine(d) => {
                 println!("ShortLastLine(");
+                self.dump_helper(*d, indent + 1);
+                make_ident();
+                println!(")");
+            }
+            DocNode::FirstLineWithin(d, width) => {
+                println!("FirstLineWithin[{width}](");
                 self.dump_helper(*d, indent + 1);
                 make_ident();
                 println!(")");

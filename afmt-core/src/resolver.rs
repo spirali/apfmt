@@ -95,12 +95,24 @@ pub struct Context {
     indent: u32,
     /// Newlines are not allowed
     flat: bool,
+    /// Text must end at most at this column until the first line break (`DocNode::FirstLineWithin`)
+    first_line_end: Option<u32>,
 }
 
 impl Context {
     /// The column where the next text starts
     fn text_col(&self) -> u32 {
         self.col.unwrap_or(self.indent)
+    }
+
+    /// The context after a layout with `measure` placed in this one: at its last column, and free of
+    /// the first-line limit after a line break
+    fn after(&self, measure: &Measure) -> Context {
+        Context {
+            col: measure.last,
+            first_line_end: self.first_line_end.filter(|_| measure.height == 0),
+            ..*self
+        }
     }
 }
 
@@ -408,6 +420,7 @@ impl<'a> Resolver<'a> {
                 col: None,
                 indent: 0,
                 flat: false,
+                first_line_end: None,
             },
             self.root,
         ));
@@ -479,10 +492,10 @@ impl<'a> Resolver<'a> {
                     let Some(layout1) = results.last().unwrap().layouts.first() else {
                         continue;
                     };
-                    let col = layout1.measure.last;
+                    let ctx2 = ctx.after(&layout1.measure);
                     results.push(LayoutSet::empty());
                     tasks.push(Task::Concat(ctx, doc2, 0));
-                    next = Some((Context { col, ..ctx }, doc2));
+                    next = Some((ctx2, doc2));
                 }
                 Task::Concat(ctx, doc2, i) => {
                     let mut sub = results.pop().unwrap();
@@ -512,9 +525,9 @@ impl<'a> Resolver<'a> {
                     *out = merge_layout_sets(std::mem::replace(out, LayoutSet::empty()), sub);
                     match la.layouts.get(i as usize + 1) {
                         Some(layout1) => {
-                            let col = layout1.measure.last;
+                            let ctx2 = ctx.after(&layout1.measure);
                             tasks.push(Task::Concat(ctx, doc2, i + 1));
-                            next = Some((Context { col, ..ctx }, doc2));
+                            next = Some((ctx2, doc2));
                         }
                         None => {
                             let out = results.pop().unwrap();
@@ -536,6 +549,19 @@ impl<'a> Resolver<'a> {
         results: &mut Vec<LayoutSet>,
     ) -> Option<(Context, DocId)> {
         let resolve_text = |s: &str| {
+            // Before the first line break of a `FirstLineWithin`, the text (its first line) must end
+            // within the limit; a single line within it (also `Flat`) contains no line break at all,
+            // not even inside a token (a multi-line string literal)
+            if let Some(end) = ctx.first_line_end {
+                if ctx.flat && s.contains('\n') {
+                    return LayoutSet::empty();
+                }
+                let first_line = s.split('\n').next().unwrap_or("");
+                let width = unicode_width::UnicodeWidthStr::width(first_line) as u32;
+                if ctx.text_col() + width > end {
+                    return LayoutSet::empty();
+                }
+            }
             let measure = if s.is_empty() {
                 Measure::empty(&ctx)
             } else {
@@ -597,6 +623,17 @@ impl<'a> Resolver<'a> {
             DocNode::ShortLastLine(d) => {
                 tasks.push(Task::ShortLastLine(ctx.indent + self.config.tab_spaces));
                 return Some((ctx, *d));
+            }
+            DocNode::FirstLineWithin(d, width) => {
+                let end = ctx.text_col().saturating_add(*width);
+                let first_line_end = Some(ctx.first_line_end.map_or(end, |e| e.min(end)));
+                return Some((
+                    Context {
+                        first_line_end,
+                        ..ctx
+                    },
+                    *d,
+                ));
             }
             DocNode::IgnoreOverflow(d) => {
                 tasks.push(Task::IgnoreOverflow);

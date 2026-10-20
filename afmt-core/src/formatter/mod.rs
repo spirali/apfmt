@@ -397,6 +397,15 @@ impl<'a> Formatter<'a> {
         })
     }
 
+    /// Restricts the fragment to layouts whose first line spans at most `width` columns from where it
+    /// starts (see `DocNode::FirstLineWithin`)
+    pub fn first_line_within(&self, frag: Frag, width: u32) -> Frag {
+        self.map_branches(frag, |b| Branch {
+            doc_id: self.make_node(DocNode::FirstLineWithin(b.doc_id, width)),
+            ..b
+        })
+    }
+
     /// The doc does not count as overflow beyond the page width (see `DocNode::IgnoreOverflow`)
     pub(super) fn ignore_overflow(&self, doc_id: DocId) -> DocId {
         self.make_node(DocNode::IgnoreOverflow(doc_id))
@@ -416,29 +425,62 @@ impl<'a> Formatter<'a> {
     }
 
     /// Whether a branch of the fragment may have a layout under `Flat`: false only if a line break
-    /// is forced in all of them (unlike `flat_width`, a multi-line token, e.g. a string literal, is
-    /// allowed, as the resolver allows it)
+    /// is forced in all of them, or a width limit in it cannot be met (see
+    /// `DocArena::has_flat_layout`)
     pub fn has_flat_layout(&self, frag: &Frag) -> bool {
         frag.branches
             .iter()
             .any(|b| self.has_flat_layout_doc(b.doc_id))
     }
 
-    /// Whether a single-line layout of the fragment still spans more lines: it has one, but no
-    /// single-line width, so it contains a token with a line break (e.g. a string literal)
-    pub fn flat_spans_lines(&self, frag: &Frag) -> bool {
-        self.has_flat_layout(frag) && self.flat_width(frag).is_none()
+    /// The width of the narrowest single line of the fragment without any line break (see
+    /// `DocArena::min_flat_width`; of its branches, the widest), `None` if no branch has one: whether
+    /// it can be on one line within a width, for a decision on the layouts to build; the resolver
+    /// measures the layout it places
+    pub fn min_flat_width(&self, frag: &Frag) -> Option<u32> {
+        let mut arena = self.doc_arena.borrow_mut();
+        frag.branches
+            .iter()
+            .filter_map(|b| arena.min_flat_width(b.doc_id))
+            .max()
+    }
+
+    /// Whether a text of the fragment contains a line break, e.g. a multi-line string literal: a
+    /// layout with it on a single line still spans more lines
+    pub fn has_multi_line_text(&self, frag: &Frag) -> bool {
+        let mut arena = self.doc_arena.borrow_mut();
+        frag.branches
+            .iter()
+            .any(|b| arena.has_multi_line_text(b.doc_id))
+    }
+
+    /// Whether a layout of the fragment may span more lines (see `DocArena::has_line_break`)
+    pub fn has_line_break(&self, frag: &Frag) -> bool {
+        let mut arena = self.doc_arena.borrow_mut();
+        frag.branches.iter().any(|b| arena.has_line_break(b.doc_id))
     }
 
     fn has_flat_layout_doc(&self, doc_id: DocId) -> bool {
         self.doc_arena.borrow_mut().has_flat_layout(doc_id)
     }
 
-    /// Single-line layout of `frag`, if its width is at most `max_width`
+    /// Single-line layout of `frag` at most `max_width` wide (the resolver measures it, see
+    /// `DocNode::FirstLineWithin`), without a line break even inside a token (a multi-line string
+    /// literal, which `flat` allows; `u32::MAX` for no other limit); `None` if even its narrowest
+    /// single line is wider (see `min_flat_width`), so it is not built only to be ruled out
     pub fn flat_within(&self, frag: Frag, max_width: u32) -> Option<Frag> {
-        self.flat_width(&frag)
-            .is_some_and(|size| size as u32 <= max_width)
-            .then(|| self.flat(frag))
+        // Not built if even its narrowest single line is too wide (a pruning bound, see
+        // `DocArena::min_flat_width`)
+        let fits = |b: &Branch| {
+            let mut arena = self.doc_arena.borrow_mut();
+            arena
+                .min_flat_width(b.doc_id)
+                .is_some_and(|w| w <= max_width)
+        };
+        frag.branches
+            .iter()
+            .any(fits)
+            .then(|| self.flat(self.first_line_within(frag, max_width)))
     }
 
     /// The alternative of two docs
@@ -557,20 +599,5 @@ impl<'a> Formatter<'a> {
         } else {
             self.text_node(text)
         }
-    }
-
-    /// Width of the doc on a single line (see `DocArena::flat_width`)
-    fn flat_width_doc(&self, doc_id: DocId) -> Option<usize> {
-        self.doc_arena.borrow_mut().flat_width(doc_id)
-    }
-
-    /// Width of the fragment on a single line, the widest of its branches that can be on a single line
-    /// (each with its narrowest alternative); `None` if no branch can be (a branch that cannot is
-    /// dropped by `flat`, e.g. the braced layout of a closure)
-    pub fn flat_width(&self, frag: &Frag) -> Option<usize> {
-        frag.branches
-            .iter()
-            .filter_map(|b| self.flat_width_doc(b.doc_id))
-            .max()
     }
 }
