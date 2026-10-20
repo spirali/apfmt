@@ -4,6 +4,7 @@ use super::attr::{format_attr, format_with_attrs};
 use super::common::push_label;
 use super::expr::{
     ExprPosition, NestedPlainBlocks, format_added_braces, format_expr, format_expr_at,
+    format_expr_item, operand_chain,
     format_head_expr, format_head_with_block, plain_stmt_list, single_line_block_expr,
 };
 use super::pat::pat_layouts;
@@ -137,9 +138,14 @@ struct ArmBodyLayouts {
 /// rustfmt; in added braces, it costs one more, so a body broken anyway stays on the line of `=>`
 /// rather than moving into braces only to hug its arguments (`=> Compact(` / `    new(a, b),` /
 /// `),`, as rustfmt's `prefer_next_line`); a control-flow expression is always in a block (Style
-/// Guide). A `match` stays on the line of `=>` only if the whole line `pat => match x {` fits on
-/// one line, as in rustfmt: otherwise it goes in the block, also when a line inside it overflows
-/// anyway and the block indents it more.
+/// Guide). Only a combinable expression or a chain spans more lines on the line of `=>`, a
+/// combinable one in the layouts it has as an overflowing argument (see `format_expr_item`); others,
+/// e.g. an assignment, `return x` or a binary expression, are on one line there or in the block
+/// (Style Guide: "A non-combinable expression"). A block of the source with a single macro call keeps its braces
+/// (Style Guide: "Do not flatten a right-hand side block containing a single macro call because its
+/// expanded form could contain a trailing semicolon"). A `match` stays on the line of `=>` only if
+/// the whole line `pat => match x {` fits on one line, as in rustfmt: otherwise it goes in the
+/// block, also when a line inside it overflows anyway and the block indents it more.
 fn arm_body_layouts(fmt: &Formatter, body: Expr) -> ArmBodyLayouts {
     // `blocks`: the plain blocks around the expression in the source (`{ expr }`, `{ { expr } }`),
     // removed when the body stays on the line of `=>`; a plain block that is not `{ expr }` stays a
@@ -148,8 +154,8 @@ fn arm_body_layouts(fmt: &Formatter, body: Expr) -> ArmBodyLayouts {
         Expr::BlockExpr(block) if plain_stmt_list(&block).is_some() => {
             let blocks = NestedPlainBlocks::of(block);
             match single_line_block_expr(&blocks.inner) {
-                Some(expr) => (expr, Some(blocks)),
-                None => {
+                Some(expr) if !matches!(expr, Expr::MacroExpr(_)) => (expr, Some(blocks)),
+                _ => {
                     let block = format_block_expr(fmt, blocks.inner.clone());
                     return ArmBodyLayouts {
                         same_line: None,
@@ -178,9 +184,27 @@ fn arm_body_layouts(fmt: &Formatter, body: Expr) -> ArmBodyLayouts {
             let inner = format_head_with_block(fmt, keyword, &head, arms);
             (fmt.keep_together(inner), flat_head)
         }
-        _ => {
+        // `if` here is in a block: it gets the layouts of a statement (see `format_expr_at`)
+        Expr::BlockExpr(_) | Expr::IfExpr(_) => {
             let inner = fmt.keep_together(format_expr_at(fmt, expr, ExprPosition::ArmBody));
             (inner.clone(), Some(inner))
+        }
+        // A chain also broken before its elements (`=> xs` / `    .iter()` / `    .count(),`), as in
+        // rustfmt; the Style Guide does not say
+        _ if operand_chain(&expr).is_some() => {
+            let inner = fmt.keep_together(format_expr(fmt, expr));
+            (inner.clone(), Some(inner))
+        }
+        _ => {
+            let (inner, overflow) = format_expr_item(fmt, expr);
+            let same_line = fmt.alt_some(
+                fmt.flat_if_possible(inner.clone()),
+                overflow.layouts().cloned(),
+            );
+            (
+                fmt.keep_together(inner),
+                same_line.map(|same_line| fmt.keep_together(same_line)),
+            )
         }
     };
     let block = match &blocks {

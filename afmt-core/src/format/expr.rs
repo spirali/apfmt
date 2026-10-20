@@ -199,7 +199,7 @@ fn is_overflowing_last(exprs: &[Expr]) -> bool {
 /// An expression as a list item, and how it may overflow as the last item (see `Overflow`): a
 /// combinable expression with all its layouts (see `is_combinable_expr`), a method call chain and
 /// a closure with some of them (see `postfix_chain_layouts` and `ClosureLayouts`)
-fn format_expr_item(fmt: &Formatter, expr: Expr) -> (Frag, Overflow) {
+pub(super) fn format_expr_item(fmt: &Formatter, expr: Expr) -> (Frag, Overflow) {
     match expr {
         // A chain, also behind operators: on the line of `(` only with its elements on one line, the
         // arguments of the last one may break: `f(a.b(|x| {` / `...` / `}))`, `f(&a.b(` / `...` /
@@ -465,7 +465,7 @@ fn format_cast_expr(fmt: &Formatter, expr: CastExpr) -> Frag {
 /// The postfix chain of `expr` behind its prefix operators, `&` / `&mut` and casts, if it is one:
 /// `a.b()` of `&a.b()`, `!a.b()`, `a.b() as T`, also nested (`&mut *a.b()`); `expr` itself if it is a
 /// chain
-fn operand_chain(expr: &Expr) -> Option<Expr> {
+pub(super) fn operand_chain(expr: &Expr) -> Option<Expr> {
     match expr {
         Expr::RefExpr(e) => operand_chain(&e.expr()?),
         Expr::PrefixExpr(e) => operand_chain(&e.expr()?),

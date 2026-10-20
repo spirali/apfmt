@@ -45,7 +45,7 @@ pub(crate) enum Overflow {
 
 impl Overflow {
     /// The layouts of the overflowing item, if it may overflow
-    fn layouts(&self) -> Option<&Frag> {
+    pub fn layouts(&self) -> Option<&Frag> {
         match self {
             Overflow::Never => None,
             Overflow::With(layouts)
