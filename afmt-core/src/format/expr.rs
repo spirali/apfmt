@@ -12,6 +12,7 @@ use super::stmt::{
 };
 use super::ty::{format_ret_type, format_type};
 use super::{format_unsupported_kind, format_unsupported_with_attrs};
+use crate::comments::{is_code_kind, is_comment_kind};
 use crate::doc::{CLOSE_BRACE_DOC, OPEN_BRACE_DOC};
 use crate::format::common::{format_lifetime, format_repeat, push_modifiers};
 use crate::formatter::Edge::{BraceClose, BraceOpen, Comma, Operator, Tight, Word};
@@ -32,7 +33,7 @@ use ra_ap_syntax::ast::{
     LetExpr, Literal, LogicOp, ParenExpr, PathExpr, PrefixExpr, RangeExpr, RangeItem, RecordExpr,
     RecordExprField, RefExpr, ReturnExpr, StmtList, TupleExpr,
 };
-use ra_ap_syntax::{AstNode, SyntaxKind, SyntaxNode, SyntaxToken};
+use ra_ap_syntax::{AstNode, SyntaxNode, SyntaxToken};
 
 fn format_path_expr(fmt: &Formatter, path_expr: PathExpr) -> Frag {
     format_path(fmt, path_expr.path().unwrap())
@@ -453,7 +454,7 @@ fn format_assignment(fmt: &Formatter, expr: BinExpr) -> Frag {
 fn prefix_op_token(expr: &PrefixExpr) -> SyntaxToken {
     expr.syntax()
         .children_with_tokens()
-        .find_map(|e| e.into_token().filter(|t| !t.kind().is_trivia()))
+        .find_map(|e| e.into_token().filter(|t| is_code_kind(t.kind())))
         .unwrap()
 }
 
@@ -772,7 +773,7 @@ pub(super) fn single_line_block_expr(block: &BlockExpr) -> Option<Expr> {
     let has_comment = stmt_list
         .syntax()
         .children_with_tokens()
-        .any(|e| e.kind() == SyntaxKind::COMMENT);
+        .any(|e| is_comment_kind(e.kind()));
     let tail = stmt_list.tail_expr();
     if stmt_list.statements().next().is_some()
         || stmt_list.attrs().next().is_some()

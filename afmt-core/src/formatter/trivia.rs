@@ -1,9 +1,9 @@
 use super::frag::{Edge, Frag};
 use super::{Builder, Formatter};
 use crate::comments::{
-    TriviaStop, count_newlines, is_leading_block_comment, is_line_comment, line_ends_after,
-    line_indentation, next_code_token, post_comments_stop, rest_of_line_is_comments,
-    tokens_between, trivia_end, trivia_from,
+    TriviaStop, count_newlines, is_comment_kind, is_leading_block_comment, is_line_comment,
+    line_ends_after, line_indentation, next_code_token, post_comments_stop,
+    rest_of_line_is_comments, tokens_between, trivia_end, trivia_from,
 };
 use crate::doc::{COMMA_DOC, DocId, EMPTY_DOC, EMPTYLINE_DOC, NEWLINE_DOC, SEMICOLON_DOC};
 use crate::formatter::Edge::{Break, Comma, Nothing, Word};
@@ -161,7 +161,7 @@ impl<'a> Builder<'a> {
     /// cursor precedes, e.g. at the start of the source; after the content already in the builder, they
     /// start on a new line. The last comment becomes the cursor.
     pub fn push_comments_from(&mut self, token: Option<SyntaxToken>) {
-        let first_comment = trivia_from(token).find(|t| t.kind() == SyntaxKind::COMMENT);
+        let first_comment = trivia_from(token).find(|t| is_comment_kind(t.kind()));
         if let Some(comment) = first_comment {
             self.push_line_break_if(NEWLINE_DOC, |end| end != Nothing);
             self.push_comment(&comment, false);
@@ -190,7 +190,7 @@ impl<'a> Builder<'a> {
         {
             match token.kind() {
                 SyntaxKind::WHITESPACE => newlines += count_newlines(&token),
-                SyntaxKind::COMMENT => {
+                kind if is_comment_kind(kind) => {
                     if before_separator {
                         newlines = 0;
                     }
@@ -296,7 +296,7 @@ impl<'a> Builder<'a> {
         let Some(cursor) = self.frag.cursor.as_ref() else {
             return;
         };
-        if cursor.kind() == SyntaxKind::COMMENT
+        if is_comment_kind(cursor.kind())
             && cursor
                 .next_token()
                 .is_some_and(|t| t.kind() == SyntaxKind::WHITESPACE && count_newlines(&t) > 0)

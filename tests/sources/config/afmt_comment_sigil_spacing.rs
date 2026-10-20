@@ -1,5 +1,6 @@
 //own line   
 //!inner doc  
+/*!d*/
 ///outer doc
 ////four slashes
 //
@@ -14,7 +15,7 @@ fn f() {
     let x = 1; //trailing   
     let y = 2; //   
     //let y = 2;
-    g(/*a*/ 1, /**/ 2, /*  b  */ 3, /** c*/ 4, /*!d*/ 5, /*---*/ 6);
+    g(/*a*/ 1, /**/ 2, /*  b  */ 3, /** c*/ 4, /*---*/ 6);
     /* multi   
        line   */
     //

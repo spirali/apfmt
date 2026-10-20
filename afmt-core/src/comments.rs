@@ -3,10 +3,29 @@
 
 use ra_ap_syntax::{SyntaxKind, SyntaxNode, SyntaxToken};
 
+/// Whether `kind` is a comment: `//`, `/* */` or a doc comment. The parser puts a doc comment in a
+/// `DOC_COMMENT` node attached to the documented item (like an attribute); for the formatter it is a
+/// comment like any other, placed by the trivia rules, so the node kind is a comment too
+pub(crate) fn is_comment_kind(kind: SyntaxKind) -> bool {
+    matches!(
+        kind,
+        SyntaxKind::COMMENT
+            | SyntaxKind::INNER_DOC_COMMENT
+            | SyntaxKind::OUTER_DOC_COMMENT
+            | SyntaxKind::DOC_COMMENT
+    )
+}
+
+/// Whether `kind` is code: neither whitespace nor a comment (see `is_comment_kind`). What is not code
+/// is trivia for afmt, also a doc comment, unlike `SyntaxKind::is_trivia` of rust-analyzer
+pub(crate) fn is_code_kind(kind: SyntaxKind) -> bool {
+    kind != SyntaxKind::WHITESPACE && !is_comment_kind(kind)
+}
+
 /// The trivia tokens (whitespace, comments) starting at `token` (inclusive), up to the first code token;
 /// `trivia_from(token.next_token())` is the trivia after `token`
 pub(crate) fn trivia_from(token: Option<SyntaxToken>) -> impl Iterator<Item = SyntaxToken> {
-    std::iter::successors(token, |t| t.next_token()).take_while(|t| t.kind().is_trivia())
+    std::iter::successors(token, |t| t.next_token()).take_while(|t| !is_code_kind(t.kind()))
 }
 
 /// The tokens from `first` to `last`, both included (`last` follows `first` in the source)
@@ -33,14 +52,14 @@ pub(crate) fn is_leading_block_comment(token: &SyntaxToken) -> bool {
     // The start of the source is the start of a line too
     let line_start = token.prev_token().is_none() || has_newline(token.prev_token());
     let after_opener = std::iter::successors(token.prev_token(), |t| t.prev_token())
-        .find(|t| !t.kind().is_trivia())
+        .find(|t| is_code_kind(t.kind()))
         .is_some_and(|t| {
             matches!(
                 t.kind(),
                 SyntaxKind::L_CURLY | SyntaxKind::L_PAREN | SyntaxKind::L_BRACK
             )
         });
-    token.kind() == SyntaxKind::COMMENT
+    is_comment_kind(token.kind())
         && token.text().starts_with("/*")
         && (line_start || after_opener)
         && !has_newline(token.next_token())
@@ -54,7 +73,8 @@ pub(crate) fn rest_of_line_is_comments(token: &SyntaxToken, separator: Option<Sy
     while let Some(t) = element {
         match t.kind() {
             SyntaxKind::WHITESPACE if seen_separator && count_newlines(&t) > 0 => return true,
-            SyntaxKind::WHITESPACE | SyntaxKind::COMMENT => {}
+            k if is_comment_kind(k) => {}
+            SyntaxKind::WHITESPACE => {}
             k if Some(k) == separator && !seen_separator => seen_separator = true,
             // Without the separator, the code is the end of the list, e.g. `)`
             _ => return !seen_separator,
@@ -68,7 +88,7 @@ pub(crate) fn rest_of_line_is_comments(token: &SyntaxToken, separator: Option<Sy
 pub(crate) fn line_ends_after(token: &SyntaxToken, separator: Option<SyntaxKind>) -> bool {
     std::iter::successors(token.next_token(), |t| t.next_token())
         .find(|t| match t.kind() {
-            SyntaxKind::COMMENT => false,
+            kind if is_comment_kind(kind) => false,
             SyntaxKind::WHITESPACE => count_newlines(t) > 0,
             kind => Some(kind) != separator,
         })
@@ -82,18 +102,18 @@ pub(crate) fn own_line_comment_follows(token: &SyntaxToken) -> bool {
         if t.kind() == SyntaxKind::WHITESPACE {
             newlines += count_newlines(&t);
         }
-        t.kind() == SyntaxKind::COMMENT && newlines > 0
+        is_comment_kind(t.kind()) && newlines > 0
     })
 }
 
 /// Whether `node` contains a comment
 pub(crate) fn has_comments(node: &SyntaxNode) -> bool {
     node.descendants_with_tokens()
-        .any(|e| e.kind() == SyntaxKind::COMMENT)
+        .any(|e| is_comment_kind(e.kind()))
 }
 
 pub(crate) fn is_line_comment(token: &SyntaxToken) -> bool {
-    token.kind() == SyntaxKind::COMMENT && token.text().starts_with("//")
+    is_comment_kind(token.kind()) && token.text().starts_with("//")
 }
 
 /// The comment `text` is a doc comment: `///` (not `////`), `//!`, `/**` (not `/***` nor the empty
@@ -132,12 +152,12 @@ pub(crate) fn line_indentation(token: &SyntaxToken) -> String {
 
 /// The first token after `token` that is not trivia
 pub(crate) fn next_code_token(token: &SyntaxToken) -> Option<SyntaxToken> {
-    std::iter::successors(token.next_token(), |t| t.next_token()).find(|t| !t.kind().is_trivia())
+    std::iter::successors(token.next_token(), |t| t.next_token()).find(|t| is_code_kind(t.kind()))
 }
 
 /// The first token before `token` that is not trivia
 pub(crate) fn prev_code_token(token: &SyntaxToken) -> Option<SyntaxToken> {
-    std::iter::successors(token.prev_token(), |t| t.prev_token()).find(|t| !t.kind().is_trivia())
+    std::iter::successors(token.prev_token(), |t| t.prev_token()).find(|t| is_code_kind(t.kind()))
 }
 
 /// Where taking the trivia after a token stops at the latest (see `trivia_end`)
@@ -167,7 +187,7 @@ pub(crate) fn trivia_end(
     for t in std::iter::successors(first, |t| t.next_token()) {
         match t.kind() {
             SyntaxKind::WHITESPACE => newlines += count_newlines(&t),
-            SyntaxKind::COMMENT => {
+            kind if is_comment_kind(kind) => {
                 if separator.is_some() {
                     newlines = 0;
                 }

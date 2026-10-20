@@ -4,7 +4,7 @@ use super::attr::format_with_attrs;
 use super::expr::{format_range, single_item_separator};
 use super::path::{format_name_ref, format_path};
 use super::{format_unsupported, format_unsupported_kind};
-use crate::comments::{has_comments, trivia_from};
+use crate::comments::{has_comments, is_code_kind, is_comment_kind, trivia_from};
 use crate::format::common::format_name;
 use crate::formatter::Edge::{Comma, Operator, Tight, Word};
 use crate::formatter::{Builder, Formatter, Frag};
@@ -135,7 +135,7 @@ fn format_or_pat(fmt: &Formatter, pat: OrPat) -> Frag {
         .first_token()
         .filter(|t| t.kind() == SyntaxKind::PIPE);
     if leading
-        .is_some_and(|pipe| trivia_from(pipe.next_token()).any(|t| t.kind() == SyntaxKind::COMMENT))
+        .is_some_and(|pipe| trivia_from(pipe.next_token()).any(|t| is_comment_kind(t.kind())))
     {
         return format_unsupported(fmt, pat.syntax(), "a comment after a leading `|`");
     }
@@ -169,7 +169,7 @@ fn is_small_pat(pat: &Pat, allow_tuple: bool) -> bool {
                 .syntax()
                 .descendants_with_tokens()
                 .filter_map(|e| e.into_token())
-                .filter(|t| !t.kind().is_trivia());
+                .filter(|t| is_code_kind(t.kind()));
             tokens.next().is_some() && tokens.next().is_none()
         }
     }

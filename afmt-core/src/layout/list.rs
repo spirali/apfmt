@@ -1,6 +1,8 @@
 //! Delimited, comma-separated lists
 
-use crate::comments::{is_line_comment, own_line_comment_follows, trivia_from};
+use crate::comments::{
+    is_code_kind, is_comment_kind, is_line_comment, own_line_comment_follows, trivia_from,
+};
 use crate::doc::WeakPreference;
 use crate::formatter::Edge::{BraceClose, BraceOpen, Close, Comma, Open, Word};
 use crate::formatter::{Builder, Edge, Formatter, Frag};
@@ -468,7 +470,7 @@ impl Delimiters {
     pub fn format_empty(&self, fmt: &Formatter) -> Frag {
         // The container is empty, so only trivia is between the delimiters
         let inside = || trivia_from(self.open.next_token());
-        if !inside().any(|t| t.kind() == SyntaxKind::COMMENT) {
+        if !inside().any(|t| is_comment_kind(t.kind())) {
             return self.wrap_body(fmt, Frag::empty());
         }
         if !inside().any(|t| t.text().contains('\n')) {
@@ -521,7 +523,7 @@ impl Delimiters {
     /// Whether a line comment is between the last item and the closing delimiter: `a, // c` / `)`
     fn has_line_comment_before_close(&self) -> bool {
         std::iter::successors(self.close.prev_token(), |t| t.prev_token())
-            .take_while(|t| t.kind().is_trivia() || t.kind() == SyntaxKind::COMMA)
+            .take_while(|t| !is_code_kind(t.kind()) || t.kind() == SyntaxKind::COMMA)
             .any(|t| is_line_comment(&t))
     }
 }

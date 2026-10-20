@@ -14,7 +14,9 @@ mod ty;
 
 use self::attr::format_attr;
 use self::item::format_item;
-use crate::comments::{count_newlines, first_code_token, next_code_token, trivia_from};
+use crate::comments::{
+    count_newlines, first_code_token, is_code_kind, is_comment_kind, next_code_token, trivia_from,
+};
 use crate::formatter::Edge::Word;
 use crate::formatter::{Builder, Formatter, Frag};
 use ra_ap_syntax::ast::{HasAttrs, HasModuleItem};
@@ -33,7 +35,7 @@ pub(crate) fn format_source_file(fmt: &Formatter, node: &SourceFile) -> Frag {
                 .take_while(|t| t.kind() == SyntaxKind::WHITESPACE)
                 .map(|t| count_newlines(&t))
                 .sum::<u32>();
-        let more = trivia_from(first.clone()).any(|t| t.kind() == SyntaxKind::COMMENT)
+        let more = trivia_from(first.clone()).any(|t| is_comment_kind(t.kind()))
             || next_code_token(&shebang).is_some();
         if newlines > 1 && more && fmt.config().blank_lines_upper_bound > 0 {
             builder.push_blank_line();
@@ -56,7 +58,7 @@ pub(crate) fn format_source_file(fmt: &Formatter, node: &SourceFile) -> Frag {
 /// `format_with_attrs`)
 fn first_token_after_attrs(node: &SyntaxNode) -> SyntaxToken {
     node.children_with_tokens()
-        .find(|e| !e.kind().is_trivia() && e.kind() != SyntaxKind::ATTR)
+        .find(|e| is_code_kind(e.kind()) && e.kind() != SyntaxKind::ATTR)
         .and_then(|e| match e {
             NodeOrToken::Token(token) => Some(token),
             NodeOrToken::Node(node) => node.first_token(),

@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::comments::line_indentation;
+use crate::comments::{is_code_kind, line_indentation};
 use ra_ap_syntax::ast::{self, HasAttrs, HasModuleItem};
 use ra_ap_syntax::{
     AstNode, Edition, NodeOrToken, SourceFile, SyntaxKind, SyntaxNode, SyntaxToken, TextSize,
@@ -231,7 +231,7 @@ pub(crate) struct MacroRule {
 pub(crate) fn macro_rules_rules(tree: &ast::TokenTree) -> Option<Vec<MacroRule>> {
     tree.l_curly_token()?;
     let mut elements = (tree.syntax().children_with_tokens())
-        .filter(|e| !e.kind().is_trivia())
+        .filter(|e| is_code_kind(e.kind()))
         .skip(1);
     let mut rules = Vec::new();
     loop {
@@ -266,7 +266,7 @@ pub(crate) fn macro_rules_rules(tree: &ast::TokenTree) -> Option<Vec<MacroRule>>
 fn fragment_specifiers(matcher: &ast::TokenTree) -> HashMap<String, String> {
     let tokens: Vec<_> = (matcher.syntax().descendants_with_tokens())
         .filter_map(|e| e.into_token())
-        .filter(|t| !t.kind().is_trivia())
+        .filter(|t| is_code_kind(t.kind()))
         .collect();
     tokens
         .windows(4)

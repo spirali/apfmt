@@ -9,7 +9,7 @@ use super::format_reindented;
 use super::item::format_item_list;
 use super::path::format_path;
 use super::stmt::format_block_expr;
-use crate::comments::{has_comments, prev_code_token};
+use crate::comments::{has_comments, is_code_kind, prev_code_token};
 use crate::formatter::Edge::{BraceClose, BraceOpen, Close, Open, Operator, Tight, Word};
 use crate::formatter::{Builder, Formatter, Frag};
 use crate::layout::list::{Delimiters, TrailingSeparator};
@@ -233,7 +233,7 @@ pub(super) fn macro_argument_count(expr: &Expr) -> Option<usize> {
             | SyntaxKind::R_PAREN
             | SyntaxKind::L_BRACK
             | SyntaxKind::R_BRACK => {}
-            kind if kind.is_trivia() => {}
+            kind if !is_code_kind(kind) => {}
             _ => in_argument = true,
         }
     }

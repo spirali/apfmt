@@ -2,7 +2,7 @@
 
 use super::expr::format_expr;
 use super::path::format_path;
-use crate::comments::has_comments;
+use crate::comments::{has_comments, is_code_kind};
 use crate::formatter::Edge::{Operator, Tight, Word};
 use crate::formatter::{Builder, Formatter, Frag};
 use crate::layout::list::{
@@ -272,7 +272,7 @@ fn meta_segments(tree: &TokenTree) -> Option<Vec<MetaSegment>> {
     // Without the delimiters
     for element in &children[1..children.len() - 1] {
         match element.kind() {
-            kind if kind.is_trivia() => {}
+            kind if !is_code_kind(kind) => {}
             SyntaxKind::COMMA => {
                 let comma = element.clone().into_token();
                 segments.push((std::mem::take(&mut current), comma));

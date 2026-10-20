@@ -1,3 +1,4 @@
+use crate::comments::{is_code_kind, is_comment_kind};
 use crate::syntax_utils::{
     MacroRule, Placeholders, Reparsed, is_brace_macro_expr, is_stray_semicolon, line_column,
     macro_rules_rules, parse_token_tree, parse_transcriber, trailing_jump_stmt,
@@ -387,7 +388,7 @@ fn is_trailing_jump_stmt(node: &SyntaxNode) -> bool {
 /// A token that is compared: not trivia, and not a token the formatter adds or removes (a trailing
 /// comma, the leading `|` of an or-pattern, a stray `;`)
 fn is_compared_token(token: &SyntaxToken) -> bool {
-    !token.kind().is_trivia()
+    is_code_kind(token.kind())
         && !is_trailing_comma(token)
         && !is_leading_pipe(token)
         && !is_stray_semicolon(token)
@@ -406,7 +407,7 @@ fn is_trailing_comma(token: &SyntaxToken) -> bool {
         && token
             .siblings_with_tokens(Direction::Next)
             .skip(1)
-            .find(|e| !e.kind().is_trivia())
+            .find(|e| is_code_kind(e.kind()))
             // The closing delimiter of the list (`)`, `]`, `}`, `>`, the `|` of closure parameters), or
             // nothing: a comma ending its node, the last item of a `where` clause
             .is_none_or(|e| {
@@ -421,7 +422,7 @@ fn comments(file: &SourceFile) -> Vec<String> {
         .syntax()
         .descendants_with_tokens()
         .filter_map(NodeOrToken::into_token)
-        .filter(|t| t.kind() == SyntaxKind::COMMENT)
+        .filter(|t| is_comment_kind(t.kind()))
         .map(|t| t.text().split_whitespace().collect())
         .collect();
     out.sort();

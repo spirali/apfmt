@@ -6,7 +6,8 @@ use super::line_if_alone;
 use super::sort::version_cmp;
 use crate::comments::{
     TriviaStop, comments_ending_line_end, count_newlines, first_code_token, has_comments,
-    is_line_comment, own_line_comment_follows, post_comments_end, trivia_end, trivia_from,
+    is_comment_kind, is_line_comment, own_line_comment_follows, post_comments_end, trivia_end,
+    trivia_from,
 };
 use crate::layout::list::list_items_cast;
 use crate::syntax_utils::has_attrs;
@@ -285,7 +286,7 @@ fn is_same_group(prev: &Use) -> bool {
     let semicolon = prev.syntax().last_token().unwrap();
     let trivia = || trivia_from(semicolon.next_token());
     match trivia().map(|t| count_newlines(&t)).sum::<u32>() {
-        0 => !trivia().any(|t| t.kind() == SyntaxKind::COMMENT),
+        0 => !trivia().any(|t| is_comment_kind(t.kind())),
         1 => !own_line_comment_follows(&semicolon),
         _ => false,
     }
@@ -338,7 +339,7 @@ fn is_removed(item: &Use) -> bool {
         && !item
             .syntax()
             .descendants_with_tokens()
-            .any(|e| e.kind() == SyntaxKind::COMMENT && e.text_range().start() >= start)
+            .any(|e| is_comment_kind(e.kind()) && e.text_range().start() >= start)
 }
 
 /// The source range of the group (see `use_range`) and its sorted, normalized text: the items on their

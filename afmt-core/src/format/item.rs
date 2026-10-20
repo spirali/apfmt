@@ -9,6 +9,7 @@ use super::path::format_path;
 use super::stmt::format_block_expr;
 use super::ty::{format_ret_type, format_type};
 use super::{format_unsupported, format_unsupported_kind};
+use crate::comments::{is_code_kind, is_comment_kind};
 use crate::format::common::{format_lifetime, format_name};
 use crate::formatter::Edge::{Comma, Operator, Tight, Word};
 use crate::formatter::{Builder, Formatter, Frag};
@@ -156,7 +157,7 @@ pub(super) fn push_qualifiers(
         match child {
             NodeOrToken::Token(token) if &token == keyword => break,
             NodeOrToken::Token(token) => match token.kind() {
-                kind if kind.is_trivia() => {}
+                kind if !is_code_kind(kind) => {}
                 SyntaxKind::DEFAULT_KW
                 | SyntaxKind::CONST_KW
                 | SyntaxKind::ASYNC_KW
@@ -167,7 +168,8 @@ pub(super) fn push_qualifiers(
                 _ => panic!("not supported yet: {token:?}"),
             },
             NodeOrToken::Node(node) => match node.kind() {
-                SyntaxKind::ATTR => {}
+                // Placed with the attributes and comments in front of the item
+                SyntaxKind::ATTR | SyntaxKind::DOC_COMMENT => {}
                 SyntaxKind::VISIBILITY => {
                     builder.push(format_visibility(fmt, Visibility::cast(node).unwrap()))
                 }
@@ -393,7 +395,7 @@ fn struct_variant_single_line(fmt: &Formatter, s: &StructVariantFields) -> Optio
             .list
             .syntax()
             .children_with_tokens()
-            .any(|e| e.kind() == SyntaxKind::COMMENT);
+            .any(|e| is_comment_kind(e.kind()));
         return (!has_comment).then(Frag::empty);
     }
     let limit = FlatLimit::Within(fmt.config().struct_variant_width);

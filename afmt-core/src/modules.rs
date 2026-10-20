@@ -8,6 +8,7 @@ use ra_ap_parser::LexedStr;
 use ra_ap_syntax::ast::{self, HasAttrs, HasModuleItem, HasName};
 use ra_ap_syntax::{Edition, SourceFile, SyntaxKind};
 
+use crate::comments::is_code_kind;
 use crate::utils::canonical_path;
 
 /// The files of a module tree, and the problems found while following it
@@ -85,7 +86,7 @@ fn may_declare_module_file(source: &str, edition: Edition) -> bool {
     let lexed = LexedStr::new(edition, source);
     let code: Vec<SyntaxKind> = (0..lexed.len())
         .map(|i| lexed.kind(i))
-        .filter(|kind| !kind.is_trivia())
+        .filter(|kind| is_code_kind(*kind))
         .collect();
     code.windows(3)
         .any(|tokens| tokens == [SyntaxKind::MOD_KW, SyntaxKind::IDENT, SyntaxKind::SEMICOLON])
