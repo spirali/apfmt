@@ -4,6 +4,7 @@ use crate::doc::{AlignGroup, DocArena, DocId, DocNode, Preference, WeakPreferenc
 use smallvec::{SmallVec, smallvec};
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use crate::utils::text_width;
 
 #[derive(Clone)]
 struct Measure {
@@ -47,7 +48,7 @@ impl Measure {
                 height += 1;
                 start = 0;
             }
-            last = start + unicode_width::UnicodeWidthStr::width(line) as u32;
+            last = start + text_width(line);
             badness = badness.saturating_add(overflow(start, last, config));
         }
         Measure {
@@ -288,10 +289,6 @@ impl MarkCollector<'_> {
         }
         self.line += 1;
     }
-}
-
-fn text_width(text: &str) -> u32 {
-    unicode_width::UnicodeWidthStr::width(text) as u32
 }
 
 /// The padding of each mark, aligning the comments of each run of consecutive marked lines
@@ -557,7 +554,7 @@ impl<'a> Resolver<'a> {
                     return LayoutSet::empty();
                 }
                 let first_line = s.split('\n').next().unwrap_or("");
-                let width = unicode_width::UnicodeWidthStr::width(first_line) as u32;
+                let width = text_width(first_line);
                 if ctx.text_col() + width > end {
                     return LayoutSet::empty();
                 }

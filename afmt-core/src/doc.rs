@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
 use ra_ap_syntax::SyntaxToken;
+use crate::utils::text_width;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct DocId(u32);
@@ -108,60 +109,45 @@ pub(crate) enum DocNode {
     AlignMark(AlignGroup),
 }
 
-/// What the walks (`DocArena::has_flat_layout`, `DocArena::has_multi_line_text`,
-/// `DocArena::has_line_break`) need to know about an `Alt` node, computed the first time a walk
-/// reaches it and kept in `DocArena::alt_infos`: a doc shared by many alternatives is then walked
-/// once, not once per path to it (exponential in the nesting)
+/// What the walks of `DocArena` (`min_flat_width`, `has_flat_layout`, `has_multi_line_text`,
+/// `has_line_break`) know about an `Alt` node, computed the first time a walk reaches it and kept in
+/// `DocArena::alt_infos`: a doc shared by many alternatives is then walked once, not once per path to
+/// it (exponential in the nesting)
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct AltFlatInfo {
-    /// Whether a branch may have a layout under `Flat`
-    has_flat_layout: bool,
-    /// The lower bound of the single-line width (see `DocArena::min_flat_width`), `u32::MAX` if no
-    /// branch has a single line without a line break
+pub(crate) struct AltInfo {
+    flags: AltFlags,
+    /// The narrowest single line of a branch (see `DocArena::min_flat_width`), if
+    /// `AltFlags::HAS_SINGLE_LINE`; a plain `u32` keeps `AltInfo` at 8 bytes (`Option<u32>` takes 8)
     min_flat_width: u32,
-    /// Whether a text of a branch contains a line break
-    has_multi_line_text: bool,
-    /// Whether a branch may have a line break outside `Flat`
-    has_line_break: bool,
 }
 
-impl AltFlatInfo {
-    pub fn new(
-        has_flat_layout: bool,
-        has_multi_line_text: bool,
-        min_flat_width: Option<u32>,
-        has_line_break: bool,
-    ) -> Self {
-        AltFlatInfo {
-            has_line_break,
-            has_flat_layout,
-            has_multi_line_text,
-            min_flat_width: min_flat_width.unwrap_or(u32::MAX),
-        }
+impl AltInfo {
+    /// The narrowest single line of a branch (see `DocArena::min_flat_width`)
+    fn min_flat_width(self) -> Option<u32> {
+        (self.flags.contains(AltFlags::HAS_SINGLE_LINE)).then_some(self.min_flat_width)
     }
+}
 
-    pub fn min_flat_width(self) -> Option<u32> {
-        (self.min_flat_width != u32::MAX).then_some(self.min_flat_width)
-    }
-
-    pub fn has_flat_layout(self) -> bool {
-        self.has_flat_layout
-    }
-
-    pub fn has_multi_line_text(self) -> bool {
-        self.has_multi_line_text
-    }
-
-    pub fn has_line_break(self) -> bool {
-        self.has_line_break
+bitflags::bitflags! {
+    /// The yes/no facts of an `Alt` node (see `AltInfo`)
+    #[derive(Clone, Copy, Debug)]
+    struct AltFlags: u8 {
+        /// A branch may have a layout under `Flat` (see `DocArena::has_flat_layout`)
+        const HAS_FLAT_LAYOUT = 1;
+        /// A text of a branch contains a line break (see `DocArena::has_multi_line_text`)
+        const HAS_MULTI_LINE_TEXT = 1 << 1;
+        /// A branch may have a line break outside `Flat` (see `DocArena::has_line_break`)
+        const HAS_LINE_BREAK = 1 << 2;
+        /// A branch has a single line without a line break (`AltInfo::min_flat_width`)
+        const HAS_SINGLE_LINE = 1 << 3;
     }
 }
 
 pub(crate) struct DocArena {
     nodes: Vec<DocNode>,
     strings: Vec<Box<str>>,
-    /// The single-line facts of the `Alt` nodes reached by the single-line walks so far
-    alt_infos: HashMap<DocId, AltFlatInfo>,
+    /// The facts of the `Alt` nodes reached by the walks so far
+    alt_infos: HashMap<DocId, AltInfo>,
 }
 
 pub(crate) const NEWLINE_DOC: DocId = DocId(0);
@@ -242,7 +228,7 @@ impl DocArena {
     /// the column, is not checked), not the width of the layout placed: that is the resolver's.
     pub fn min_flat_width(&mut self, doc: DocId) -> Option<u32> {
         let text_width = |text: &str| {
-            (!text.contains('\n')).then(|| unicode_width::UnicodeWidthStr::width(text) as u32)
+            (!text.contains('\n')).then(|| text_width(text))
         };
         match self.get_node(doc) {
             DocNode::Token(token) => text_width(token.text()),
@@ -288,7 +274,7 @@ impl DocArena {
                 self.min_flat_width(d).is_some_and(|w| w <= width)
             }
             &DocNode::Concat(a, b) => self.has_flat_layout(a) && self.has_flat_layout(b),
-            DocNode::Alt(..) => self.alt_info(doc).has_flat_layout(),
+            DocNode::Alt(..) => self.alt_flag(doc, AltFlags::HAS_FLAT_LAYOUT),
         }
     }
 
@@ -310,7 +296,7 @@ impl DocArena {
             | &DocNode::IgnoreOverflow(d)
             | &DocNode::FirstLineWithin(d, _) => self.has_multi_line_text(d),
             &DocNode::Concat(a, b) => self.has_multi_line_text(a) || self.has_multi_line_text(b),
-            DocNode::Alt(..) => self.alt_info(doc).has_multi_line_text(),
+            DocNode::Alt(..) => self.alt_flag(doc, AltFlags::HAS_MULTI_LINE_TEXT),
         }
     }
 
@@ -329,31 +315,45 @@ impl DocArena {
             | &DocNode::IgnoreOverflow(d)
             | &DocNode::FirstLineWithin(d, _) => self.has_line_break(d),
             &DocNode::Concat(a, b) => self.has_line_break(a) || self.has_line_break(b),
-            DocNode::Alt(..) => self.alt_info(doc).has_line_break(),
+            DocNode::Alt(..) => self.alt_flag(doc, AltFlags::HAS_LINE_BREAK),
         }
     }
 
-    /// The single-line facts of the `Alt` node `doc`, computed on the first call
-    fn alt_info(&mut self, doc: DocId) -> AltFlatInfo {
+    /// Whether the `Alt` node `doc` has the fact `flag` (see `alt_info`)
+    fn alt_flag(&mut self, doc: DocId, flag: AltFlags) -> bool {
+        self.alt_info(doc).flags.contains(flag)
+    }
+
+    /// The facts of the `Alt` node `doc`, computed on the first call
+    fn alt_info(&mut self, doc: DocId) -> AltInfo {
         if let Some(info) = self.alt_infos.get(&doc) {
             return *info;
         }
         let &DocNode::Alt(doc1, doc2) = self.get_node(doc) else {
             panic!("alt_info of a node that is not `Alt`");
         };
-        let has_flat_layout = self.has_flat_layout(doc1) || self.has_flat_layout(doc2);
-        let has_multi_line_text = self.has_multi_line_text(doc1) || self.has_multi_line_text(doc2);
+        let mut flags = AltFlags::empty();
+        flags.set(
+            AltFlags::HAS_FLAT_LAYOUT,
+            self.has_flat_layout(doc1) || self.has_flat_layout(doc2),
+        );
+        flags.set(
+            AltFlags::HAS_MULTI_LINE_TEXT,
+            self.has_multi_line_text(doc1) || self.has_multi_line_text(doc2),
+        );
+        flags.set(
+            AltFlags::HAS_LINE_BREAK,
+            self.has_line_break(doc1) || self.has_line_break(doc2),
+        );
         let min_flat_width = match (self.min_flat_width(doc1), self.min_flat_width(doc2)) {
             (Some(width1), Some(width2)) => Some(width1.min(width2)),
             (width1, width2) => width1.or(width2),
         };
-        let has_line_break = self.has_line_break(doc1) || self.has_line_break(doc2);
-        let info = AltFlatInfo::new(
-            has_flat_layout,
-            has_multi_line_text,
-            min_flat_width,
-            has_line_break,
-        );
+        flags.set(AltFlags::HAS_SINGLE_LINE, min_flat_width.is_some());
+        let info = AltInfo {
+            flags,
+            min_flat_width: min_flat_width.unwrap_or(0),
+        };
         self.alt_infos.insert(doc, info);
         info
     }

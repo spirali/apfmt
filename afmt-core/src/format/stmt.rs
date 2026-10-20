@@ -15,7 +15,7 @@ use crate::formatter::Edge::{Comma, Operator, Word};
 use crate::formatter::{Builder, Formatter, Frag};
 use crate::layout::head::HeadLayouts;
 use crate::layout::list::Delimiters;
-use crate::utils::{is_jump_expr, trailing_jump_stmt};
+use crate::syntax_utils::{is_jump_expr, trailing_jump_stmt};
 use ra_ap_syntax::ast::{BlockExpr, ExprStmt, HasAttrs, LetStmt, Stmt, StmtList};
 use ra_ap_syntax::{AstNode, SyntaxKind, SyntaxNode};
 

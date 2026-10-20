@@ -24,7 +24,8 @@ use crate::layout::list::TrailingSeparator;
 use crate::layout::list::{
     Delimiters, FlatLimit, ListItem, ListLayout, Overflow, delimited_list, list_items_cast,
 };
-use crate::utils::{has_attrs, is_brace_macro_expr, with_is_last};
+use crate::syntax_utils::{has_attrs, is_brace_macro_expr};
+use crate::utils::with_is_last;
 use ra_ap_syntax::ast::{
     ArgList, ArrayExpr, BinExpr, BinaryOp, BlockExpr, BreakExpr, CallExpr, CastExpr, ClosureExpr,
     ContinueExpr, ElseBranch, Expr, HasArgList, HasAttrs, HasGenericArgs, IfExpr, IndexExpr,
@@ -202,10 +203,21 @@ fn is_overflowing_last(exprs: &[Expr]) -> bool {
     }
 }
 
+/// An expression formatted as a list item, see `format_expr_item`
+pub(super) struct ExprItem {
+    pub frag: Frag,
+    /// How it may overflow as the last item
+    pub overflow: Overflow,
+    /// Whether its single line is limited by its own width rules rather than by the width of the
+    /// list (`fn_call_width`) when it is the only item: a chain with elements (`chain_width`) or a
+    /// closure, as in rustfmt
+    pub own_width: bool,
+}
+
 /// An expression as a list item, and how it may overflow as the last item (see `Overflow`): a
 /// combinable expression with all its layouts (see `is_combinable_expr`), a method call chain and
 /// a closure with some of them (see `postfix_chain_layouts` and `ClosureLayouts`)
-pub(super) fn format_expr_item(fmt: &Formatter, expr: Expr) -> (Frag, Overflow) {
+pub(super) fn format_expr_item(fmt: &Formatter, expr: Expr) -> ExprItem {
     match expr {
         // A chain, also behind operators: on the line of `(` only with its elements on one line, the
         // arguments of the last one may break: `f(a.b(|x| {` / `...` / `}))`, `f(&a.b(` / `...` /
@@ -222,28 +234,47 @@ pub(super) fn format_expr_item(fmt: &Formatter, expr: Expr) -> (Frag, Overflow) 
                 ) && is_combinable_expr(chain)
             }) =>
         {
+            // A chain without elements, `g(...)?`, is limited as the call is
+            let own_width = matches!(
+                without_operators(&chain),
+                Expr::MethodCallExpr(_) | Expr::AwaitExpr(_)
+            );
             let ChainLayouts { layouts, joined } = operator_chain_parts(fmt, &expr, chain);
             let overflow = fmt
                 .alt_some(layouts.other.clone(), joined)
                 .map_or(Overflow::Never, Overflow::With);
-            (layouts.all(fmt), overflow)
+            ExprItem {
+                frag: layouts.all(fmt),
+                overflow,
+                own_width,
+            }
         }
         Expr::ClosureExpr(closure) if !has_attrs(&closure) => {
             let layouts = closure_layouts(fmt, closure);
             let overflow = layouts
                 .overflow
                 .map_or(Overflow::Never, Overflow::Preferred);
-            (layouts.all, overflow)
+            ExprItem {
+                frag: layouts.all,
+                overflow,
+                own_width: true,
+            }
         }
         expr => {
             let combinable = is_combinable_expr(&expr);
+            // A closure behind operators (`&|x| ...`) or with attributes
+            let own_width = matches!(without_operators(&expr), Expr::ClosureExpr(_));
             let frag = format_expr(fmt, expr);
             let overflow = if combinable {
                 Overflow::With(frag.clone())
             } else {
                 Overflow::Never
             };
-            (frag, overflow)
+            ExprItem {
+                frag,
+                overflow,
+                own_width,
+            }
         }
     }
 }
@@ -273,9 +304,10 @@ pub(super) fn format_expr_list(
     let hug = single.is_some_and(is_combinable_expr) || is_overflowing_last(&exprs);
     let preferred_hug = single.is_some_and(|e| is_preferred_hug(node, e));
     let items = list_items_cast(node, |e| format_expr_item(fmt, e));
+    let own_width = matches!(items.as_slice(), [item] if item.frag.own_width);
     let items = with_is_last(&items)
         .map(|(item, is_last)| {
-            let (frag, overflow) = &item.frag;
+            let ExprItem { frag, overflow, .. } = &item.frag;
             let overflow = match overflow {
                 _ if !hug || !is_last => Overflow::Never,
                 // "Where a function call has a single argument, and that argument is formatted
@@ -292,19 +324,15 @@ pub(super) fn format_expr_list(
             item.map(|_| frag.clone()).with_overflow(overflow)
         })
         .collect::<Vec<ListItem>>();
-    // A single argument that cannot overflow is not limited by `fn_call_width`, nor is a closure, a
-    // method call or `.await`, also behind operators (see `without_operators`). The only postfix
-    // chains that can overflow are method calls and combinable expressions followed by `?` (see
-    // `is_combinable_expr`); the others, e.g. `a.b`, cannot. Another one that can (e.g. a call) is:
-    // when it does not fit, it is broken instead. Nor is one with no layout spanning more lines,
-    // which has nothing to overflow with (`f(a::B::new())`, a macro call copied unchanged). All as
-    // rustfmt does; the Style Guide leaves what a small call is to the tool.
-    let unlimited = single.is_some_and(|e| {
-        !hug || matches!(
-            without_operators(e),
-            Expr::ClosureExpr(_) | Expr::MethodCallExpr(_) | Expr::AwaitExpr(_)
-        )
-    }) || matches!(items.as_slice(), [item] if !fmt.has_line_break(&item.frag));
+    // A single argument that cannot overflow is not limited by `fn_call_width`, nor is one with width
+    // rules of its own, a chain with elements or a closure (`ExprItem::own_width`). Another one that
+    // can (e.g. a call) is: when it does not fit, it is broken instead. Nor is one with no layout
+    // spanning more lines, which has nothing to overflow with (`f(a::B::new())`, a macro call copied
+    // unchanged). All as rustfmt does; the Style Guide leaves what a small call is to the tool.
+    let unlimited = match items.as_slice() {
+        [item] if single.is_some() => !hug || own_width || !fmt.has_line_break(&item.frag),
+        _ => false,
+    };
     let flat = if unlimited {
         FlatLimit::MaxWidth
     } else {
@@ -447,10 +475,10 @@ fn push_ref_operator(builder: &mut Builder, expr: &RefExpr) {
     }
 }
 
-/// The `as Type` of `expr as Type`
-fn push_cast_type(fmt: &Formatter, builder: &mut Builder, expr: &CastExpr) {
-    builder.push_keyword(expr.as_token().unwrap());
-    builder.push(format_type(fmt, expr.ty().unwrap()));
+/// The `as` and the type of `expr as Type`
+fn cast_type_parts(fmt: &Formatter, expr: &CastExpr) -> (Frag, Frag) {
+    let as_token = fmt.token(expr.as_token().unwrap(), Operator);
+    (as_token, format_type(fmt, expr.ty().unwrap()))
 }
 
 fn format_paren_expr(fmt: &Formatter, expr: ParenExpr) -> Frag {
@@ -481,10 +509,7 @@ fn format_cast_expr(fmt: &Formatter, expr: CastExpr) -> Frag {
     let rest = casts
         .iter()
         .rev()
-        .map(|cast| {
-            let as_token = fmt.token(cast.as_token().unwrap(), Operator);
-            (as_token, format_type(fmt, cast.ty().unwrap()))
-        })
+        .map(|cast| cast_type_parts(fmt, cast))
         .collect::<Vec<_>>();
     let chain = infix_chain(fmt, first.clone(), &rest);
     let types = rest
@@ -554,7 +579,9 @@ fn format_operators_around_chain(fmt: &Formatter, expr: &Expr) -> (Frag, Frag) {
     // The innermost cast is the first one after the chain
     let mut suffix = Builder::new(fmt);
     for cast in casts.iter().rev() {
-        push_cast_type(fmt, &mut suffix, cast);
+        let (as_token, ty) = cast_type_parts(fmt, cast);
+        suffix.push(as_token);
+        suffix.push(ty);
     }
     (prefix.into_frag(), suffix.into_frag())
 }

@@ -16,7 +16,7 @@ use crate::layout::list::{
     Delimiters, FlatLimit, ListItem, ListLayout, Overflow, TrailingSeparator, delimited_list,
     flat_layout, list_items, list_items_cast,
 };
-use crate::utils::has_attrs;
+use crate::syntax_utils::has_attrs;
 use ra_ap_syntax::ast::{
     Abi, AssocItemList, Const, Enum, Expr, ExternBlock, FieldList, Fn as AstFn, GenericParamList,
     HasAttrs, HasGenericParams, HasModuleItem, HasName, HasTypeBounds, HasVisibility, Impl, Item,

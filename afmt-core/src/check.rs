@@ -1,4 +1,4 @@
-use crate::utils::{
+use crate::syntax_utils::{
     MacroRule, Placeholders, Reparsed, is_brace_macro_expr, is_stray_semicolon, line_column,
     macro_rules_rules, parse_token_tree, parse_transcriber, trailing_jump_stmt,
 };

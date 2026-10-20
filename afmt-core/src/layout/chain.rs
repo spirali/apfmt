@@ -174,15 +174,8 @@ pub(crate) fn postfix_chain_layouts(
             other: None,
         });
     };
-    // A broken root costs a split, as in `vertical_chain`, which has this layout too
-    let joined = match lines.as_slice() {
-        [line] if root.may_end_with_delimiter() => {
-            let broken = fmt.multi_line(fmt.keep_together(root.clone()));
-            Some(Builder::concat(fmt, [fmt.short_last_line(broken), line.clone()]))
-        }
-        _ => None,
-    };
-    let vertical = fmt.alt_some(Some(vertical_chain(fmt, &root, &lines)), continued);
+    let (vertical, joined) = vertical_chain(fmt, &root, &lines);
+    let vertical = fmt.alt_some(Some(vertical), continued);
     let last = elements.last().unwrap();
 
     // Within `chain_width` with two or more elements (as rustfmt); on one line also without a line
@@ -219,24 +212,36 @@ pub(crate) fn postfix_chain_layouts(
 /// The chain broken before every element, see `postfix_chain_layouts`; `lines` are the formatted
 /// elements. A short root takes the elements that follow it while it is short on a single line and
 /// no comment separates them (`x.baz?` / `    .qux()`); then the lines after this head are laid out
-/// by `lines_after_head`.
-fn vertical_chain(fmt: &Formatter, root: &Frag, lines: &[Frag]) -> Frag {
+/// by `lines_after_head`. Returns also the layout with the root broken and a single element on its
+/// last line, if there is one (see `ChainLayouts::joined`).
+fn vertical_chain(fmt: &Formatter, root: &Frag, lines: &[Frag]) -> (Frag, Option<Frag>) {
     // A broken root costs a split, as a broken element does (`foo(` / `    a,` / `).bar(...)`)
     let mut head = fmt.keep_together(root.clone());
-    let mut layouts: Option<Frag> = None;
-    for k in 0..=lines.len() {
-        layouts = Some(fmt.alt_opt(lines_after_head(fmt, &head, &lines[k..]), layouts));
-        if k == lines.len() || head.comment_follows() {
+    let (mut layouts, joined) = lines_after_head(fmt, &head, lines);
+    for k in 0..lines.len() {
+        if head.comment_follows() {
             break;
         }
-        // Short on a single line (no line break in a token either), it ends, after what precedes
-        // the chain on its line, at most at the next indentation
-        let Some(flat_head) = fmt.flat_within(head, fmt.config().tab_spaces) else {
+        let Some(longer_head) = short_head_then(fmt, head, &lines[k]) else {
             break;
         };
-        head = Builder::concat(fmt, [fmt.short_last_line(flat_head), lines[k].clone()]);
+        head = longer_head;
+        layouts = fmt.alt_frag(lines_after_head(fmt, &head, &lines[k + 1..]).0, layouts);
     }
-    layouts.unwrap()
+    (layouts, joined)
+}
+
+/// `head` followed by `line` on its last line, which ends at most at the next indentation (see
+/// `Formatter::short_last_line`): `x.baz?` / `    .qux()`, `foo(` / `...` / `).await?`
+fn line_after(fmt: &Formatter, head: Frag, line: &Frag) -> Frag {
+    Builder::concat(fmt, [fmt.short_last_line(head), line.clone()])
+}
+
+/// `head` on a single line short enough (no line break in a token either) to end, after what
+/// precedes it on its line, at most at the next indentation, followed by `line`; `None` if it is not
+fn short_head_then(fmt: &Formatter, head: Frag, line: &Frag) -> Option<Frag> {
+    let flat_head = fmt.flat_within(head, fmt.config().tab_spaces)?;
+    Some(line_after(fmt, flat_head, line))
 }
 
 /// `head` followed by `lines`, each on its own line: block-indented after a head on a single line;
@@ -248,9 +253,12 @@ fn vertical_chain(fmt: &Formatter, root: &Frag, lines: &[Frag]) -> Frag {
 /// A head that is short on a single line (within `chain_width`, a small chain by itself) is not broken
 /// only to indent the lines less when one of them overflows anyway (`parse(` / `    text,` / `)` /
 /// `.map_err(...)`): after it, the lines are block-indented, also when it breaks.
-fn lines_after_head(fmt: &Formatter, head: &Frag, lines: &[Frag]) -> Frag {
+///
+/// Returns also the layout with the head broken and a single line after its closing delimiter, if
+/// there is one.
+fn lines_after_head(fmt: &Formatter, head: &Frag, lines: &[Frag]) -> (Frag, Option<Frag>) {
     if lines.is_empty() {
-        return head.clone();
+        return (head.clone(), None);
     }
     let chain_width = fmt.config().chain_width;
     let short = fmt.min_flat_width(head).is_some_and(|w| w <= chain_width);
@@ -269,13 +277,11 @@ fn lines_after_head(fmt: &Formatter, head: &Frag, lines: &[Frag]) -> Frag {
         unindented.push_lines(lines.iter().cloned(), false);
         layout = fmt.alt_frag(layout, unindented.into_frag());
     }
-    if let [line] = lines
-        && broken_head.may_end_with_delimiter()
-    {
-        let joined = Builder::concat(fmt, [fmt.short_last_line(broken_head), line.clone()]);
-        layout = fmt.alt_frag(layout, joined);
-    }
-    layout
+    let joined = match lines {
+        [line] if broken_head.may_end_with_delimiter() => Some(line_after(fmt, broken_head, line)),
+        _ => None,
+    };
+    (fmt.alt_opt(layout, joined.clone()), joined)
 }
 
 /// `head` followed by `lines`, each on its own block-indented line (an operator chain; a postfix
@@ -296,14 +302,13 @@ fn vertical_lines(fmt: &Formatter, head: &Frag, lines: &[Frag]) -> Frag {
         }
         // The head may take the next line only if its last line is short: the first fragment
         // ending with a delimiter (`foo(` / `...` / `)`), otherwise a head on a single line
-        let short_head = if k == 0 && head.may_end_with_delimiter() {
-            head
-        } else if let Some(flat_head) = fmt.flat_within(head, fmt.config().tab_spaces) {
-            flat_head
+        head = if k == 0 && head.may_end_with_delimiter() {
+            line_after(fmt, head, &lines[k])
+        } else if let Some(longer_head) = short_head_then(fmt, head, &lines[k]) {
+            longer_head
         } else {
             break;
         };
-        head = Builder::concat(fmt, [fmt.short_last_line(short_head), lines[k].clone()]);
     }
     layouts.unwrap()
 }

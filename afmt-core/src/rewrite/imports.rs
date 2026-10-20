@@ -9,7 +9,7 @@ use crate::comments::{
     is_line_comment, own_line_comment_follows, post_comments_end, trivia_end, trivia_from,
 };
 use crate::layout::list::list_items_cast;
-use crate::utils::has_attrs;
+use crate::syntax_utils::has_attrs;
 use ra_ap_syntax::ast::{HasName, Path, Use, UseTree, UseTreeList};
 use ra_ap_syntax::{AstNode, SourceFile, SyntaxKind, SyntaxNode, SyntaxToken, TextRange, TextSize};
 use std::cmp::Ordering;

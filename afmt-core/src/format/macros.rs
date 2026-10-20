@@ -13,7 +13,7 @@ use crate::comments::{has_comments, prev_code_token};
 use crate::formatter::Edge::{BraceClose, BraceOpen, Close, Open, Operator, Tight, Word};
 use crate::formatter::{Builder, Formatter, Frag};
 use crate::layout::list::{Delimiters, TrailingSeparator};
-use crate::utils::{MacroRule, macro_rules_rules, parse_token_tree, parse_transcriber};
+use crate::syntax_utils::{MacroRule, macro_rules_rules, parse_token_tree, parse_transcriber};
 use ra_ap_syntax::ast::{
     ArgList, ArrayExpr, BlockExpr, Expr, HasName, ItemList, MacroCall, MacroRules, StmtList,
 };

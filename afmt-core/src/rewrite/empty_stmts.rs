@@ -1,7 +1,7 @@
 //! Removal of empty statements: the stray `;` in a block, `;;` or `g();;` (as in rustfmt)
 
 use super::line_if_alone;
-use crate::utils::is_stray_semicolon;
+use crate::syntax_utils::is_stray_semicolon;
 use ra_ap_syntax::{AstNode, SourceFile, TextRange};
 
 /// The edits that remove the stray `;` of the blocks of the file, which are not part of a statement;

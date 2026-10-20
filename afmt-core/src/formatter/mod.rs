@@ -13,7 +13,7 @@ use crate::doc::{
 };
 use crate::formatter::Edge::{Keyword, LineStart, Nothing, Word};
 use crate::resolver::Resolver;
-use crate::utils::{Placeholders, Reparsed};
+use crate::syntax_utils::{Placeholders, Reparsed};
 pub(crate) use builder::Builder;
 use frag::{Branch, Branches};
 pub(crate) use frag::{Edge, Frag};
@@ -424,13 +424,17 @@ impl<'a> Formatter<'a> {
         self.has_flat_layout(&frag).then(|| self.flat(frag))
     }
 
+    /// Whether a branch of the fragment satisfies `query`, a walk of `DocArena`
+    fn any_branch(&self, frag: &Frag, query: impl Fn(&mut DocArena, DocId) -> bool) -> bool {
+        let mut arena = self.doc_arena.borrow_mut();
+        frag.branches.iter().any(|b| query(&mut arena, b.doc_id))
+    }
+
     /// Whether a branch of the fragment may have a layout under `Flat`: false only if a line break
     /// is forced in all of them, or a width limit in it cannot be met (see
     /// `DocArena::has_flat_layout`)
     pub fn has_flat_layout(&self, frag: &Frag) -> bool {
-        frag.branches
-            .iter()
-            .any(|b| self.has_flat_layout_doc(b.doc_id))
+        self.any_branch(frag, DocArena::has_flat_layout)
     }
 
     /// The width of the narrowest single line of the fragment without any line break (see
@@ -448,20 +452,12 @@ impl<'a> Formatter<'a> {
     /// Whether a text of the fragment contains a line break, e.g. a multi-line string literal: a
     /// layout with it on a single line still spans more lines
     pub fn has_multi_line_text(&self, frag: &Frag) -> bool {
-        let mut arena = self.doc_arena.borrow_mut();
-        frag.branches
-            .iter()
-            .any(|b| arena.has_multi_line_text(b.doc_id))
+        self.any_branch(frag, DocArena::has_multi_line_text)
     }
 
     /// Whether a layout of the fragment may span more lines (see `DocArena::has_line_break`)
     pub fn has_line_break(&self, frag: &Frag) -> bool {
-        let mut arena = self.doc_arena.borrow_mut();
-        frag.branches.iter().any(|b| arena.has_line_break(b.doc_id))
-    }
-
-    fn has_flat_layout_doc(&self, doc_id: DocId) -> bool {
-        self.doc_arena.borrow_mut().has_flat_layout(doc_id)
+        self.any_branch(frag, DocArena::has_line_break)
     }
 
     /// Single-line layout of `frag` at most `max_width` wide (the resolver measures it, see
@@ -469,17 +465,10 @@ impl<'a> Formatter<'a> {
     /// literal, which `flat` allows; `u32::MAX` for no other limit); `None` if even its narrowest
     /// single line is wider (see `min_flat_width`), so it is not built only to be ruled out
     pub fn flat_within(&self, frag: Frag, max_width: u32) -> Option<Frag> {
-        // Not built if even its narrowest single line is too wide (a pruning bound, see
-        // `DocArena::min_flat_width`)
-        let fits = |b: &Branch| {
-            let mut arena = self.doc_arena.borrow_mut();
-            arena
-                .min_flat_width(b.doc_id)
-                .is_some_and(|w| w <= max_width)
+        let fits = |arena: &mut DocArena, doc_id| {
+            arena.min_flat_width(doc_id).is_some_and(|w| w <= max_width)
         };
-        frag.branches
-            .iter()
-            .any(fits)
+        self.any_branch(&frag, fits)
             .then(|| self.flat(self.first_line_within(frag, max_width)))
     }
 

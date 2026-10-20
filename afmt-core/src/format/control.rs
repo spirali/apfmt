@@ -4,7 +4,7 @@ use super::attr::{format_attr, format_with_attrs};
 use super::common::push_label;
 use super::expr::{
     ExprPosition, NestedPlainBlocks, format_added_braces, format_expr, format_expr_at,
-    format_expr_item, operand_chain,
+    ExprItem, format_expr_item, operand_chain,
     format_head_expr, format_head_with_block, plain_stmt_list, single_line_block_expr,
 };
 use super::pat::pat_layouts;
@@ -14,8 +14,8 @@ use crate::doc::AlignGroup;
 use crate::formatter::Edge::{Operator, Word};
 use crate::formatter::{Builder, Formatter, Frag};
 use crate::layout::head::{HeadLayouts, pattern_head};
-use crate::layout::list::Delimiters;
-use crate::utils::has_attrs;
+use crate::layout::list::{Delimiters, Overflow};
+use crate::syntax_utils::has_attrs;
 use ra_ap_syntax::ast::{
     Expr, ForExpr, HasAttrs, HasLoopBody, LoopExpr, MatchArm, MatchExpr, WhileExpr,
 };
@@ -197,11 +197,20 @@ fn arm_body_layouts(fmt: &Formatter, body: Expr) -> ArmBodyLayouts {
             (inner.clone(), Some(inner))
         }
         _ => {
-            let (inner, overflow) = format_expr_item(fmt, expr);
-            let same_line = fmt.alt_some(
-                fmt.flat_if_possible(inner.clone()),
-                overflow.layouts().cloned(),
-            );
+            let ExprItem {
+                frag: inner,
+                overflow,
+                ..
+            } = format_expr_item(fmt, expr);
+            // A combinable expression overflows in all its layouts (chains are above), a closure
+            // in some, without the single line
+            let same_line = match overflow {
+                Overflow::With(_) => Some(inner.clone()),
+                overflow => fmt.alt_some(
+                    fmt.flat_if_possible(inner.clone()),
+                    overflow.layouts().cloned(),
+                ),
+            };
             (
                 fmt.keep_together(inner),
                 same_line.map(|same_line| fmt.keep_together(same_line)),

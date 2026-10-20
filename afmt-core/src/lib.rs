@@ -10,6 +10,7 @@ mod layout;
 mod modules;
 mod resolver;
 mod rewrite;
+mod syntax_utils;
 #[cfg(test)]
 mod test_utils;
 mod utils;
@@ -19,7 +20,7 @@ pub use crate::config::Config;
 use crate::format::format_source_file;
 use crate::formatter::{Formatter, Unsupported};
 use crate::rewrite::rewrite_source;
-use crate::utils::line_column;
+use crate::syntax_utils::line_column;
 pub use config::cargo::{CARGO_MANIFEST_NAME, find_cargo_manifest};
 pub use error::{Error, Result, UnsupportedSyntax};
 pub use ra_ap_syntax::Edition;
