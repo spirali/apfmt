@@ -17,7 +17,7 @@ use crate::layout::head::HeadLayouts;
 use crate::layout::list::Delimiters;
 use crate::utils::{is_jump_expr, trailing_jump_stmt};
 use ra_ap_syntax::ast::{BlockExpr, ExprStmt, HasAttrs, LetStmt, Stmt, StmtList};
-use ra_ap_syntax::{AstNode, SyntaxKind};
+use ra_ap_syntax::{AstNode, SyntaxKind, SyntaxNode};
 
 fn format_let_stmt(fmt: &Formatter, stmt: LetStmt) -> Frag {
     let mut builder = Builder::new(fmt);
@@ -162,15 +162,9 @@ fn format_stmt_list(fmt: &Formatter, stmt_list: StmtList, tail: Option<Frag>) ->
     let delims = Delimiters::braces_of(stmt_list.syntax());
     let trailing_semicolon = fmt.config().trailing_semicolon;
     let tail = stmt_list.tail_expr().map(|expr| {
-        let jump = is_jump_expr(expr.syntax());
+        let node = expr.syntax().clone();
         let tail = tail.unwrap_or_else(|| format_expr_at(fmt, expr, ExprPosition::Tail));
-        if !(trailing_semicolon && jump) {
-            return tail;
-        }
-        let mut builder = Builder::new(fmt);
-        builder.push(tail);
-        builder.push_generated(SEMICOLON_DOC, Comma);
-        builder.into_frag()
+        format_block_tail(fmt, &node, tail)
     });
     let last_jump = (!trailing_semicolon)
         .then(|| trailing_jump_stmt(&stmt_list))
@@ -186,6 +180,18 @@ fn format_stmt_list(fmt: &Formatter, stmt_list: StmtList, tail: Option<Frag>) ->
         }))
         .chain(tail);
     delims.format_block(fmt, lines)
+}
+
+/// `tail`, the formatted tail expression `node` of a block, followed by `;` if it is a `return`,
+/// `break` or `continue` and `trailing_semicolon` is on (as rustfmt): `break;`
+pub(super) fn format_block_tail(fmt: &Formatter, node: &SyntaxNode, tail: Frag) -> Frag {
+    if !(fmt.config().trailing_semicolon && is_jump_expr(node)) {
+        return tail;
+    }
+    let mut builder = Builder::new(fmt);
+    builder.push(tail);
+    builder.push_generated(SEMICOLON_DOC, Comma);
+    builder.into_frag()
 }
 
 pub(super) fn format_block_expr(fmt: &Formatter, body: BlockExpr) -> Frag {

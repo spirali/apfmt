@@ -99,6 +99,33 @@ pub(crate) struct ChainElement {
     pub tail: Frag,
 }
 
+/// The layouts of a postfix chain (see `postfix_chain_layouts`)
+pub(crate) struct ChainLayouts {
+    pub layouts: HeadLayouts,
+    /// The root broken over more lines and a single element after its closing delimiter (`f(` /
+    /// `...` / `).into()`), one of `layouts.hanging`: a chain hugged by a call may take it, the
+    /// element attached to the delimiter it follows (`Err(format!(` / `...` / `).into())`)
+    pub joined: Option<Frag>,
+}
+
+impl ChainLayouts {
+    /// Layouts without a `joined` one
+    pub fn new(layouts: HeadLayouts) -> Self {
+        ChainLayouts {
+            layouts,
+            joined: None,
+        }
+    }
+
+    /// The layouts, each transformed by `f` (e.g. with the operators around the chain)
+    pub fn map(self, f: impl Fn(Frag) -> Frag) -> Self {
+        ChainLayouts {
+            layouts: self.layouts.map(&f),
+            joined: self.joined.map(&f),
+        }
+    }
+}
+
 /// `root.a.b()?.c()` in the layouts of the Style Guide:
 /// - on one line, if it fits (with two or more elements, within `chain_width`, as rustfmt does);
 /// - broken before every `.`, each element on its own block-indented line; a short root stays with
@@ -115,14 +142,15 @@ pub(crate) struct ChainElement {
 /// the same indentation, as if it were one chain; `root.other` are its other layouts.
 ///
 /// Returns the broken layout as `hanging` (indented continuation lines) and the others as `other`;
-/// without elements (`a?`), the root.
+/// without elements (`a?`), the root. With a single element after a root that may end with a
+/// delimiter, also that layout of `hanging` alone (`ChainLayouts::joined`).
 pub(crate) fn postfix_chain_layouts(
     fmt: &Formatter,
     root: HeadLayouts,
     elements: &[ChainElement],
-) -> HeadLayouts {
+) -> ChainLayouts {
     if elements.is_empty() {
-        return root;
+        return ChainLayouts::new(root);
     }
     let full = elements
         .iter()
@@ -141,10 +169,18 @@ pub(crate) fn postfix_chain_layouts(
         builder.into_frag()
     });
     let Some(root) = root.other else {
-        return HeadLayouts {
+        return ChainLayouts::new(HeadLayouts {
             hanging: continued,
             other: None,
-        };
+        });
+    };
+    // A broken root costs a split, as in `vertical_chain`, which has this layout too
+    let joined = match lines.as_slice() {
+        [line] if root.may_end_with_delimiter() => {
+            let broken = fmt.multi_line(fmt.keep_together(root.clone()));
+            Some(Builder::concat(fmt, [fmt.short_last_line(broken), line.clone()]))
+        }
+        _ => None,
     };
     let vertical = fmt.alt_some(Some(vertical_chain(fmt, &root, &lines)), continued);
     let last = elements.last().unwrap();
@@ -171,9 +207,12 @@ pub(crate) fn postfix_chain_layouts(
         }
         other = Some(fmt.alt_opt(fmt.dispreferred(overflow), other));
     }
-    HeadLayouts {
-        hanging: vertical,
-        other,
+    ChainLayouts {
+        layouts: HeadLayouts {
+            hanging: vertical,
+            other,
+        },
+        joined,
     }
 }
 

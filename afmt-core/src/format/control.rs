@@ -168,6 +168,7 @@ fn arm_body_layouts(fmt: &Formatter, body: Expr) -> ArmBodyLayouts {
         body => (body, None),
     };
     let control_flow = is_control_flow(&expr);
+    let node = expr.syntax().clone();
     // A `match` on the line of `=>`: the left-hand side and its head on one line
     let flat_lhs = matches!(&expr, Expr::MatchExpr(match_expr) if !has_attrs(match_expr));
     let (inner, same_line_inner) = match &expr {
@@ -212,7 +213,7 @@ fn arm_body_layouts(fmt: &Formatter, body: Expr) -> ArmBodyLayouts {
             let block = format_block_expr_with_tail(fmt, blocks.inner.clone(), Some(inner.clone()));
             blocks.skip_outer_braces(fmt, block)
         }
-        None => format_added_braces(fmt, fmt.keep_together(inner)),
+        None => format_added_braces(fmt, &node, fmt.keep_together(inner)),
     };
     let same_line = same_line_inner
         .filter(|_| !control_flow)

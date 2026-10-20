@@ -7,11 +7,9 @@ fn main() {
     let repo_path = match absolute_path.canonicalize() {
         Ok(p) => p,
         Err(e) => {
-            return Err(
-                LabeledError::new(
-                    format!("error canonicalizing [{}]", absolute_path.display()),
-                ).with_label(e.to_string(), path.span),
-            );
+            return Err(LabeledError::new(
+                format!("error canonicalizing [{}]", absolute_path.display()),
+            ).with_label(e.to_string(), path.span));
         }
     };
 }
