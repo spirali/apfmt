@@ -17,12 +17,14 @@ use ra_ap_syntax::ast::{
     TypeBoundList,
 };
 
-/// `-> T`
+/// `-> T`; broken only as a last resort, after the parameters in front of it (`fn f(` / `...` /
+/// `) -> Result<A, B>`, `FnMut(` / `...` / `) -> ControlFlow<A, B>`, as the Style Guide breaks a
+/// signature): a broken return type costs a second split
 pub(super) fn format_ret_type(fmt: &Formatter, ret_type: RetType) -> Frag {
     let mut builder = Builder::new(fmt);
     builder.push_token(ret_type.thin_arrow_token().unwrap(), Operator);
     builder.push(format_type(fmt, ret_type.ty().unwrap()));
-    builder.into_frag()
+    fmt.keep_together(builder.into_frag())
 }
 
 fn format_ref_type(fmt: &Formatter, ty: RefType) -> Frag {

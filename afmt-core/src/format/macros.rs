@@ -256,6 +256,12 @@ pub(super) fn is_list_macro(expr: &Expr) -> bool {
     )
 }
 
+/// Whether the expression is a macro call with braces, `m! { ... }`, whose body is copied (re-indented,
+/// see `format_macro_call`); like a block, it may overflow as the only argument of a call
+pub(super) fn is_brace_macro(expr: &Expr) -> bool {
+    macro_delimiter(expr) == Some(SyntaxKind::L_CURLY)
+}
+
 /// Whether the expression is a macro call whose arguments are laid out as an array, `vec![a, b]`
 /// (see `format_macro_call`)
 pub(super) fn is_array_macro(expr: &Expr) -> bool {

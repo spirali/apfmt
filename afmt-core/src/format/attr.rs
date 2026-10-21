@@ -120,7 +120,8 @@ fn format_key_value_meta(fmt: &Formatter, meta: KeyValueMeta) -> Frag {
 }
 
 /// The comma-separated `items` of an attribute between the parentheses of `node`: on a single line
-/// if they fit within `attr_fn_like_width`, otherwise one per line, laid out as call arguments, or
+/// if they fit within `attr_fn_like_width` (a single item that cannot break, `error("...")`, within
+/// `max_width`, see `FlatLimit::of_arguments`), otherwise one per line, laid out as call arguments, or
 /// filled on lines with `fill`. The last item may hug the list as `hug` allows (`cfg(all(` / `...` /
 /// `))`, see `cfg_list_hug` and `token_list_hug`); as in rustfmt, its own items are measured, not
 /// the item, so the outer list is on a single line whenever the inner one is. Filled derives are on
@@ -137,9 +138,11 @@ fn format_meta_list(
     let limit = if hug != Hug::Never || fill {
         FlatLimit::MaxWidth
     } else {
-        FlatLimit::Within(fmt.config().attr_fn_like_width)
+        FlatLimit::of_arguments(fmt, &items, hug, fmt.config().attr_fn_like_width)
     };
-    let layout = ListLayout::tall(limit).fill_if(fill);
+    // A string spanning lines is not on the line of `(`, as in a call (see `format_expr_list`)
+    let multi_line = items.iter().any(|item| fmt.has_multi_line_text(&item.frag));
+    let layout = ListLayout::tall(limit).fill_if(fill).broken_if(multi_line);
     delimited_list(fmt, &delims, &items, layout)
 }
 

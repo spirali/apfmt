@@ -15,8 +15,5 @@ fn g(
     z: Vec<_>,
 ) -> impl Iterator<Item = (u32, u64)> {}
 fn h(x: &'a mut [(u8, u16); 3]) {}
-fn tuple_ret() -> (
-    AaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaAA,
-    BBBBBBBBBBBBBBBBBB,
-    CCCCCCCCCCCCCCCCCCC,
-) {}
+fn tuple_ret()
+-> (AaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaAA, BBBBBBBBBBBBBBBBBB, CCCCCCCCCCCCCCCCCCC) {}

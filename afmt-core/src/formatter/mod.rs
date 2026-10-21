@@ -348,6 +348,15 @@ impl<'a> Formatter<'a> {
         self.alt_frag(flat, broken)
     }
 
+    /// `first` followed by `second`, which spans more lines only when `first` does: both on a single
+    /// line, or `first` broken, e.g. the parameters of a function before its return type
+    /// (`fn f(` / `    a: A,` / `) -> Result<` / `...`). `first` must have a layout spanning more lines.
+    pub fn concat_breaking_in_order(&self, first: Frag, second: Frag) -> Frag {
+        let flat = Builder::concat(self, [self.flat(first.clone()), self.flat(second.clone())]);
+        let broken = Builder::concat(self, [self.multi_line(first), second]);
+        self.alt_frag(flat, broken)
+    }
+
     /// The fragment should stay on one line if possible: a layout spanning more lines is used only when
     /// all single-line layouts overflow, e.g. a type
     pub fn keep_together(&self, frag: Frag) -> Frag {

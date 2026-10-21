@@ -242,16 +242,26 @@ fn format_fn(fmt: &Formatter, item_fn: AstFn) -> Frag {
     let param_list = item_fn.param_list().unwrap();
     let has_params = param_list.self_param().is_some() || param_list.params().next().is_some();
     let params = format_param_list(fmt, param_list);
+    let signature = match item_fn.ret_type().map(|ret| format_ret_type(fmt, ret)) {
+        // A return type that does not fit on one line breaks only after the parameters (Style
+        // Guide, as rustfmt does): `fn f(` / `    a: A,` / `) -> Result<` / `...`
+        Some(ret) if has_params => fmt.concat_breaking_in_order(params, ret),
+        // Without parameters to break, the return type that does not fit moves to the next line
+        // at the indentation of `fn`, as rustfmt does (`fn name()` / `-> Type {`), rather than
+        // breaking its generic arguments or the generics
+        Some(ret) => {
+            let ret = fmt.alt_frag(ret.clone(), fmt.on_next_line(ret));
+            Builder::concat(fmt, [params, ret])
+        }
+        None => params,
+    };
     if item_fn.generic_param_list().is_some() && has_params {
         // broken generics are followed by broken parameters, as rustfmt does (the Style Guide does
         // not say): `>(` / `    a: A,` / `) {`
-        builder.push(fmt.concat_breaking_together(head, params));
+        builder.push(fmt.concat_breaking_together(head, signature));
     } else {
         builder.push(head);
-        builder.push(params);
-    }
-    if let Some(ret_type) = item_fn.ret_type() {
-        builder.push(format_ret_type(fmt, ret_type));
+        builder.push(signature);
     }
     let body = item_fn.body();
     push_where_clause(fmt, &mut builder, item_fn.where_clause(), body.is_none());
@@ -673,15 +683,9 @@ fn format_impl(fmt: &Formatter, item: Impl) -> Frag {
     let impl_token = item.impl_token().unwrap();
     let impl_start = impl_token.text_range().start();
     let generics = item.generic_param_list();
-    builder.push(format_item_head(
-        fmt,
-        item.syntax(),
-        impl_token,
-        Frag::empty(),
-        generics,
-    ));
-    let self_ty = item.self_ty().unwrap();
-    if let Some(trait_) = item.trait_() {
+    let head = format_item_head(fmt, item.syntax(), impl_token, Frag::empty(), generics);
+    let trait_ = item.trait_().map(|trait_| {
+        let mut builder = Builder::new(fmt);
         // `const` of `impl const Trait`; in front of the generics, it is a qualifier
         if let Some(token) = item
             .const_token()
@@ -693,12 +697,59 @@ fn format_impl(fmt: &Formatter, item: Impl) -> Frag {
             builder.push(fmt.token_with_edges(token, Word, Tight));
         }
         builder.push(format_type(fmt, trait_));
-        builder.push_keyword(item.for_token().unwrap());
+        builder.into_frag()
+    });
+    let mut self_ty = Builder::new(fmt);
+    if trait_.is_some() {
+        self_ty.push_keyword(item.for_token().unwrap());
     }
-    builder.push(format_type(fmt, self_ty));
+    self_ty.push(format_type(fmt, item.self_ty().unwrap()));
+    let self_ty = self_ty.into_frag();
+    let block_follows = item.where_clause().is_none();
+    builder.push(impl_header(fmt, head, trait_, self_ty, block_follows));
     push_where_clause(fmt, &mut builder, item.where_clause(), false);
     builder.push(format_assoc_item_list(fmt, item.assoc_item_list().unwrap()));
     builder.into_frag()
+}
+
+/// `impl<T> Trait for Type` (`self_ty` is `for Type`; without a trait, `head` and `self_ty` only).
+/// A header that does not fit is broken as rustfmt does (the Style Guide does not say), so that the
+/// generics and the generic arguments stay on one line, the rest on indented lines and `{` of
+/// `block_follows` on its own line: before `for`, then (dispreferred) after the generics, then after
+/// the generics and before `for`; `impl<T> Trait<` / `    A,` / `> for Type {` only when they all
+/// overflow or break anyway (it costs one more split)
+fn impl_header(
+    fmt: &Formatter,
+    head: Frag,
+    trait_: Option<Frag>,
+    self_ty: Frag,
+    block_follows: bool,
+) -> Frag {
+    let rest = Builder::concat(fmt, trait_.clone().into_iter().chain([self_ty.clone()]));
+    let joined = Builder::concat(fmt, [head.clone(), rest.clone()]);
+    let joined = fmt.keep_together(fmt.keep_together(joined));
+    let broken = |first: Frag, lines: &[Frag]| {
+        let mut builder = Builder::new(fmt);
+        builder.push(fmt.flat(first));
+        for line in lines {
+            builder.push(fmt.indented_line(line.clone()));
+        }
+        if block_follows {
+            builder.push_newline();
+        }
+        builder.into_frag()
+    };
+    let after_generics = fmt.dispreferred(broken(head.clone(), &[rest]));
+    let layouts = match trait_ {
+        Some(trait_) => {
+            let head_and_trait = Builder::concat(fmt, [head.clone(), trait_.clone()]);
+            let before_for = broken(head_and_trait, std::slice::from_ref(&self_ty));
+            let both = fmt.dispreferred(fmt.dispreferred(broken(head, &[trait_, self_ty])));
+            fmt.alt_frag(before_for, fmt.alt_frag(after_generics, both))
+        }
+        None => after_generics,
+    };
+    fmt.alt_frag(joined, layouts)
 }
 
 /// `trait Name<T>: Bounds where ... { items }`

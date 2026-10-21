@@ -3,7 +3,7 @@
 use super::chain::{operand_chain, operator_chain_parts};
 use super::closure::closure_layouts;
 use super::expr::format_expr;
-use super::macros::{is_array_macro, is_list_macro, macro_argument_count};
+use super::macros::{is_array_macro, is_brace_macro, is_list_macro, macro_argument_count};
 use crate::format::common::format_repeat;
 use crate::formatter::{Formatter, Frag};
 use crate::layout::chain::ChainLayouts;
@@ -33,7 +33,8 @@ fn is_combinable_expr(expr: &Expr) -> bool {
         | Expr::MatchExpr(_) => true,
         // `g(...).await`: the root breaks, `.await` follows its closing delimiter
         Expr::AwaitExpr(e) => e.expr().is_some_and(|e| is_combinable_expr(&e)),
-        expr => is_list_macro(&expr),
+        // `m! { ... }` like a block: `Ok(quote! {` / `...` / `})`
+        expr => is_list_macro(&expr) || is_brace_macro(&expr),
     }
 }
 
@@ -68,6 +69,24 @@ fn has_list_content(expr: &Expr) -> bool {
             list.fields().count() > 1 || values.is_some_and(|values| has_content(&values))
         }),
         expr => macro_argument_count(&expr).is_some_and(|n| n > 1),
+    }
+}
+
+/// Whether the expression is block-like, also behind operators: a block (also `unsafe`, `async`,
+/// labelled), a macro call with braces, or a `match` or `if` whose head cannot break (a simple
+/// scrutinee or condition, see `is_simple_expr`). As the only argument it hugs whenever it fits, as a
+/// closure does: broken over more lines (`f(` / `match x {` / `...` / `},` / `)`) it is never
+/// clearer, so the call breaks elsewhere first, e.g. after `=` (`let long =` / `    f(match x {`) or
+/// before the element of a chain (`a()` / `.b()` / `.f(m! {`), as rustfmt does. With a head that may
+/// break, the hug may put it on lines of its own (`f(if let Some(x) = long(...)` / `{`), so it is
+/// only allowed (see `is_combinable_expr`)
+fn is_block_like_expr(expr: &Expr) -> bool {
+    let is_simple = |e: Option<Expr>| e.is_some_and(|e| is_simple_expr(&e));
+    match without_operators(expr) {
+        Expr::BlockExpr(_) => true,
+        Expr::MatchExpr(e) => is_simple(e.expr()),
+        Expr::IfExpr(e) => is_simple(e.condition()),
+        expr => is_brace_macro(&expr),
     }
 }
 
@@ -160,11 +179,11 @@ pub(super) fn is_literal_or_name(expr: &Expr) -> bool {
 /// How the last of the expressions `exprs` of the list `node` may hug it: a single combinable
 /// expression (see `is_combinable_expr`), rather than break the list in as many lines if it is a
 /// delimited list (see `is_delimited_list_expr`), whenever it fits after a constructor or as an
-/// array (see `is_preferred_hug`); a closure or a block after other expressions (`f(a, |x| {` /
-/// `...` / `})`, see `is_overflowing_last`)
+/// array (see `is_preferred_hug`) or if it is block-like (see `is_block_like_expr`); a closure or a
+/// block after other expressions (`f(a, |x| {` / `...` / `})`, see `is_overflowing_last`)
 fn last_item_hug(node: &SyntaxNode, exprs: &[Expr]) -> Hug {
     match exprs {
-        [single] if is_preferred_hug(node, single) => Hug::Preferred,
+        [single] if is_preferred_hug(node, single) || is_block_like_expr(single) => Hug::Preferred,
         [single] if is_delimited_list_expr(single) => Hug::WeakPreference,
         [single] if is_combinable_expr(single) => Hug::Allowed,
         _ if is_overflowing_last(exprs) => Hug::Allowed,
@@ -202,8 +221,8 @@ pub(super) struct ExprItem {
     /// How it may overflow as the last item
     pub overflow: Overflow,
     /// Whether its single line is limited by its own width rules rather than by the width of the
-    /// list (`fn_call_width`) when it is the only item: a chain with elements (`chain_width`) or a
-    /// closure, as in rustfmt
+    /// list (`fn_call_width`) when it is the only item: a chain with elements (`chain_width`), a
+    /// closure or a block-like expression (see `is_block_like_expr`), as in rustfmt
     pub own_width: bool,
 }
 
@@ -255,8 +274,10 @@ pub(super) fn format_expr_item(fmt: &Formatter, expr: Expr) -> ExprItem {
         }
         expr => {
             let combinable = is_combinable_expr(&expr);
-            // A closure behind operators (`&|x| ...`) or with attributes
-            let own_width = matches!(without_operators(&expr), Expr::ClosureExpr(_));
+            // A closure behind operators (`&|x| ...`) or with attributes, or a block-like expression,
+            // whose single line has width rules of its own (`Ok(unsafe { ... })`, as rustfmt does)
+            let own_width = matches!(without_operators(&expr), Expr::ClosureExpr(_))
+                || is_block_like_expr(&expr);
             let frag = format_expr(fmt, expr);
             let overflow = if combinable {
                 Overflow::With(frag.clone())
@@ -305,21 +326,15 @@ pub(super) fn format_expr_list(
             item.map(|_| frag.clone()).with_overflow(overflow)
         })
         .collect::<Vec<ListItem>>();
-    // A single argument that cannot overflow is not limited by `fn_call_width`, nor is one with width
-    // rules of its own, a chain with elements or a closure (`ExprItem::own_width`). Another one that
-    // can (e.g. a call) is: when it does not fit, it is broken instead. Nor is one with no layout
-    // spanning more lines, which has nothing to overflow with (`f(a::B::new())`, a macro call copied
-    // unchanged). All as rustfmt does; the Style Guide leaves what a small call is to the tool.
-    let unlimited = match items.as_slice() {
-        [item] if exprs.len() == 1 => {
-            hug == Hug::Never || own_width || !fmt.has_line_break(&item.frag)
-        }
-        _ => false,
-    };
-    let flat = if unlimited {
+    // A single argument that cannot overflow is not limited by `fn_call_width` (see
+    // `FlatLimit::of_arguments`), nor is one with width rules of its own, a chain with elements or a
+    // closure (`ExprItem::own_width`). Another one that can (e.g. a call) is: when it does not fit,
+    // it is broken instead. All as rustfmt does; the Style Guide leaves what a small call is to the
+    // tool.
+    let flat = if own_width {
         FlatLimit::MaxWidth
     } else {
-        FlatLimit::Within(width)
+        FlatLimit::of_arguments(fmt, &items, hug, width)
     };
     // A string spanning lines, also under an operator (`&"a⏎b"`), is not hugged: "If ... any
     // argument ... is multi-line, then format the call across multiple lines" (Style Guide; a
@@ -409,8 +424,12 @@ mod tests {
             ("f(a.b)", Never),
             ("f(a + b)", Never),
             ("f(a, b)", Never),
-            ("f(if a { b } else { c })", Allowed),
-            ("f(match a {})", Allowed),
+            ("f(if a { b } else { c })", Preferred),
+            ("f(match a {})", Preferred),
+            ("f(unsafe { a })", Preferred),
+            ("f(&match a {})", Preferred),
+            ("f(match a.b() {})", Allowed),
+            ("f(if let Some(a) = b { c } else { d })", Allowed),
             ("f(|x| x)", Allowed),
             ("f(a.b())", Allowed),
             ("f(g(a).await)", Allowed),
@@ -419,6 +438,9 @@ mod tests {
             ("f(a, &|x| x)", Never),
             ("f(|x| x, |y| y)", Never),
             ("f(a, unsafe { b })", Allowed),
+            ("Ok(m! { a })", Preferred),
+            ("f(&m! { a })", Preferred),
+            ("f(a, m! { b })", Never),
             ("f(g(a))", WeakPreference),
             ("f(g(a, b))", WeakPreference),
             ("f(&g(a, b)?)", WeakPreference),

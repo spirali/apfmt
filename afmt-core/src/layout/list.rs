@@ -655,6 +655,18 @@ pub(crate) enum FlatLimit {
 }
 
 impl FlatLimit {
+    /// The single-line limit of the arguments `items` of a call or an attribute: `width`
+    /// (`fn_call_width`, `attr_fn_like_width`), but only `max_width` for a single item that cannot
+    /// hug the list as `hug` allows, or has no layout spanning more lines (a string literal,
+    /// `f(a::B::new())`, a macro call copied unchanged): broken, it would only move to a line of its
+    /// own, as rustfmt does not (`#[error("...")]`, `f("...")`)
+    pub fn of_arguments(fmt: &Formatter, items: &[ListItem], hug: Hug, width: u32) -> Self {
+        match items {
+            [item] if hug == Hug::Never || !fmt.has_line_break(&item.frag) => FlatLimit::MaxWidth,
+            _ => FlatLimit::Within(width),
+        }
+    }
+
     /// `frag` restricted to a single line, if it has a single-line layout and its width allows it
     pub fn apply(self, fmt: &Formatter, frag: Frag) -> Option<Frag> {
         match self {
@@ -787,9 +799,14 @@ pub(crate) fn delimited_list(
             BrokenList::Fill => fill_list(fmt, items, open.clone()),
             BrokenList::Aligned => aligned_list(fmt, items, open.clone()),
         };
-        // With a preferred overflow, the broken layouts are used only when it does not fit
+        // With a preferred overflow, the broken layouts are used only when it does not fit; an item
+        // that cannot span more lines has no overflow (a macro call copied on one line)
         match (&overflow, last_overflow) {
-            (Some(_), Overflow::Preferred(_) | Overflow::Only(_)) => fmt.dispreferred(broken),
+            (Some(_), Overflow::Preferred(last) | Overflow::Only(last))
+                if fmt.has_line_break(last) =>
+            {
+                fmt.dispreferred(broken)
+            }
             _ => broken,
         }
     });
