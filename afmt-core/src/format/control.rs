@@ -1,12 +1,13 @@
 //! `match` and loops
 
 use super::attr::{format_attr, format_with_attrs};
+use super::chain::operand_chain;
 use super::common::push_label;
 use super::expr::{
     ExprPosition, NestedPlainBlocks, format_added_braces, format_expr, format_expr_at,
-    ExprItem, format_expr_item, operand_chain,
     format_head_expr, format_head_with_block, plain_stmt_list, single_line_block_expr,
 };
+use super::expr_list::{ExprItem, format_expr_item};
 use super::pat::pat_layouts;
 use super::stmt::{format_block_expr, format_block_expr_with_tail};
 use crate::comments::has_comments;

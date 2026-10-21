@@ -92,11 +92,34 @@ impl<T> ListItem<T> {
     }
 }
 
-/// The only item of a list may overflow with its own layouts (HugList), e.g. the pattern of
-/// `Some(Foo {` / `...` / `})`; a list with more items is left as it is
-pub(crate) fn hug_single_item(items: &mut [ListItem]) {
-    if let [item] = items {
-        item.overflow = Overflow::With(item.frag.clone());
+/// How the last item of a list may hug it (overflow, see `Overflow`)
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Hug {
+    Never,
+    /// When the layout with fewer lines wins
+    Allowed,
+    /// Also in as many lines as the broken list, see `Overflow::WeakPreference`
+    WeakPreference,
+    /// Whenever it fits, see `Overflow::Preferred`
+    Preferred,
+}
+
+impl Hug {
+    /// The overflow of the last item, which may overflow by itself as `overflow`, as the hug allows
+    pub fn overflow(self, overflow: &Overflow) -> Overflow {
+        match (self, overflow) {
+            (Hug::Never, _) => Overflow::Never,
+            (Hug::Preferred, Overflow::With(frag)) => Overflow::Preferred(frag.clone()),
+            (Hug::WeakPreference, Overflow::With(frag)) => Overflow::WeakPreference(frag.clone()),
+            (_, overflow) => overflow.clone(),
+        }
+    }
+}
+
+/// The last item of a list may overflow with its own layouts as `hug` allows it
+pub(crate) fn hug_last_item(items: &mut [ListItem], hug: Hug) {
+    if let Some(item) = items.last_mut() {
+        item.overflow = hug.overflow(&Overflow::With(item.frag.clone()));
     }
 }
 

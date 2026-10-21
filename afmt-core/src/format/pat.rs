@@ -1,7 +1,8 @@
 //! Patterns
 
 use super::attr::format_with_attrs;
-use super::expr::{format_range, single_item_separator};
+use super::expr::format_range;
+use super::expr_list::single_item_separator;
 use super::path::{format_name_ref, format_path};
 use super::{format_unsupported, format_unsupported_kind};
 use crate::comments::{has_comments, is_code_kind, is_comment_kind, trivia_from};
@@ -11,7 +12,7 @@ use crate::formatter::{Builder, Formatter, Frag};
 use crate::layout::chain::{operator_chain, unindented_infix_chain, unindented_infix_fill};
 use crate::layout::head::HeadLayouts;
 use crate::layout::list::{
-    Delimiters, FlatLimit, ListLayout, TrailingSeparator, delimited_list, hug_single_item,
+    Delimiters, FlatLimit, Hug, ListLayout, TrailingSeparator, delimited_list, hug_last_item,
     list_items, list_items_cast,
 };
 use ra_ap_syntax::ast::{
@@ -63,16 +64,22 @@ fn is_combinable_pat(pat: &Pat) -> bool {
     }
 }
 
+/// How the last of the patterns `pats` in parentheses may hug them: a single combinable one (see
+/// `is_combinable_pat`), as a call argument does
+fn last_pat_hug(pats: &[Pat]) -> Hug {
+    match pats {
+        [pat] if is_combinable_pat(pat) => Hug::Allowed,
+        _ => Hug::Never,
+    }
+}
+
 /// The patterns in the parentheses of the tuple or tuple struct pattern `node`, laid out by
-/// `layout`; a single combinable one may overflow (see `is_combinable_pat`), as a call argument
-/// does
+/// `layout`; the last one may hug them (see `last_pat_hug`)
 fn format_pat_list(fmt: &Formatter, node: &SyntaxNode, layout: ListLayout) -> Frag {
     let pats = node.children().filter_map(Pat::cast).collect::<Vec<_>>();
-    let hug = matches!(pats.as_slice(), [pat] if is_combinable_pat(pat));
+    let hug = last_pat_hug(&pats);
     let mut items = list_items_cast(node, |p| format_pat(fmt, p));
-    if hug {
-        hug_single_item(&mut items);
-    }
+    hug_last_item(&mut items, hug);
     delimited_list(fmt, &Delimiters::parens_of(node), &items, layout)
 }
 
@@ -244,5 +251,49 @@ pub(super) fn format_pat(fmt: &Formatter, pat: Pat) -> Frag {
         Pat::RestPat(pat) => format_rest_pat(fmt, pat),
         Pat::RangePat(pat) => format_range_pat(fmt, pat),
         pat => format_unsupported_kind(fmt, pat.syntax()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Hug, last_pat_hug};
+    use ra_ap_syntax::ast::Pat;
+    use ra_ap_syntax::{AstNode, Edition, SourceFile, SyntaxKind};
+
+    /// The hug of the last pattern of the first tuple or tuple struct pattern in `pat`
+    fn hug(pat: &str) -> Hug {
+        let source = format!("fn f() {{ let {pat} = x; }}");
+        let parse = SourceFile::parse(&source, Edition::Edition2024);
+        let list = (parse.syntax_node().descendants())
+            .find(|n| {
+                matches!(
+                    n.kind(),
+                    SyntaxKind::TUPLE_PAT | SyntaxKind::TUPLE_STRUCT_PAT
+                )
+            })
+            .unwrap();
+        let pats = list.children().filter_map(Pat::cast).collect::<Vec<_>>();
+        last_pat_hug(&pats)
+    }
+
+    #[test]
+    fn last_pat_hugs() {
+        use Hug::{Allowed, Never};
+        for (pat, expected) in [
+            ("Some(a)", Never),
+            ("Some(_)", Never),
+            ("Some(Foo { a, b })", Allowed),
+            ("Some(Foo(a, b))", Allowed),
+            ("Some((a, b))", Allowed),
+            ("Some(&Foo { a })", Allowed),
+            ("Some(&mut (a, b))", Allowed),
+            ("Some([a, b])", Never),
+            ("Some(a | b)", Never),
+            ("Foo(a, Bar { b })", Never),
+            ("(Foo { a },)", Allowed),
+            ("(a, b)", Never),
+        ] {
+            assert_eq!(hug(pat), expected, "{pat}");
+        }
     }
 }

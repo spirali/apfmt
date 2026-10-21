@@ -6,7 +6,7 @@ use crate::comments::{has_comments, is_code_kind};
 use crate::formatter::Edge::{Operator, Tight, Word};
 use crate::formatter::{Builder, Formatter, Frag};
 use crate::layout::list::{
-    Delimiters, FlatLimit, ListItem, ListLayout, delimited_list, hug_single_item, list_items,
+    Delimiters, FlatLimit, Hug, ListItem, ListLayout, delimited_list, hug_last_item, list_items,
 };
 use ra_ap_syntax::ast::{
     Attr, CfgAtom, CfgAttrMeta, CfgPredicate, HasAttrs, KeyValueMeta, Meta, TokenTree,
@@ -121,22 +121,20 @@ fn format_key_value_meta(fmt: &Formatter, meta: KeyValueMeta) -> Frag {
 
 /// The comma-separated `items` of an attribute between the parentheses of `node`: on a single line
 /// if they fit within `attr_fn_like_width`, otherwise one per line, laid out as call arguments, or
-/// filled on lines with `fill`. A single item that is a list itself (`nested`) may overflow:
-/// `cfg(all(` / `...` / `))`; as in rustfmt, its own items are measured, not the item, so the outer
-/// list is on a single line whenever the inner one is. Filled derives are on a single line whenever
-/// it fits within `max_width`, as in rustfmt.
+/// filled on lines with `fill`. The last item may hug the list as `hug` allows (`cfg(all(` / `...` /
+/// `))`, see `cfg_list_hug` and `token_list_hug`); as in rustfmt, its own items are measured, not
+/// the item, so the outer list is on a single line whenever the inner one is. Filled derives are on
+/// a single line whenever it fits within `max_width`, as in rustfmt.
 fn format_meta_list(
     fmt: &Formatter,
     node: &SyntaxNode,
     mut items: Vec<ListItem>,
-    nested: bool,
+    hug: Hug,
     fill: bool,
 ) -> Frag {
-    if nested {
-        hug_single_item(&mut items);
-    }
+    hug_last_item(&mut items, hug);
     let delims = Delimiters::parens_of(node);
-    let limit = if nested || fill {
+    let limit = if hug != Hug::Never || fill {
         FlatLimit::MaxWidth
     } else {
         FlatLimit::Within(fmt.config().attr_fn_like_width)
@@ -156,21 +154,32 @@ fn is_nested_meta_list(node: &SyntaxNode) -> bool {
     )
 }
 
-/// The predicates of a `cfg` list and whether the only one is a list itself
-fn cfg_predicate_items(fmt: &Formatter, node: &SyntaxNode) -> (Vec<ListItem>, bool) {
-    let items = list_items(node, |child| {
-        CfgPredicate::cast(child).map(|p| format_cfg_predicate(fmt, p))
-    });
-    let nested = node.children().all(|child| is_nested_meta_list(&child));
-    (items, nested)
+/// How the last predicate of the `cfg` list `node` may hug it: a single one that is a list itself
+fn cfg_list_hug(node: &SyntaxNode) -> Hug {
+    let predicates = node
+        .children()
+        .filter_map(CfgPredicate::cast)
+        .collect::<Vec<_>>();
+    match predicates.as_slice() {
+        [single] if is_nested_meta_list(single.syntax()) => Hug::Allowed,
+        _ => Hug::Never,
+    }
 }
 
 /// `cfg(a, b)`, `any(a, b)`, `all(a, b)` or `not(a)`: `keyword` and the predicates of `node`
 fn format_cfg_list(fmt: &Formatter, keyword: SyntaxToken, node: &SyntaxNode) -> Frag {
     let mut builder = Builder::new(fmt);
     builder.push_token(keyword, Word);
-    let (items, nested) = cfg_predicate_items(fmt, node);
-    builder.push(format_meta_list(fmt, node, items, nested, false));
+    let items = list_items(node, |child| {
+        CfgPredicate::cast(child).map(|p| format_cfg_predicate(fmt, p))
+    });
+    builder.push(format_meta_list(
+        fmt,
+        node,
+        items,
+        cfg_list_hug(node),
+        false,
+    ));
     builder.into_frag()
 }
 
@@ -184,7 +193,13 @@ fn format_cfg_attr_meta(fmt: &Formatter, meta: CfgAttrMeta) -> Frag {
             None => Meta::cast(node).map(|m| format_meta(fmt, m)),
         }
     });
-    builder.push(format_meta_list(fmt, meta.syntax(), items, false, false));
+    builder.push(format_meta_list(
+        fmt,
+        meta.syntax(),
+        items,
+        Hug::Never,
+        false,
+    ));
     builder.into_frag()
 }
 
@@ -239,13 +254,7 @@ fn format_token_list(fmt: &Formatter, tree: TokenTree, fill_paths: bool) -> Frag
     let Some(segments) = meta_segments(&tree) else {
         return Delimiters::of_token_tree(&tree).format_reindented(fmt);
     };
-    // A single `a(...)`: a path followed by a token tree
-    let nested = match &segments[..] {
-        [(segment, _)] => segment
-            .last()
-            .is_some_and(|e| e.kind() == SyntaxKind::TOKEN_TREE),
-        _ => false,
-    };
+    let hug = token_list_hug(&segments);
     let fill = fill_paths && segments.iter().all(|(segment, _)| is_path_segment(segment));
     let items = segments
         .into_iter()
@@ -254,7 +263,22 @@ fn format_token_list(fmt: &Formatter, tree: TokenTree, fill_paths: bool) -> Frag
             ..ListItem::new(format_meta_segment(fmt, segment))
         })
         .collect::<Vec<_>>();
-    format_meta_list(fmt, tree.syntax(), items, nested, fill)
+    format_meta_list(fmt, tree.syntax(), items, hug, fill)
+}
+
+/// How the last meta item of a token tree may hug it: a single `a(...)`, a path followed by a token
+/// tree
+fn token_list_hug(segments: &[MetaSegment]) -> Hug {
+    match segments {
+        [(segment, _)]
+            if segment
+                .last()
+                .is_some_and(|e| e.kind() == SyntaxKind::TOKEN_TREE) =>
+        {
+            Hug::Allowed
+        }
+        _ => Hug::Never,
+    }
 }
 
 /// The tokens of a meta item in a token tree, without trivia, and the comma following it
@@ -350,4 +374,45 @@ fn format_meta_segment(fmt: &Formatter, segment: Vec<SyntaxElement>) -> Frag {
         }
     }
     builder.into_frag()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Hug, cfg_list_hug, meta_segments, token_list_hug};
+    use ra_ap_syntax::ast::TokenTree;
+    use ra_ap_syntax::{AstNode, Edition, SourceFile, SyntaxKind};
+
+    /// The hug of the last item of the first `cfg` composite (`all(...)`, ...) or token tree list
+    /// in the attribute `attr`
+    fn hug(attr: &str) -> Hug {
+        let source = format!("{attr} fn f() {{}}");
+        let parse = SourceFile::parse(&source, Edition::Edition2024);
+        let mut nodes = parse.syntax_node().descendants();
+        let list = nodes
+            .find(|n| matches!(n.kind(), SyntaxKind::CFG_COMPOSITE | SyntaxKind::TOKEN_TREE))
+            .unwrap();
+        match TokenTree::cast(list.clone()) {
+            Some(tree) => token_list_hug(&meta_segments(&tree).unwrap()),
+            None => cfg_list_hug(&list),
+        }
+    }
+
+    #[test]
+    fn last_meta_hugs() {
+        use Hug::{Allowed, Never};
+        for (attr, expected) in [
+            ("#[cfg(not(a))]", Never),
+            ("#[cfg(all(a, b))]", Never),
+            ("#[cfg(not(all(a, b)))]", Allowed),
+            ("#[cfg(any(all(a, b)))]", Allowed),
+            ("#[cfg(all(a, any(b)))]", Never),
+            ("#[cfg(all(any(a), any(b)))]", Never),
+            ("#[allow(dead_code)]", Never),
+            ("#[allow(a, b)]", Never),
+            ("#[serde(rename(serialize = \"a\"))]", Allowed),
+            ("#[serde(a, rename(b))]", Never),
+        ] {
+            assert_eq!(hug(attr), expected, "{attr}");
+        }
+    }
 }

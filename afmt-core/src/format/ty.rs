@@ -1,7 +1,7 @@
 //! Types
 
 use super::expr::format_expr;
-use super::expr::single_item_separator;
+use super::expr_list::single_item_separator;
 use super::format_unsupported_kind;
 use super::generics::{format_for_binder, format_type_bound_list};
 use super::item::{format_param_list, push_qualifiers};

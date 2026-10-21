@@ -1,10 +1,8 @@
 //! Macro calls and macro definitions (`macro_rules!`)
 
 use super::common::format_name;
-use super::expr::{
-    format_array_expr, format_expr, format_expr_list, is_simple_expr, plain_stmt_list,
-    single_line_block_expr,
-};
+use super::expr::{format_expr, plain_stmt_list, single_line_block_expr};
+use super::expr_list::{format_array_expr, format_expr_list, is_simple_expr};
 use super::format_reindented;
 use super::item::format_item_list;
 use super::path::format_path;

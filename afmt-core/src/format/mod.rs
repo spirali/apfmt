@@ -1,9 +1,12 @@
 //! Transformation of the Rust syntax tree into a doc, one module per syntax category
 
 mod attr;
+mod chain;
+mod closure;
 mod common;
 mod control;
 mod expr;
+mod expr_list;
 mod generics;
 mod item;
 mod macros;
