@@ -82,10 +82,12 @@ fn bin_chain_operands(fmt: &Formatter, expr: BinExpr) -> (Frag, Vec<(Frag, Frag)
     (first, rest)
 }
 
-/// `lhs = rhs`, `lhs += rhs`, ...: broken after the operator, like `let`
+/// `lhs = rhs`, `lhs += rhs`, ...: broken after the operator, like `let`, and the left side,
+/// a place or a destructuring target, broken only when nothing else helps, like the pattern of
+/// `let`
 fn format_assignment(fmt: &Formatter, expr: BinExpr) -> Frag {
     let mut builder = Builder::new(fmt);
-    builder.push(format_expr(fmt, expr.lhs().unwrap()));
+    builder.push(fmt.keep_together(format_expr(fmt, expr.lhs().unwrap())));
     builder.push_token(expr.op_token().unwrap(), Operator);
     builder.push(fmt.same_or_indented_line(format_expr(fmt, expr.rhs().unwrap())));
     builder.into_frag()
