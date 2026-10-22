@@ -1,6 +1,6 @@
 use crate::config::Config;
 use crate::content::{Content, ContentArena};
-use crate::doc::{AlignGroup, DocArena, DocId, DocNode, Preference, WeakPreference};
+use crate::doc::{AlignGroup, Cost, DocArena, DocId, DocNode, LINE_COST, WeakPreference};
 use smallvec::{SmallVec, smallvec};
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -16,11 +16,12 @@ struct Measure {
     /// line that overflows (see `overflow`); saturating, a single line can be very long (e.g. an
     /// embedded blob of data)
     badness: u32,
-    /// Compared after `badness`, the higher the better: e.g. minus the splits (see
-    /// `DocNode::Preference`, `DocNode::KeepTogether`)
-    preference: Preference,
-    height: u32,
-    /// Compared after `height`, the higher the better (see `DocNode::WeakPreference`)
+    /// Compared after `badness`, the lower the better: `LINE_COST` for each line plus the costs
+    /// (see `DocNode::Cost`, `DocNode::KeepTogether`)
+    cost: i64,
+    /// The layout spans more than one line
+    multi_line: bool,
+    /// Compared after `cost`, the higher the better (see `DocNode::WeakPreference`)
     weak_preference: WeakPreference,
 }
 
@@ -40,12 +41,12 @@ fn overflow(col: u32, last: u32, config: &Config) -> u32 {
 impl Measure {
     fn from_text(col: u32, config: &Config, text: &str) -> Self {
         let mut badness = 0u32;
-        let mut height = 0;
+        let mut line_breaks = 0;
         let mut start = col;
         let mut last = col;
         for (i, line) in text.split('\n').enumerate() {
             if i > 0 {
-                height += 1;
+                line_breaks += 1;
                 start = 0;
             }
             last = start + text_width(line);
@@ -54,8 +55,8 @@ impl Measure {
         Measure {
             last: Some(last),
             badness,
-            preference: Preference::NEUTRAL,
-            height,
+            cost: i64::from(line_breaks) * i64::from(LINE_COST),
+            multi_line: line_breaks > 0,
             weak_preference: WeakPreference::NEUTRAL,
         }
     }
@@ -64,8 +65,8 @@ impl Measure {
         Measure {
             last: ctx.col,
             badness: 0,
-            preference: Preference::NEUTRAL,
-            height: 0,
+            cost: 0,
+            multi_line: false,
             weak_preference: WeakPreference::NEUTRAL,
         }
     }
@@ -78,13 +79,12 @@ impl Measure {
         }
     }
 
-    /// The order of layouts from the best (`Less`): the overflow, then the preference, then the
-    /// lines, then the weak preference
+    /// The order of layouts from the best (`Less`): the overflow, then the cost (lines and
+    /// `Cost`s), then the weak preference
     fn rank_cmp(&self, other: &Measure) -> Ordering {
         self.badness
             .cmp(&other.badness)
-            .then(other.preference.cmp(&self.preference))
-            .then(self.height.cmp(&other.height))
+            .then(self.cost.cmp(&other.cost))
             .then(other.weak_preference.cmp(&self.weak_preference))
     }
 }
@@ -111,7 +111,7 @@ impl Context {
     fn after(&self, measure: &Measure) -> Context {
         Context {
             col: measure.last,
-            first_line_end: self.first_line_end.filter(|_| measure.height == 0),
+            first_line_end: self.first_line_end.filter(|_| !measure.multi_line),
             ..*self
         }
     }
@@ -157,11 +157,11 @@ impl LayoutSet {
         println!("LayoutSet [{}]:", self.layouts.len());
         for (idx, layout) in self.layouts.iter().enumerate() {
             println!(
-                ">> idx={} last={} baddess={} height={}",
+                ">> idx={} last={} baddess={} multi_line={}",
                 idx,
                 layout.measure.last,
                 layout.measure.badness,
-                layout.measure.height,
+                layout.measure.multi_line,
             );
         }
     }*/
@@ -436,10 +436,10 @@ impl<'a> Resolver<'a> {
                     let layout_set = results.pop().unwrap();
                     results.push(indented(&mut self.content_arena, indent, layout_set));
                 }
-                Task::Preference(preference) => {
+                Task::Cost(cost) => {
                     for layout in &mut results.last_mut().unwrap().layouts {
                         let measure = &mut layout.measure;
-                        measure.preference = measure.preference.saturating_add(preference);
+                        measure.cost += i64::from(cost);
                     }
                 }
                 Task::WeakPreference(preference) => {
@@ -449,11 +449,11 @@ impl<'a> Resolver<'a> {
                             measure.weak_preference.saturating_add(preference);
                     }
                 }
-                Task::KeepTogether(preference) => {
+                Task::KeepTogether(cost) => {
                     for layout in &mut results.last_mut().unwrap().layouts {
                         let measure = &mut layout.measure;
-                        if measure.height > 0 {
-                            measure.preference = measure.preference.saturating_add(preference);
+                        if measure.multi_line {
+                            measure.cost += i64::from(cost);
                         }
                     }
                 }
@@ -462,7 +462,7 @@ impl<'a> Resolver<'a> {
                         .last_mut()
                         .unwrap()
                         .layouts
-                        .retain(|layout| layout.measure.height > 0);
+                        .retain(|layout| layout.measure.multi_line);
                 }
                 Task::IgnoreOverflow => {
                     for layout in &mut results.last_mut().unwrap().layouts {
@@ -506,11 +506,8 @@ impl<'a> Resolver<'a> {
                                 .measure
                                 .badness
                                 .saturating_add(layout1.measure.badness);
-                            layout2.measure.preference = layout2
-                                .measure
-                                .preference
-                                .saturating_add(layout1.measure.preference);
-                            layout2.measure.height += layout1.measure.height;
+                            layout2.measure.cost += layout1.measure.cost;
+                            layout2.measure.multi_line |= layout1.measure.multi_line;
                             layout2.measure.weak_preference = layout2
                                 .measure
                                 .weak_preference
@@ -583,8 +580,8 @@ impl<'a> Resolver<'a> {
                 measure: Measure {
                     last: None,
                     badness: 0,
-                    preference: Preference::NEUTRAL,
-                    height: 1,
+                    cost: i64::from(LINE_COST),
+                    multi_line: true,
                     weak_preference: WeakPreference::NEUTRAL,
                 },
                 content: Content::Newline,
@@ -601,16 +598,16 @@ impl<'a> Resolver<'a> {
             DocNode::Flat(d) => {
                 return Some((Context { flat: true, ..ctx }, *d));
             }
-            DocNode::Preference(d, preference) => {
-                tasks.push(Task::Preference(*preference));
+            DocNode::Cost(d, cost) => {
+                tasks.push(Task::Cost(*cost));
                 return Some((ctx, *d));
             }
             DocNode::WeakPreference(d, preference) => {
                 tasks.push(Task::WeakPreference(*preference));
                 return Some((ctx, *d));
             }
-            DocNode::KeepTogether(d, preference) => {
-                tasks.push(Task::KeepTogether(*preference));
+            DocNode::KeepTogether(d, cost) => {
+                tasks.push(Task::KeepTogether(*cost));
                 return Some((ctx, *d));
             }
             DocNode::MultiLine(d) => {
@@ -660,9 +657,9 @@ impl<'a> Resolver<'a> {
 enum Task {
     Resolve(Context, DocId),
     Indent(u32),
-    Preference(Preference),
+    Cost(Cost),
     WeakPreference(WeakPreference),
-    KeepTogether(Preference),
+    KeepTogether(Cost),
     MultiLine,
     ShortLastLine(u32),
     IgnoreOverflow,

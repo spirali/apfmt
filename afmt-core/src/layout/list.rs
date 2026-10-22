@@ -726,8 +726,9 @@ pub(crate) fn keyword_list(
 }
 
 /// The last item overflows with its layouts `last_layouts` (see `Overflow`); the items in front of it
-/// are on the line of the opening delimiter, within the width of `limit` (as rustfmt does). The last
-/// item has a comma only if it is `Required` (`(match a {` / `...` / `},)`).
+/// and the first line of the last one are on the line of the opening delimiter, within the width of
+/// `limit` (as rustfmt does: `f(a, b, |x| {` is a single-line call as wide as its first line). The
+/// last item has a comma only if it is `Required` (`(match a {` / `...` / `},)`).
 fn overflow_layout(
     fmt: &Formatter,
     delims: &Delimiters,
@@ -737,21 +738,34 @@ fn overflow_layout(
     trailing: TrailingSeparator,
 ) -> Option<Frag> {
     let rest = &items[..items.len() - 1];
-    let mut overflow = if rest.is_empty() {
-        Builder::with_cursor(fmt, Some(delims.open.clone()))
+    let (mut overflow, last_layouts) = if rest.is_empty() {
+        let overflow = Builder::with_cursor(fmt, Some(delims.open.clone()));
+        (overflow, last_layouts.clone())
     } else {
-        let mut line = Builder::new(fmt);
-        line.push(flat_layout(
-            fmt,
-            delims,
-            rest,
-            limit,
-            TrailingSeparator::Required,
-        )?);
-        line
+        let line = flat_layout(fmt, delims, rest, limit, TrailingSeparator::Required)?;
+        let last_layouts = match limit {
+            FlatLimit::MaxWidth => last_layouts.clone(),
+            FlatLimit::Within(width) => {
+                // The items in front, their trailing comma and the space after it
+                let rest_width = fmt.min_flat_width(&line).unwrap_or(0) + 1;
+                let first_line_width = width.checked_sub(rest_width).filter(|&w| w > 0)?;
+                // Not squeezed into the width by a layout that costs a split (`|x| match x` / `{`,
+                // braces added around a match): the list is broken instead, as rustfmt does
+                if fmt
+                    .natural_first_line_width(last_layouts)
+                    .is_some_and(|w| w > first_line_width)
+                {
+                    return None;
+                }
+                fmt.first_line_within(last_layouts.clone(), first_line_width)
+            }
+        };
+        let mut overflow = Builder::new(fmt);
+        overflow.push(line);
+        (overflow, last_layouts)
     };
     overflow.flush_trivia();
-    overflow.push(last_layouts.clone());
+    overflow.push(last_layouts);
     let last = items.last().unwrap();
     push_or_skip_comma(&mut overflow, last, trailing == TrailingSeparator::Required);
     overflow.flush_trivia();

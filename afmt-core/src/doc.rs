@@ -16,30 +16,38 @@ impl DocId {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct DocStrId(u32);
 
-/// How much a layout is preferred (`DocNode::Preference`, `DocNode::KeepTogether`): positive is
-/// preferred, negative dispreferred, in splits (`DISPREFERRED` is one); compared right after the
-/// overflow, before the number of lines
+/// The cost of one line of a layout: the resolver ranks layouts by the overflow, then by their
+/// cost, the lines times `LINE_COST` plus their `Cost`s
+pub(crate) const LINE_COST: i32 = 10;
+
+/// The cost of a split: more than any difference in lines between the layouts of real code, so a
+/// layout with fewer splits is better whatever the lines
+pub(crate) const SPLIT_COST: i32 = 1000 * LINE_COST;
+
+/// What a layout costs on top of its lines (`DocNode::Cost`, `DocNode::KeepTogether`), the higher
+/// the worse, in the units of `LINE_COST`: mostly whole splits (`Cost::SPLIT`)
 #[derive(Debug, Clone, Copy, Ord, PartialOrd, Eq, PartialEq)]
-pub(crate) struct Preference(i32);
+pub(crate) struct Cost(i32);
 
-impl Preference {
-    pub const NEUTRAL: Preference = Preference(0);
-    pub const DISPREFERRED: Preference = Preference(-1);
-
-    #[inline]
-    pub const fn new(value: i32) -> Self {
-        Preference(value)
-    }
+impl Cost {
+    pub const SPLIT: Cost = Cost::splits(1);
 
     #[inline]
-    pub fn saturating_add(self, other: Preference) -> Self {
-        Preference(self.0.saturating_add(other.0))
+    pub const fn splits(count: i32) -> Self {
+        Cost(count * SPLIT_COST)
     }
 }
 
-/// How much a layout is preferred among layouts that are otherwise equal (the same overflow, splits
-/// and lines, see `DocNode::WeakPreference`): positive is preferred, negative dispreferred; a type of
-/// its own, never mixed with a `Preference`
+impl From<Cost> for i64 {
+    #[inline]
+    fn from(cost: Cost) -> i64 {
+        i64::from(cost.0)
+    }
+}
+
+/// How much a layout is preferred among layouts that are otherwise equal (the same overflow and cost,
+/// see `DocNode::WeakPreference`): positive is preferred, negative dispreferred; a type of
+/// its own, never mixed with a `Cost`
 #[derive(Debug, Clone, Copy, Ord, PartialOrd, Eq, PartialEq)]
 pub(crate) struct WeakPreference(i32);
 
@@ -83,13 +91,13 @@ pub(crate) enum DocNode {
     /// Only layouts of the inner doc that span more than one line
     MultiLine(DocId),
     /// The inner doc should stay on one line if possible: its layouts spanning more lines get the
-    /// preference (negative, e.g. a split)
-    KeepTogether(DocId, Preference),
-    /// Every layout of the inner doc gets the preference, compared right after the overflow: e.g. a
-    /// split, a layout the Style Guide accepts only as a fallback, used only when the layouts without
+    /// cost (e.g. a split)
+    KeepTogether(DocId, Cost),
+    /// Every layout of the inner doc gets the cost (see `LINE_COST`), compared right after the
+    /// overflow: e.g. a split, a layout the Style Guide accepts only as a fallback, used only when the layouts without
     /// it are worse
-    Preference(DocId, Preference),
-    /// Every layout of the inner doc gets the preference, compared only after the number of lines:
+    Cost(DocId, Cost),
+    /// Every layout of the inner doc gets the preference, compared only after the cost (the lines):
     /// it decides between layouts that are otherwise equally good, e.g. the Style Guide's preference
     /// that does not justify a longer layout
     WeakPreference(DocId, WeakPreference),
@@ -110,21 +118,34 @@ pub(crate) enum DocNode {
 }
 
 /// What the walks of `DocArena` (`min_flat_width`, `has_flat_layout`, `has_multi_line_text`,
-/// `has_line_break`) know about an `Alt` node, computed the first time a walk reaches it and kept in
+/// `has_line_break`, `natural_first_line_width`) know about an `Alt` node, computed the first time a walk reaches it and kept in
 /// `DocArena::alt_infos`: a doc shared by many alternatives is then walked once, not once per path to
 /// it (exponential in the nesting)
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct AltInfo {
     flags: AltFlags,
     /// The narrowest single line of a branch (see `DocArena::min_flat_width`), if
-    /// `AltFlags::HAS_SINGLE_LINE`; a plain `u32` keeps `AltInfo` at 8 bytes (`Option<u32>` takes 8)
+    /// `AltFlags::HAS_SINGLE_LINE`; plain `u32`s keep `AltInfo` at 16 bytes (as `Option<u32>`s, 24)
     min_flat_width: u32,
+    /// The natural widths of the branches (see `DocArena::natural_widths`), if
+    /// `AltFlags::HAS_NATURAL_FLAT` / `AltFlags::HAS_NATURAL_FIRST_LINE`
+    natural_flat: u32,
+    natural_first_line: u32,
 }
 
 impl AltInfo {
     /// The narrowest single line of a branch (see `DocArena::min_flat_width`)
     fn min_flat_width(self) -> Option<u32> {
         (self.flags.contains(AltFlags::HAS_SINGLE_LINE)).then_some(self.min_flat_width)
+    }
+
+    /// The natural widths of the branches (see `DocArena::natural_widths`)
+    fn natural_widths(self) -> NaturalWidths {
+        NaturalWidths {
+            flat: (self.flags.contains(AltFlags::HAS_NATURAL_FLAT)).then_some(self.natural_flat),
+            first_line: (self.flags.contains(AltFlags::HAS_NATURAL_FIRST_LINE))
+                .then_some(self.natural_first_line),
+        }
     }
 }
 
@@ -140,6 +161,10 @@ bitflags::bitflags! {
         const HAS_LINE_BREAK = 1 << 2;
         /// A branch has a single line without a line break (`AltInfo::min_flat_width`)
         const HAS_SINGLE_LINE = 1 << 3;
+        /// A branch has a natural single line (`AltInfo::natural_widths`)
+        const HAS_NATURAL_FLAT = 1 << 4;
+        /// A branch has a natural first line (`AltInfo::natural_widths`)
+        const HAS_NATURAL_FIRST_LINE = 1 << 5;
     }
 }
 
@@ -148,6 +173,36 @@ pub(crate) struct DocArena {
     strings: Vec<Box<str>>,
     /// The facts of the `Alt` nodes reached by the walks so far
     alt_infos: HashMap<DocId, AltInfo>,
+}
+
+/// The narrowest lines of a doc in its layouts that take no dispreferred choice (a `Cost`, a
+/// broken `KeepTogether`) on them, see
+/// `DocArena::natural_first_line_width`
+#[derive(Clone, Copy, Debug)]
+struct NaturalWidths {
+    /// The narrowest single line
+    flat: Option<u32>,
+    /// The narrowest first line of a layout with a line break, up to it; what follows the line
+    /// break is free
+    first_line: Option<u32>,
+}
+
+impl NaturalWidths {
+    const NONE: NaturalWidths = NaturalWidths {
+        flat: None,
+        first_line: None,
+    };
+
+    fn min(self, other: NaturalWidths) -> NaturalWidths {
+        let min = |a: Option<u32>, b: Option<u32>| match (a, b) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        NaturalWidths {
+            flat: min(self.flat, other.flat),
+            first_line: min(self.first_line, other.first_line),
+        }
+    }
 }
 
 pub(crate) const NEWLINE_DOC: DocId = DocId(0);
@@ -240,7 +295,7 @@ impl DocArena {
             | &DocNode::Nest(d)
             | &DocNode::Align(d)
             | &DocNode::KeepTogether(d, _)
-            | &DocNode::Preference(d, _)
+            | &DocNode::Cost(d, _)
             | &DocNode::WeakPreference(d, _)
             | &DocNode::ShortLastLine(d)
             | &DocNode::IgnoreOverflow(d) => self.min_flat_width(d),
@@ -265,7 +320,7 @@ impl DocArena {
             | &DocNode::Flat(d)
             | &DocNode::MultiLine(d)
             | &DocNode::KeepTogether(d, _)
-            | &DocNode::Preference(d, _)
+            | &DocNode::Cost(d, _)
             | &DocNode::WeakPreference(d, _)
             | &DocNode::ShortLastLine(d)
             | &DocNode::IgnoreOverflow(d) => self.has_flat_layout(d),
@@ -290,7 +345,7 @@ impl DocArena {
             | &DocNode::Flat(d)
             | &DocNode::MultiLine(d)
             | &DocNode::KeepTogether(d, _)
-            | &DocNode::Preference(d, _)
+            | &DocNode::Cost(d, _)
             | &DocNode::WeakPreference(d, _)
             | &DocNode::ShortLastLine(d)
             | &DocNode::IgnoreOverflow(d)
@@ -309,13 +364,100 @@ impl DocArena {
             | &DocNode::Align(d)
             | &DocNode::MultiLine(d)
             | &DocNode::KeepTogether(d, _)
-            | &DocNode::Preference(d, _)
+            | &DocNode::Cost(d, _)
             | &DocNode::WeakPreference(d, _)
             | &DocNode::ShortLastLine(d)
             | &DocNode::IgnoreOverflow(d)
             | &DocNode::FirstLineWithin(d, _) => self.has_line_break(d),
             &DocNode::Concat(a, b) => self.has_line_break(a) || self.has_line_break(b),
             DocNode::Alt(..) => self.alt_flag(doc, AltFlags::HAS_LINE_BREAK),
+        }
+    }
+
+    /// The width of the narrowest first line of the doc in a layout with a line break that takes no
+    /// dispreferred choice up to it (a `Cost`, or a `KeepTogether` with one broken there), `None` if there is none: how wide the first line of the doc is when nothing is
+    /// squeezed into a narrower one at a cost (`match x` / `{`, braces added around a match). Exact
+    /// in that sense, as the other walks; not the width of the layout the resolver places.
+    pub fn natural_first_line_width(&mut self, doc: DocId) -> Option<u32> {
+        self.natural_widths(doc).first_line
+    }
+
+    fn natural_widths(&mut self, doc: DocId) -> NaturalWidths {
+        let text = |text: &str| match text.split_once('\n') {
+            None => NaturalWidths {
+                flat: Some(text_width(text)),
+                first_line: None,
+            },
+            Some((first, _)) => NaturalWidths {
+                flat: None,
+                first_line: Some(text_width(first)),
+            },
+        };
+        match self.get_node(doc) {
+            DocNode::Token(token) => text(token.text()),
+            DocNode::Text(t) => text(self.get_text(*t)),
+            DocNode::Empty | DocNode::AlignMark(_) => NaturalWidths {
+                flat: Some(0),
+                first_line: None,
+            },
+            DocNode::Newline => NaturalWidths {
+                flat: None,
+                first_line: Some(0),
+            },
+            &DocNode::Nest(d)
+            | &DocNode::Align(d)
+            | &DocNode::WeakPreference(d, _)
+            | &DocNode::ShortLastLine(d)
+            | &DocNode::IgnoreOverflow(d) => self.natural_widths(d),
+            &DocNode::Cost(d, cost) => {
+                if cost.0 > 0 {
+                    NaturalWidths::NONE
+                } else {
+                    self.natural_widths(d)
+                }
+            }
+            &DocNode::KeepTogether(d, cost) => {
+                let widths = self.natural_widths(d);
+                NaturalWidths {
+                    first_line: widths.first_line.filter(|_| cost.0 <= 0),
+                    ..widths
+                }
+            }
+            &DocNode::Flat(d) => NaturalWidths {
+                first_line: None,
+                ..self.natural_widths(d)
+            },
+            &DocNode::MultiLine(d) => NaturalWidths {
+                flat: None,
+                ..self.natural_widths(d)
+            },
+            &DocNode::FirstLineWithin(d, width) => {
+                let widths = self.natural_widths(d);
+                NaturalWidths {
+                    flat: widths.flat.filter(|&w| w <= width),
+                    first_line: widths.first_line.filter(|&w| w <= width),
+                }
+            }
+            &DocNode::Concat(a, b) => {
+                let first = self.natural_widths(a);
+                let Some(flat) = first.flat else {
+                    return NaturalWidths {
+                        flat: None,
+                        first_line: first.first_line,
+                    };
+                };
+                let second = self.natural_widths(b);
+                let after = |w: Option<u32>| w.map(|w| flat.saturating_add(w));
+                NaturalWidths {
+                    flat: after(second.flat),
+                    first_line: first.first_line,
+                }
+                .min(NaturalWidths {
+                    flat: None,
+                    first_line: after(second.first_line),
+                })
+            }
+            DocNode::Alt(..) => self.alt_info(doc).natural_widths(),
         }
     }
 
@@ -350,9 +492,14 @@ impl DocArena {
             (width1, width2) => width1.or(width2),
         };
         flags.set(AltFlags::HAS_SINGLE_LINE, min_flat_width.is_some());
+        let natural = self.natural_widths(doc1).min(self.natural_widths(doc2));
+        flags.set(AltFlags::HAS_NATURAL_FLAT, natural.flat.is_some());
+        flags.set(AltFlags::HAS_NATURAL_FIRST_LINE, natural.first_line.is_some());
         let info = AltInfo {
             flags,
             min_flat_width: min_flat_width.unwrap_or(0),
+            natural_flat: natural.flat.unwrap_or(0),
+            natural_first_line: natural.first_line.unwrap_or(0),
         };
         self.alt_infos.insert(doc, info);
         info
@@ -382,13 +529,13 @@ impl DocArena {
                 DocNode::Align(_) => ("Align".into(), "parallelogram", "aquamarine"),
                 DocNode::Flat(_) => ("Flat".into(), "hexagon", "pink"),
                 DocNode::MultiLine(_) => ("MultiLine".into(), "octagon", "plum"),
-                DocNode::KeepTogether(_, preference) => (
-                    format!("KeepTogether {}", preference.0),
+                DocNode::KeepTogether(_, cost) => (
+                    format!("KeepTogether {}", cost.0),
                     "doubleoctagon",
                     "khaki",
                 ),
-                DocNode::Preference(_, preference) => (
-                    format!("Preference {}", preference.0),
+                DocNode::Cost(_, cost) => (
+                    format!("Cost {}", cost.0),
                     "tripleoctagon",
                     "khaki",
                 ),
@@ -430,7 +577,7 @@ impl DocArena {
                 | DocNode::Flat(d)
                 | DocNode::MultiLine(d)
                 | DocNode::KeepTogether(d, _)
-                | DocNode::Preference(d, _)
+                | DocNode::Cost(d, _)
                 | DocNode::WeakPreference(d, _)
                 | DocNode::ShortLastLine(d)
                 | DocNode::FirstLineWithin(d, _)
@@ -490,8 +637,8 @@ impl DocArena {
                 make_ident();
                 println!(")");
             }
-            DocNode::Preference(d, preference) => {
-                println!("Preference[{}](", preference.0);
+            DocNode::Cost(d, cost) => {
+                println!("Cost[{}](", cost.0);
                 self.dump_helper(*d, indent + 1);
                 make_ident();
                 println!(")");
@@ -502,8 +649,8 @@ impl DocArena {
                 make_ident();
                 println!(")");
             }
-            DocNode::KeepTogether(d, preference) => {
-                println!("KeepTogether[{}](", preference.0);
+            DocNode::KeepTogether(d, cost) => {
+                println!("KeepTogether[{}](", cost.0);
                 self.dump_helper(*d, indent + 1);
                 make_ident();
                 println!(")");
