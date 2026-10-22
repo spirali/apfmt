@@ -6,7 +6,7 @@ use super::ty::format_type;
 use crate::format::common::{format_lifetime, format_name};
 use crate::formatter::Edge::{Comma, Keyword, Operator, Tight, Word};
 use crate::formatter::{Builder, Formatter, Frag};
-use crate::layout::chain::{infix_chain, operator_chain};
+use crate::layout::chain::{infix_chain, operator_chain, unindented_infix_chain};
 use crate::layout::list::{
     Delimiters, FlatLimit, ListItem, ListLayout, TrailingSeparator, delimited_list, keyword_list,
     list_items_cast,
@@ -115,10 +115,23 @@ fn push_bounds(
 /// `A + B + 'a`: on one line, or broken before every `+`; a type, so kept on
 /// one line if possible
 pub(super) fn format_type_bound_list(fmt: &Formatter, list: TypeBoundList) -> Frag {
-    let (first, rest) = operator_chain(fmt, list.syntax(), SyntaxKind::PLUS, |node| {
-        format_type_bound(fmt, TypeBound::cast(node).unwrap())
-    });
+    let (first, rest) = type_bound_operands(fmt, &list);
     fmt.keep_together(infix_chain(fmt, first, &rest))
+}
+
+/// `A + B + 'a` as `format_type_bound_list`, but broken with every `+` at the indentation of the
+/// first bound, for bounds that already start an indented line (supertraits: `trait A:` / `    B`
+/// / `    + C`, Style Guide)
+pub(super) fn format_unindented_type_bound_list(fmt: &Formatter, list: TypeBoundList) -> Frag {
+    let (first, rest) = type_bound_operands(fmt, &list);
+    fmt.keep_together(unindented_infix_chain(fmt, first, &rest))
+}
+
+/// The first bound of `list` and the (`+`, bound) pairs following it
+fn type_bound_operands(fmt: &Formatter, list: &TypeBoundList) -> (Frag, Vec<(Frag, Frag)>) {
+    operator_chain(fmt, list.syntax(), SyntaxKind::PLUS, |node| {
+        format_type_bound(fmt, TypeBound::cast(node).unwrap())
+    })
 }
 
 /// `'a`, `use<'a, T>` or a trait bound (see `push_trait_bound`), in the parentheses of the source

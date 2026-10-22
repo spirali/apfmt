@@ -1,5 +1,6 @@
 //! Chains: binary operators (`a && b && c`) and postfix chains (`a.b().c()?`)
 
+use crate::doc::WeakPreference;
 use crate::formatter::Edge::Operator;
 use crate::formatter::{Builder, Formatter, Frag};
 use crate::layout::head::HeadLayouts;
@@ -272,10 +273,17 @@ fn lines_after_head(fmt: &Formatter, head: &Frag, lines: &[Frag]) -> (Frag, Opti
     let mut layout = indented.into_frag();
     let broken_head = fmt.multi_line(head.clone());
     if !short {
+        // At the indentation of the head only after a short last line, a closing delimiter (`)`,
+        // `))`); after a continuation line, they would be left of it (`(a` / `    + b)` /
+        // `    .c()`), preferred when both are possible
         let mut unindented = Builder::new(fmt);
-        unindented.push(broken_head.clone());
+        unindented.push(fmt.short_last_line(broken_head.clone()));
         unindented.push_lines(lines.iter().cloned(), false);
-        layout = fmt.alt_frag(layout, unindented.into_frag());
+        let unindented = fmt.weak_preference(unindented.into_frag(), WeakPreference::PREFERRED);
+        let mut indented = Builder::new(fmt);
+        indented.push(broken_head.clone());
+        indented.push_lines(lines.iter().cloned(), true);
+        layout = fmt.alt_frag(fmt.alt_frag(layout, indented.into_frag()), unindented);
     }
     let joined = match lines {
         [line] if broken_head.may_end_with_delimiter() => Some(line_after(fmt, broken_head, line)),

@@ -2,7 +2,10 @@
 
 use super::attr::{attach_attrs, format_attr, format_skippable_with_attrs, format_with_attrs};
 use super::expr::format_expr;
-use super::generics::{format_generic_param_list, format_type_bound_list, format_where_clause};
+use super::generics::{
+    format_generic_param_list, format_type_bound_list, format_unindented_type_bound_list,
+    format_where_clause,
+};
 use super::macros::{format_macro_call, format_macro_rules};
 use super::pat::format_pat;
 use super::path::format_path;
@@ -602,14 +605,15 @@ fn format_use_tree_list(fmt: &Formatter, list: UseTreeList) -> Frag {
 }
 
 /// `: A + B` of a trait: on the line of the head, or broken after `:` with the bounds on an indented
-/// line; then `{` of `block_follows` is on its own line (Style Guide)
+/// line, broken before every `+` at its indentation; then `{` of `block_follows` is on its own line
+/// (Style Guide)
 fn format_supertraits(
     fmt: &Formatter,
     colon: SyntaxToken,
     bounds: TypeBoundList,
     block_follows: bool,
 ) -> Frag {
-    let bounds = format_type_bound_list(fmt, bounds);
+    let bounds = format_unindented_type_bound_list(fmt, bounds);
     let mut broken = Builder::new(fmt);
     broken.push(fmt.indented_line(bounds.clone()));
     if block_follows {
