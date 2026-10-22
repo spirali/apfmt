@@ -58,10 +58,11 @@ pub(super) fn format_for_expr(fmt: &Formatter, expr: ForExpr) -> Frag {
     let iterable = format_head_expr(fmt, expr.iterable().unwrap());
     let head =
         |pat: Frag, iterable: Frag| Builder::concat(fmt, [pat, in_keyword.clone(), iterable]);
-    // Broken before `in` is preferred to a hanging iterable on the line of `for`
+    // Broken before `in` is preferred to an iterable broken on the line of `for`, hanging or not
+    // (Style Guide): `for p` / `    in a.b().c(d)` / `{`, not `for p in a.b().c(` / `    d,` / `) {`
     let on_line = HeadLayouts {
         hanging: iterable.hanging.clone().map(|i| fmt.dispreferred(i)),
-        other: iterable.other.clone(),
+        other: iterable.other.clone().map(|i| fmt.keep_together(i)),
     };
     let HeadLayouts { hanging, other } = pattern_head(fmt, &pat, &all_pat, &on_line, head);
     // The `in` line hangs
