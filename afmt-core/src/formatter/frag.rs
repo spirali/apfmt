@@ -68,6 +68,17 @@ impl Frag {
         self
     }
 
+    /// The fragment with `end` as the edge after it, e.g. `Keyword` for a fragment always followed by
+    /// a space (`pub(crate) *const u8`); a layout ending with a line break keeps it
+    pub fn with_end(mut self, end: Edge) -> Self {
+        for branch in &mut self.branches {
+            if branch.end != Edge::Break {
+                branch.end = end;
+            }
+        }
+        self
+    }
+
     /// Whether a layout of the fragment may end with a closing delimiter, e.g. a call `f(...)`
     pub fn may_end_with_delimiter(&self) -> bool {
         self.branches

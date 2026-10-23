@@ -89,7 +89,7 @@ fn format_assignment(fmt: &Formatter, expr: BinExpr) -> Frag {
     let mut builder = Builder::new(fmt);
     builder.push(fmt.keep_together(format_expr(fmt, expr.lhs().unwrap())));
     builder.push_token(expr.op_token().unwrap(), Operator);
-    builder.push(fmt.same_or_indented_line(format_expr(fmt, expr.rhs().unwrap())));
+    builder.push(fmt.same_or_indented_line_saving_lines(format_expr(fmt, expr.rhs().unwrap())));
     builder.into_frag()
 }
 

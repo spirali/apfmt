@@ -8,8 +8,8 @@ mod trivia;
 use crate::comments::{is_doc_comment, tokens_between};
 use crate::config::Config;
 use crate::doc::{
-    AlignGroup, DocArena, DocId, DocNode, EMPTY_DOC, NEWLINE_DOC, NEWLINE_OR_SPACE_DOC, Cost,
-    WeakPreference,
+    AlignGroup, Cost, DocArena, DocId, DocNode, EMPTY_DOC, LINE_COST, NEWLINE_DOC,
+    NEWLINE_OR_SPACE_DOC, SPLIT_COST, WeakPreference,
 };
 use crate::formatter::Edge::{Keyword, LineStart, Nothing, Word};
 use crate::resolver::Resolver;
@@ -304,10 +304,26 @@ impl<'a> Formatter<'a> {
         self.alt_frag(same, next)
     }
 
+    /// As `same_or_indented_line`, but broken on the next line costs a line and a half more than
+    /// broken on the current line instead of a split: it wins when it saves at least two lines, e.g.
+    /// the right-hand side of `let` and of an assignment (as rustfmt's `prefer_next_line`, which
+    /// counts the lines of the right-hand side: one less in total is enough for it, which moves
+    /// `x = cmd` / `.args([` to `x =` / `cmd.args([` and `]).output()?` here)
+    pub fn same_or_indented_line_saving_lines(&self, frag: Frag) -> Frag {
+        let next = Cost::new(SPLIT_COST + LINE_COST * 3 / 2);
+        let (same, next) = self.same_and_indented_line_with(frag, next);
+        self.alt_frag(same, next)
+    }
+
     /// The two layouts of `same_or_indented_line`: on the current line, and on the next line
     pub fn same_and_indented_line(&self, frag: Frag) -> (Frag, Frag) {
+        self.same_and_indented_line_with(frag, Cost::splits(2))
+    }
+
+    /// The layouts of `same_and_indented_line`, broken on the next line costing `next`
+    fn same_and_indented_line_with(&self, frag: Frag, next: Cost) -> (Frag, Frag) {
         let same = self.keep_together_with(frag.clone(), Cost::SPLIT);
-        let next = self.keep_together_with(frag, Cost::splits(2));
+        let next = self.keep_together_with(frag, next);
         (same, self.indented_line(next))
     }
 

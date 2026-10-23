@@ -32,6 +32,12 @@ pub(crate) struct Cost(i32);
 impl Cost {
     pub const SPLIT: Cost = Cost::splits(1);
 
+    /// A cost in its units, a line is `LINE_COST`
+    #[inline]
+    pub const fn new(value: i32) -> Self {
+        Cost(value)
+    }
+
     #[inline]
     pub const fn splits(count: i32) -> Self {
         Cost(count * SPLIT_COST)

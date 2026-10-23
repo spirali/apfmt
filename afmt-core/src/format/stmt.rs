@@ -58,7 +58,7 @@ fn format_let_stmt(fmt: &Formatter, stmt: LetStmt) -> Frag {
         (Some(init), None) => {
             builder.push(lhs);
             builder.push_token(stmt.eq_token().unwrap(), Operator);
-            builder.push(fmt.same_or_indented_line(format_expr(fmt, init)));
+            builder.push(fmt.same_or_indented_line_saving_lines(format_expr(fmt, init)));
         }
         (None, _) => builder.push(lhs),
     }
