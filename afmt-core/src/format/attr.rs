@@ -29,8 +29,9 @@ pub(super) fn format_attr(fmt: &Formatter, attr: Attr) -> Frag {
 }
 
 /// `node` preceded by its outer attributes; `format` formats the rest of
-/// it. With `inline`, the attributes stay on the line of the node (`#[cfg(x)] a: u32`), otherwise
-/// each is on its own line (`#[derive(Debug)]` / `struct S;`).
+/// it. Each attribute is on its own line (`#[derive(Debug)]` / `struct S;`); with `inline`, a single
+/// attribute may stay on the line of the node, on a single line (`#[cfg(x)] a: u32`), as rustfmt
+/// does for tuple fields and parameters.
 pub(super) fn format_with_attrs(
     fmt: &Formatter,
     node: &impl HasAttrs,
@@ -85,18 +86,24 @@ pub(super) fn attach_attrs(
     inline: bool,
     rest: Frag,
 ) -> Frag {
-    let mut builder = Builder::new(fmt);
-    if inline {
-        for attr in attrs {
-            builder.push(fmt.followed_by_space(attr));
-        }
-        builder.push(rest);
-    } else {
+    let attrs = attrs.into_iter().collect::<Vec<_>>();
+    let on_own_lines = |attrs: Vec<Frag>, rest: Frag| {
+        let mut builder = Builder::new(fmt);
         for frag in attrs.into_iter().chain([rest]) {
             builder.push_on_new_line(frag);
         }
-    }
-    builder.into_frag()
+        builder.into_frag()
+    };
+    // a single attribute on one line in front of the node, unless a comment follows it
+    let inline_attr = match attrs.as_slice() {
+        [attr] if inline && !attr.comment_follows() => fmt.flat_if_possible(attr.clone()),
+        _ => None,
+    };
+    let Some(inline_attr) = inline_attr else {
+        return on_own_lines(attrs, rest);
+    };
+    let same_line = Builder::concat(fmt, [fmt.followed_by_space(inline_attr), rest.clone()]);
+    fmt.alt_frag(same_line, on_own_lines(attrs, rest))
 }
 
 fn format_meta(fmt: &Formatter, meta: Meta) -> Frag {
