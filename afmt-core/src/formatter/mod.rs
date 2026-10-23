@@ -373,6 +373,15 @@ impl<'a> Formatter<'a> {
         self.alt_frag(flat, broken)
     }
 
+    /// `first` followed by `second` on the next line when `first` is on a single line, or right after
+    /// the last line of `first` when it spans more lines, e.g. the `where` clause of a function after
+    /// its signature (`fn f(a: A)` / `where`, or `fn f(` / `    a: A,` / `) where`)
+    pub fn concat_on_next_line_unless_broken(&self, first: Frag, second: Frag) -> Frag {
+        let flat = Builder::concat(self, [self.flat(first.clone()), self.on_next_line(second.clone())]);
+        let broken = Builder::concat(self, [self.multi_line(first), second]);
+        self.alt_frag(flat, broken)
+    }
+
     /// The fragment should stay on one line if possible: a layout spanning more lines is used only when
     /// all single-line layouts overflow, e.g. a type
     pub fn keep_together(&self, frag: Frag) -> Frag {

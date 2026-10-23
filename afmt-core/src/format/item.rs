@@ -258,16 +258,27 @@ fn format_fn(fmt: &Formatter, item_fn: AstFn) -> Frag {
         }
         None => params,
     };
-    if item_fn.generic_param_list().is_some() && has_params {
+    let signature = if item_fn.generic_param_list().is_some() && has_params {
         // broken generics are followed by broken parameters, as rustfmt does (the Style Guide does
         // not say): `>(` / `    a: A,` / `) {`
-        builder.push(fmt.concat_breaking_together(head, signature));
+        fmt.concat_breaking_together(head, signature)
     } else {
-        builder.push(head);
-        builder.push(signature);
-    }
+        Builder::concat(fmt, [head, signature])
+    };
     let body = item_fn.body();
-    push_where_clause(fmt, &mut builder, item_fn.where_clause(), body.is_none());
+    match item_fn.where_clause() {
+        // `where` right after the closing `)` of a broken signature ("If immediately following a
+        // closing bracket of any kind, write the keyword `where` on the same line", Style Guide):
+        // `) where` / `    T: Clone,`
+        Some(clause) if item_fn.ret_type().is_none() => {
+            let clause = format_where_clause(fmt, clause, body.is_none());
+            builder.push(fmt.concat_on_next_line_unless_broken(signature, clause));
+        }
+        clause => {
+            builder.push(signature);
+            push_where_clause(fmt, &mut builder, clause, body.is_none());
+        }
+    }
     match body {
         Some(body) => builder.push(format_block_expr(fmt, body)),
         None => builder.push_separator(SyntaxKind::SEMICOLON),
