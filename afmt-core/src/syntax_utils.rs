@@ -121,8 +121,27 @@ fn substituted_text(
     })
 }
 
+/// Whether `node` contains a comparison with an unparenthesized comparison as an operand
+/// (`a < b > c`, `a == b == c`): rust-analyzer parses it without an error, rustc rejects it
+/// ("comparison operators cannot be chained")
+fn has_chained_comparison(node: &SyntaxNode) -> bool {
+    let is_comparison =
+        |expr: &ast::BinExpr| matches!(expr.op_kind(), Some(ast::BinaryOp::CmpOp(_)));
+    node.descendants()
+        .filter_map(ast::BinExpr::cast)
+        .filter(is_comparison)
+        .any(|expr| {
+            (expr.lhs().into_iter().chain(expr.rhs())).any(|operand| match operand {
+                ast::Expr::BinExpr(operand) => is_comparison(&operand),
+                _ => false,
+            })
+        })
+}
+
 /// `substituted` (the text of `tree`) parsed between `prefix` and `suffix` as the node `pick` finds
-/// in the file; `None` if the file has syntax errors or the node is not exactly the text. The parsed
+/// in the file; `None` if the file has syntax errors (also those only rustc reports, see
+/// `has_chained_comparison`: such tokens are not code, e.g. `arg!(--opt <FILE> "help")`, and
+/// formatting them would change their spacing) or the node is not exactly the text. The parsed
 /// text starts with the indentation of the source line of `tree`, so the lines of the tree have the
 /// same indentation relative to its first line as in the source (see `Formatter::reindented_range`).
 fn reparse<N: AstNode>(
@@ -138,10 +157,10 @@ fn reparse<N: AstNode>(
         line_indentation(&tree.syntax().first_token()?)
     );
     let file = SourceFile::parse(&format!("{prefix}{text}{suffix}"), edition);
-    if !file.errors().is_empty() {
+    let root = file.tree().syntax().clone();
+    if !file.errors().is_empty() || has_chained_comparison(&root) {
         return None;
     }
-    let root = file.tree().syntax().clone();
     let node = pick(file.tree())?;
     if node.syntax().text() != text.as_str() {
         return None;
