@@ -129,8 +129,6 @@ fn is_control_flow(expr: &Expr) -> bool {
 struct ArmBodyLayouts {
     /// On the line of `=>` (`None` if it may not be there)
     same_line: Option<Frag>,
-    /// Whether the left-hand side must stay on one line before `same_line`
-    flat_lhs: bool,
     /// In a block: `=> {` / `    body` / `}`
     block: Frag,
 }
@@ -145,9 +143,9 @@ struct ArmBodyLayouts {
 /// e.g. an assignment, `return x` or a binary expression, are on one line there or in the block
 /// (Style Guide: "A non-combinable expression"). A block of the source with a single macro call keeps its braces
 /// (Style Guide: "Do not flatten a right-hand side block containing a single macro call because its
-/// expanded form could contain a trailing semicolon"). A `match` stays on the line of `=>` only if
-/// the whole line `pat => match x {` fits on one line, as in rustfmt: otherwise it goes in the
-/// block, also when a line inside it overflows anyway and the block indents it more.
+/// expanded form could contain a trailing semicolon"). A `match` is not a control-flow expression
+/// of the Style Guide: it stays on the line of `=>` with its head on one line, also after a broken
+/// pattern (`} => match x {`, as in rustfmt).
 fn arm_body_layouts(fmt: &Formatter, body: Expr) -> ArmBodyLayouts {
     // `blocks`: the plain blocks around the expression in the source (`{ expr }`, `{ { expr } }`),
     // removed when the body stays on the line of `=>`; a plain block that is not `{ expr }` stays a
@@ -161,7 +159,6 @@ fn arm_body_layouts(fmt: &Formatter, body: Expr) -> ArmBodyLayouts {
                     let block = format_block_expr(fmt, blocks.inner.clone());
                     return ArmBodyLayouts {
                         same_line: None,
-                        flat_lhs: false,
                         block: blocks.skip_outer_braces(fmt, block),
                     };
                 }
@@ -171,10 +168,9 @@ fn arm_body_layouts(fmt: &Formatter, body: Expr) -> ArmBodyLayouts {
     };
     let control_flow = is_control_flow(&expr);
     let node = expr.syntax().clone();
-    // A `match` on the line of `=>`: the left-hand side and its head on one line
-    let flat_lhs = matches!(&expr, Expr::MatchExpr(match_expr) if !has_attrs(match_expr));
     let (inner, same_line_inner) = match &expr {
-        Expr::MatchExpr(match_expr) if flat_lhs => {
+        // A `match` on the line of `=>` with its head on one line
+        Expr::MatchExpr(match_expr) if !has_attrs(match_expr) => {
             let (head, arms) = match_expr_parts(fmt, match_expr);
             let keyword = match_expr.match_token().unwrap();
             let flat_head = head.other.clone().map(|other| {
@@ -232,11 +228,7 @@ fn arm_body_layouts(fmt: &Formatter, body: Expr) -> ArmBodyLayouts {
             Some(blocks) => blocks.skip_braces(fmt, inner),
             None => inner,
         });
-    ArmBodyLayouts {
-        same_line,
-        flat_lhs,
-        block,
-    }
+    ArmBodyLayouts { same_line, block }
 }
 
 /// `pat if guard => body,` (Style Guide "Match"): the body on the line of `=>` with a comma, or in a
@@ -256,11 +248,7 @@ fn format_match_arm(fmt: &Formatter, arm: &MatchArm, group: Option<AlignGroup>) 
         )
     });
     let arrow = fmt.token(arm.fat_arrow_token().unwrap(), Operator);
-    let ArmBodyLayouts {
-        same_line,
-        flat_lhs,
-        block,
-    } = arm_body_layouts(fmt, arm.expr().unwrap());
+    let ArmBodyLayouts { same_line, block } = arm_body_layouts(fmt, arm.expr().unwrap());
 
     let mut lhs = Builder::new(fmt);
     // A broken left-hand side with a guard breaks before `if`, so the guard stays on one line here,
@@ -274,6 +262,15 @@ fn format_match_arm(fmt: &Formatter, arm: &MatchArm, group: Option<AlignGroup>) 
         lhs.push(fmt.flat(guard.clone()));
     }
     lhs.push(arrow.clone());
+    // Broken only if it does not fit on one line with room for ` {` after it (rustfmt reserves the
+    // room for ` => {` in the same way), also when the body could gain by it (by being less indented
+    // than in a block): "If using a block form on the right-hand side of a match arm makes it
+    // possible to avoid breaking on the left-hand side, do that" (Style Guide)
+    let lhs = {
+        let mut builder = Builder::new(fmt);
+        builder.push(fmt.flat_where_fits(lhs.into_frag(), " {".len() as u32));
+        builder
+    };
     let with_body = |mut builder: Builder, body: Frag, comma: bool| {
         builder.push(body);
         builder.align_trailing_comments(group);
@@ -288,13 +285,6 @@ fn format_match_arm(fmt: &Formatter, arm: &MatchArm, group: Option<AlignGroup>) 
     };
     let mut layouts = with_body(lhs.clone(), block.clone(), false);
     if let Some(same_line) = same_line {
-        let lhs = if flat_lhs {
-            let mut flat = Builder::new(fmt);
-            flat.push(fmt.flat(lhs.into_frag()));
-            flat
-        } else {
-            lhs
-        };
         layouts = fmt.alt_frag(with_body(lhs, same_line, true), layouts);
     }
     if let Some(guard) = guard {

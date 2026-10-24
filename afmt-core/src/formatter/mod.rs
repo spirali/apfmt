@@ -458,6 +458,24 @@ impl<'a> Formatter<'a> {
         self.has_flat_layout(&frag).then(|| self.flat(frag))
     }
 
+    /// The fragment on a single line where it fits without overflow with `room` columns left after it
+    /// (`DocNode::RoomAfter`), for text that always follows on the line; in any of its layouts only
+    /// where it does not (`DocNode::Fallback`), whatever what follows could gain by breaking it. A
+    /// branch without a single-line layout (see `has_flat_layout`) is kept as it is.
+    pub fn flat_where_fits(&self, frag: Frag, room: u32) -> Frag {
+        self.map_branches(frag, |b| {
+            if !self.doc_arena.borrow_mut().has_flat_layout(b.doc_id) {
+                return b;
+            }
+            let flat = self.make_node(DocNode::Flat(b.doc_id));
+            let fits = self.make_node(DocNode::RoomAfter(flat, room));
+            Branch {
+                doc_id: self.make_node(DocNode::Fallback(fits, b.doc_id)),
+                ..b
+            }
+        })
+    }
+
     /// Whether a branch of the fragment satisfies `query`, a walk of `DocArena`
     fn any_branch(&self, frag: &Frag, query: impl Fn(&mut DocArena, DocId) -> bool) -> bool {
         let mut arena = self.doc_arena.borrow_mut();

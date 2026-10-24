@@ -90,6 +90,7 @@ pub(crate) enum DocNode {
     Newline,
     Concat(DocId, DocId),
     Alt(DocId, DocId),
+    Fallback(DocId, DocId),
     Nest(DocId),
     Align(DocId),
     /// Only layouts of the inner doc that fit on a single line
@@ -110,6 +111,10 @@ pub(crate) enum DocNode {
     /// Only layouts of the inner doc whose last line ends at most at the indentation of a nested line
     /// (`indent + indent_width`), e.g. a short chain root that the next element may follow: `x.baz?`
     ShortLastLine(DocId),
+    /// Only layouts of the inner doc whose last line ends at least the given number of columns before
+    /// the page width: room for text that always follows on that line but is not part of the doc,
+    /// e.g. ` {` after the left-hand side of a match arm (rustfmt reserves the room in the same way)
+    RoomAfter(DocId, u32),
     /// Only layouts of the inner doc whose first line spans at most the given number of columns from
     /// where the doc starts (the lines after its first line break are free), e.g. a width heuristic
     /// (`fn_call_width`) under `Flat`, or a chain with its last arguments broken within `chain_width`
@@ -285,8 +290,8 @@ impl DocArena {
     /// The width of the narrowest single line of the doc without any line break (also not in a
     /// token): the narrowest alternative of every `Alt`, which are chosen independently, so this line
     /// exists; `None` if there is none (also because of a `FirstLineWithin` it does not fit). Exact
-    /// for whether the doc can be on one line within a width (only `ShortLastLine`, which depends on
-    /// the column, is not checked), not the width of the layout placed: that is the resolver's.
+    /// for whether the doc can be on one line within a width (only `ShortLastLine` and `RoomAfter`,
+    /// which depend on the column, are not checked), not the width of the layout placed: that is the resolver's.
     pub fn min_flat_width(&mut self, doc: DocId) -> Option<u32> {
         let text_width = |text: &str| {
             (!text.contains('\n')).then(|| text_width(text))
@@ -304,13 +309,14 @@ impl DocArena {
             | &DocNode::Cost(d, _)
             | &DocNode::WeakPreference(d, _)
             | &DocNode::ShortLastLine(d)
+            | &DocNode::RoomAfter(d, _)
             | &DocNode::IgnoreOverflow(d) => self.min_flat_width(d),
             &DocNode::FirstLineWithin(d, width) => self.min_flat_width(d).filter(|&w| w <= width),
             &DocNode::Concat(a, b) => {
                 let width1 = self.min_flat_width(a)?;
                 Some(width1.saturating_add(self.min_flat_width(b)?))
             }
-            DocNode::Alt(..) => self.alt_info(doc).min_flat_width(),
+            DocNode::Alt(..) | DocNode::Fallback(..) => self.alt_info(doc).min_flat_width(),
         }
     }
 
@@ -329,13 +335,16 @@ impl DocArena {
             | &DocNode::Cost(d, _)
             | &DocNode::WeakPreference(d, _)
             | &DocNode::ShortLastLine(d)
+            | &DocNode::RoomAfter(d, _)
             | &DocNode::IgnoreOverflow(d) => self.has_flat_layout(d),
             // Under `Flat`, a single line within the width
             &DocNode::FirstLineWithin(d, width) => {
                 self.min_flat_width(d).is_some_and(|w| w <= width)
             }
             &DocNode::Concat(a, b) => self.has_flat_layout(a) && self.has_flat_layout(b),
-            DocNode::Alt(..) => self.alt_flag(doc, AltFlags::HAS_FLAT_LAYOUT),
+            DocNode::Alt(..) | DocNode::Fallback(..) => {
+                self.alt_flag(doc, AltFlags::HAS_FLAT_LAYOUT)
+            }
         }
     }
 
@@ -354,10 +363,13 @@ impl DocArena {
             | &DocNode::Cost(d, _)
             | &DocNode::WeakPreference(d, _)
             | &DocNode::ShortLastLine(d)
+            | &DocNode::RoomAfter(d, _)
             | &DocNode::IgnoreOverflow(d)
             | &DocNode::FirstLineWithin(d, _) => self.has_multi_line_text(d),
             &DocNode::Concat(a, b) => self.has_multi_line_text(a) || self.has_multi_line_text(b),
-            DocNode::Alt(..) => self.alt_flag(doc, AltFlags::HAS_MULTI_LINE_TEXT),
+            DocNode::Alt(..) | DocNode::Fallback(..) => {
+                self.alt_flag(doc, AltFlags::HAS_MULTI_LINE_TEXT)
+            }
         }
     }
 
@@ -373,10 +385,13 @@ impl DocArena {
             | &DocNode::Cost(d, _)
             | &DocNode::WeakPreference(d, _)
             | &DocNode::ShortLastLine(d)
+            | &DocNode::RoomAfter(d, _)
             | &DocNode::IgnoreOverflow(d)
             | &DocNode::FirstLineWithin(d, _) => self.has_line_break(d),
             &DocNode::Concat(a, b) => self.has_line_break(a) || self.has_line_break(b),
-            DocNode::Alt(..) => self.alt_flag(doc, AltFlags::HAS_LINE_BREAK),
+            DocNode::Alt(..) | DocNode::Fallback(..) => {
+                self.alt_flag(doc, AltFlags::HAS_LINE_BREAK)
+            }
         }
     }
 
@@ -414,6 +429,7 @@ impl DocArena {
             | &DocNode::Align(d)
             | &DocNode::WeakPreference(d, _)
             | &DocNode::ShortLastLine(d)
+            | &DocNode::RoomAfter(d, _)
             | &DocNode::IgnoreOverflow(d) => self.natural_widths(d),
             &DocNode::Cost(d, cost) => {
                 if cost.0 > 0 {
@@ -463,7 +479,7 @@ impl DocArena {
                     first_line: after(second.first_line),
                 })
             }
-            DocNode::Alt(..) => self.alt_info(doc).natural_widths(),
+            DocNode::Alt(..) | DocNode::Fallback(..) => self.alt_info(doc).natural_widths(),
         }
     }
 
@@ -472,13 +488,13 @@ impl DocArena {
         self.alt_info(doc).flags.contains(flag)
     }
 
-    /// The facts of the `Alt` node `doc`, computed on the first call
+    /// The facts of the `Alt` (or `Fallback`) node `doc`, computed on the first call
     fn alt_info(&mut self, doc: DocId) -> AltInfo {
         if let Some(info) = self.alt_infos.get(&doc) {
             return *info;
         }
-        let &DocNode::Alt(doc1, doc2) = self.get_node(doc) else {
-            panic!("alt_info of a node that is not `Alt`");
+        let (&DocNode::Alt(doc1, doc2) | &DocNode::Fallback(doc1, doc2)) = self.get_node(doc) else {
+            panic!("alt_info of a node that is not `Alt` or `Fallback`");
         };
         let mut flags = AltFlags::empty();
         flags.set(
@@ -531,6 +547,7 @@ impl DocArena {
                 DocNode::Newline => ("Newline".into(), "rect", "gray"),
                 DocNode::Concat(..) => ("Concat".into(), "ellipse", "white"),
                 DocNode::Alt(..) => ("Alt".into(), "diamond", "orange"),
+                DocNode::Fallback(..) => ("Fallback".into(), "diamond", "gold"),
                 DocNode::Nest(_) => ("Nest".into(), "trapezium", "palegreen"),
                 DocNode::Align(_) => ("Align".into(), "parallelogram", "aquamarine"),
                 DocNode::Flat(_) => ("Flat".into(), "hexagon", "pink"),
@@ -551,6 +568,7 @@ impl DocArena {
                     "lightyellow",
                 ),
                 DocNode::ShortLastLine(_) => ("ShortLastLine".into(), "house", "lightpink"),
+                DocNode::RoomAfter(_, room) => (format!("RoomAfter {room}"), "house", "lightpink"),
                 DocNode::FirstLineWithin(_, width) => {
                     (format!("FirstLineWithin {width}"), "invhouse", "lightpink")
                 }
@@ -578,6 +596,7 @@ impl DocArena {
                 | DocNode::AlignMark(_) => vec![],
                 DocNode::Concat(d1, d2) => vec![(*d1, "1"), (*d2, "2")],
                 DocNode::Alt(d1, d2) => vec![(*d1, ""), (*d2, "")],
+                DocNode::Fallback(d1, d2) => vec![(*d1, "1"), (*d2, "2")],
                 DocNode::Nest(d)
                 | DocNode::Align(d)
                 | DocNode::Flat(d)
@@ -586,6 +605,7 @@ impl DocArena {
                 | DocNode::Cost(d, _)
                 | DocNode::WeakPreference(d, _)
                 | DocNode::ShortLastLine(d)
+                | DocNode::RoomAfter(d, _)
                 | DocNode::FirstLineWithin(d, _)
                 | DocNode::IgnoreOverflow(d) => vec![(*d, "")],
             };
@@ -630,6 +650,13 @@ impl DocArena {
                 make_ident();
                 println!(")");
             }
+            DocNode::Fallback(d1, d2) => {
+                println!("Fallback(");
+                self.dump_helper(*d1, indent + 1);
+                self.dump_helper(*d2, indent + 1);
+                make_ident();
+                println!(")");
+            }
             DocNode::Alt(d1, d2) => {
                 println!("Alt(");
                 self.dump_helper(*d1, indent + 1);
@@ -663,6 +690,12 @@ impl DocArena {
             }
             DocNode::ShortLastLine(d) => {
                 println!("ShortLastLine(");
+                self.dump_helper(*d, indent + 1);
+                make_ident();
+                println!(")");
+            }
+            DocNode::RoomAfter(d, room) => {
+                println!("RoomAfter[{room}](");
                 self.dump_helper(*d, indent + 1);
                 make_ident();
                 println!(")");

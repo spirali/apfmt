@@ -469,12 +469,19 @@ impl<'a> Resolver<'a> {
                         layout.measure.badness = 0;
                     }
                 }
-                Task::ShortLastLine(max) => {
+                Task::LastLineEndsWithin(max) => {
                     results
                         .last_mut()
                         .unwrap()
                         .layouts
                         .retain(|layout| layout.measure.last.is_none_or(|last| last <= max));
+                }
+                Task::Fallback(ctx, fallback) => {
+                    let primary = results.last().unwrap();
+                    if !primary.layouts.iter().any(|layout| layout.measure.badness == 0) {
+                        results.pop();
+                        next = Some((ctx, fallback));
+                    }
                 }
                 Task::Alt(ctx, doc) => {
                     let lb = results.pop().unwrap();
@@ -615,7 +622,11 @@ impl<'a> Resolver<'a> {
                 return Some((ctx, *d));
             }
             DocNode::ShortLastLine(d) => {
-                tasks.push(Task::ShortLastLine(ctx.indent + self.config.tab_spaces));
+                tasks.push(Task::LastLineEndsWithin(ctx.indent + self.config.tab_spaces));
+                return Some((ctx, *d));
+            }
+            DocNode::RoomAfter(d, room) => {
+                tasks.push(Task::LastLineEndsWithin(self.config.max_width.saturating_sub(*room)));
                 return Some((ctx, *d));
             }
             DocNode::FirstLineWithin(d, width) => {
@@ -643,6 +654,10 @@ impl<'a> Resolver<'a> {
                 tasks.push(Task::Resolve(ctx, *doc2));
                 return Some((ctx, *doc1));
             }
+            DocNode::Fallback(primary, fallback) => {
+                tasks.push(Task::Fallback(ctx, *fallback));
+                return Some((ctx, *primary));
+            }
             DocNode::Align(d) => {
                 let indent = ctx.text_col();
                 tasks.push(Task::Indent(indent));
@@ -661,9 +676,12 @@ enum Task {
     WeakPreference(WeakPreference),
     KeepTogether(Cost),
     MultiLine,
-    ShortLastLine(u32),
+    /// Only the layouts whose last line ends at most at the column (`DocNode::ShortLastLine`,
+    /// `DocNode::RoomAfter`)
+    LastLineEndsWithin(u32),
     IgnoreOverflow,
     Alt(Context, DocId),
+    Fallback(Context, DocId),
     ConcatStart(Context, DocId),
     Concat(Context, DocId, u32),
 }
