@@ -616,25 +616,36 @@ fn format_use_tree_list(fmt: &Formatter, list: UseTreeList) -> Frag {
     delimited_list(fmt, &delims, &items, layout)
 }
 
-/// `: A + B` of a trait: on the line of the head, or broken after `:` with the bounds on an indented
-/// line, broken before every `+` at its indentation; then `{` of `block_follows` is on its own line
-/// (Style Guide)
-fn format_supertraits(
+/// The head of a trait (`trait Name<T>`) followed by its supertraits `: A + B`, if any: on the line
+/// of the head, or broken after `:` with the bounds on an indented line, broken before every `+` at
+/// its indentation; `{` of `block_follows` is on its own line after a broken header (Style Guide:
+/// after broken bounds; after broken generics as rustfmt does, as in an impl, see `impl_header`)
+fn trait_header(
     fmt: &Formatter,
-    colon: SyntaxToken,
-    bounds: TypeBoundList,
+    head: Frag,
+    supertraits: Option<(SyntaxToken, TypeBoundList)>,
     block_follows: bool,
 ) -> Frag {
+    let ends_line = |frag| match block_follows {
+        true => fmt.ends_line_if_broken(frag),
+        false => frag,
+    };
+    let Some((colon, bounds)) = supertraits else {
+        return ends_line(head);
+    };
     let bounds = format_unindented_type_bound_list(fmt, bounds);
+    let mut head_colon = Builder::new(fmt);
+    head_colon.push(head);
+    head_colon.push_token(colon, Comma);
+    let head_colon = head_colon.into_frag();
+    let flat_bounds = Builder::concat(fmt, [head_colon.clone(), fmt.flat(bounds.clone())]);
     let mut broken = Builder::new(fmt);
-    broken.push(fmt.indented_line(bounds.clone()));
+    broken.push(head_colon);
+    broken.push(fmt.indented_line(bounds));
     if block_follows {
         broken.push_newline();
     }
-    let mut builder = Builder::new(fmt);
-    builder.push_token(colon, Comma);
-    builder.push(fmt.alt_frag(fmt.flat(bounds), broken.into_frag()));
-    builder.into_frag()
+    fmt.alt_frag(ends_line(flat_bounds), broken.into_frag())
 }
 
 /// `{ items }` of a module, an impl, a trait or an extern block: the inner attributes of `list`
@@ -732,8 +743,10 @@ fn format_impl(fmt: &Formatter, item: Impl) -> Frag {
 /// A header that does not fit is broken as rustfmt does (the Style Guide does not say), so that the
 /// generics and the generic arguments stay on one line, the rest on indented lines and `{` of
 /// `block_follows` on its own line: before `for`, then (dispreferred) after the generics, then after
-/// the generics and before `for`; `impl<T> Trait<` / `    A,` / `> for Type {` only when they all
-/// overflow or break anyway (it costs one more split)
+/// the generics and before `for`; `impl<T> Trait<` / `    A,` / `> for Type` / `{` only when they
+/// all overflow or break anyway (it costs one more split), `{` on its own line after any broken
+/// header (Style Guide: "If a line break is required in a non-inherent impl, ... put the opening
+/// brace on its own line"; also in an inherent one, as rustfmt)
 fn impl_header(
     fmt: &Formatter,
     head: Frag,
@@ -743,7 +756,10 @@ fn impl_header(
 ) -> Frag {
     let rest = Builder::concat(fmt, trait_.clone().into_iter().chain([self_ty.clone()]));
     let joined = Builder::concat(fmt, [head.clone(), rest.clone()]);
-    let joined = fmt.keep_together(fmt.keep_together(joined));
+    let mut joined = fmt.keep_together(fmt.keep_together(joined));
+    if block_follows {
+        joined = fmt.ends_line_if_broken(joined);
+    }
     let broken = |first: Frag, lines: &[Frag]| {
         let mut builder = Builder::new(fmt);
         builder.push(fmt.flat(first));
@@ -774,16 +790,10 @@ fn format_trait(fmt: &Formatter, item: Trait) -> Frag {
         return format_unsupported(fmt, item.syntax(), "a trait alias");
     }
     let mut builder = Builder::new(fmt);
-    builder.push(format_named_item_head(
-        fmt,
-        &item,
-        item.trait_token().unwrap(),
-    ));
-    if let Some(colon) = item.colon_token() {
-        let block_follows = item.where_clause().is_none();
-        let bounds = item.type_bound_list().unwrap();
-        builder.push(format_supertraits(fmt, colon, bounds, block_follows));
-    }
+    let head = format_named_item_head(fmt, &item, item.trait_token().unwrap());
+    let supertraits = (item.colon_token()).map(|colon| (colon, item.type_bound_list().unwrap()));
+    let block_follows = item.where_clause().is_none();
+    builder.push(trait_header(fmt, head, supertraits, block_follows));
     push_where_clause(fmt, &mut builder, item.where_clause(), false);
     builder.push(format_assoc_item_list(fmt, item.assoc_item_list().unwrap()));
     builder.into_frag()

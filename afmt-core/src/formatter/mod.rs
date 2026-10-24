@@ -382,6 +382,16 @@ impl<'a> Formatter<'a> {
         self.alt_frag(flat, broken)
     }
 
+    /// The fragment on a single line, or spanning more lines and then ending its last line, so that
+    /// what follows starts on the next line, e.g. `{` after the broken header of an item (`impl<` /
+    /// `    T: A,` / `> Trait for Type` / `{`)
+    pub fn ends_line_if_broken(&self, frag: Frag) -> Frag {
+        let mut broken = Builder::new(self);
+        broken.push(self.multi_line(frag.clone()));
+        broken.push_newline();
+        self.alt_frag(self.flat(frag), broken.into_frag())
+    }
+
     /// The fragment should stay on one line if possible: a layout spanning more lines is used only when
     /// all single-line layouts overflow, e.g. a type
     pub fn keep_together(&self, frag: Frag) -> Frag {
