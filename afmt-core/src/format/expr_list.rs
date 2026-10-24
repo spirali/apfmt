@@ -141,6 +141,14 @@ fn without_operators(expr: &Expr) -> Expr {
     operand.map_or_else(|| expr.clone(), |e| without_operators(&e))
 }
 
+/// The expression without the `&` / `&mut` in front of it (`|x| x` of `&&mut |x| x`)
+fn without_refs(expr: &Expr) -> Expr {
+    match expr {
+        Expr::RefExpr(e) => e.expr().map_or_else(|| expr.clone(), |e| without_refs(&e)),
+        _ => expr.clone(),
+    }
+}
+
 /// Simple expressions in the sense of rustfmt's `is_simple_expr`: literals, plain names, and simple
 /// expressions after a unary operator, `&` or `&mut`, followed by a field, `?` or `as Type`, indexed by
 /// a simple expression (`a[i]`) or repeated (`[a; n]`)
@@ -204,12 +212,14 @@ fn is_fillable_list(fmt: &Formatter, exprs: &[Expr], items: &[ListItem]) -> bool
 }
 
 /// Whether the last of more expressions may overflow: a closure if no other one is (Style Guide), or
-/// a block, also `unsafe`, `async` or labelled (`f(a, unsafe {` / `...` / `})`, as rustfmt does)
+/// a block, also `unsafe`, `async` or labelled (`f(a, unsafe {` / `...` / `})`, as rustfmt does),
+/// both also after `&` or `&mut` (`f(a, &mut |x| {` / `...` / `})`)
 fn is_overflowing_last(exprs: &[Expr]) -> bool {
-    let is_closure = |e: &Expr| matches!(e, Expr::ClosureExpr(_));
+    let is_closure = |e: &Expr| matches!(without_refs(e), Expr::ClosureExpr(_));
     match exprs {
         [rest @ .., last] if !rest.is_empty() => {
-            matches!(last, Expr::BlockExpr(_)) || is_closure(last) && !rest.iter().any(is_closure)
+            matches!(without_refs(last), Expr::BlockExpr(_))
+                || is_closure(last) && !rest.iter().any(is_closure)
         }
         _ => false,
     }
@@ -435,7 +445,12 @@ mod tests {
             ("f(g(a).await)", Allowed),
             ("f(a.await)", Never),
             ("f(a, |x| x)", Allowed),
-            ("f(a, &|x| x)", Never),
+            ("f(a, &|x| x)", Allowed),
+            ("f(a, &mut move |x| x)", Allowed),
+            ("f(&|x| x, &mut |y| y)", Never),
+            ("f(|x| x, &|y| y)", Never),
+            ("f(a, &{ b })", Allowed),
+            ("f(a, &mut unsafe { b })", Allowed),
             ("f(|x| x, |y| y)", Never),
             ("f(a, unsafe { b })", Allowed),
             ("Ok(m! { a })", Preferred),
