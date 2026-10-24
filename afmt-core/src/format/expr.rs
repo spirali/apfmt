@@ -8,7 +8,7 @@ use super::closure::format_closure_expr;
 use super::control::{format_for_expr, format_loop_expr, format_match_expr, format_while_expr};
 use super::expr_list::{format_arg_list, format_array_expr, format_tuple_expr, is_literal_or_name};
 use super::macros::format_macro_call;
-use super::pat::{format_pat, pat_layouts};
+use super::pat::pat_layouts;
 use super::path::{format_name_ref, format_path};
 use super::stmt::{
     format_block_expr, format_block_expr_with_tail, format_block_tail, push_block_prefix,
@@ -233,14 +233,10 @@ fn format_continue_expr(fmt: &Formatter, expr: ContinueExpr) -> Frag {
     format_jump(fmt, expr.continue_token().unwrap(), label, None)
 }
 
-/// `let pat = expr` in a condition
+/// `let pat = expr` in a condition, a clause of a let chain (`a` / `&& let pat =` / `    expr`), with
+/// the layouts of the head of `if let` (see `let_head_layouts`)
 fn format_let_expr(fmt: &Formatter, expr: LetExpr) -> Frag {
-    let mut builder = Builder::new(fmt);
-    builder.push_keyword(expr.let_token().unwrap());
-    builder.push(format_pat(fmt, expr.pat().unwrap()));
-    builder.push_token(expr.eq_token().unwrap(), Operator);
-    builder.push(format_expr(fmt, expr.expr().unwrap()));
-    builder.into_frag()
+    let_head_layouts(fmt, &expr).all(fmt)
 }
 
 /// Whether a multi-line layout of the expression ends with an indented continuation line, a broken
@@ -534,12 +530,14 @@ fn format_record_expr_field(fmt: &Formatter, field: &RecordExprField) -> Frag {
     builder.into_frag()
 }
 
-/// `let pat = expr` of `if let` or `while let`: with the expression on the line of `=`, or broken
-/// after `=` with the expression on an indented line, which hangs (Style Guide). The expression broken
-/// over more lines costs a split in both, so it moves to the next line when it fits on one line there
-/// (as in rustfmt). A broken pattern costs a split (see `pat_layouts`); after it, `{` follows only an
-/// expression spanning more lines (see `pattern_head`), as `else {` of a `let`-`else` (see
-/// `format_let_else`).
+/// `let pat = expr` of `if let`, `while let` or a let chain clause: with the expression on the line
+/// of `=`, or broken after `=` with the expression on an indented line, which hangs. The expression
+/// broken over more lines costs a split in both, so it moves to the next line when it fits on one
+/// line there or saves a line: the Style Guide prefers breaking a control line after the `=` of a
+/// `let` that does not fit, unlike a `let` statement, whose multi-line expression stays on the line
+/// of `=` (see `Formatter::same_or_indented_line_saving_lines`). A broken pattern costs a split (see
+/// `pat_layouts`); after it, `{` follows only an expression spanning more lines (see
+/// `pattern_head`), as `else {` of a `let`-`else` (see `format_let_else`).
 fn let_head_layouts(fmt: &Formatter, expr: &LetExpr) -> HeadLayouts {
     let pat = pat_layouts(fmt, expr.pat().unwrap());
     let all_pat = pat.clone().all(fmt);
