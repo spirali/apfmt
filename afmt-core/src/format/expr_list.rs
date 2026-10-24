@@ -31,7 +31,10 @@ fn is_combinable_expr(expr: &Expr) -> bool {
         | Expr::TupleExpr(_)
         | Expr::ClosureExpr(_)
         | Expr::RecordExpr(_)
-        | Expr::MatchExpr(_) => true,
+        | Expr::MatchExpr(_)
+        | Expr::LoopExpr(_)
+        | Expr::WhileExpr(_)
+        | Expr::ForExpr(_) => true,
         // `g(...).await`: the root breaks, `.await` follows its closing delimiter
         Expr::AwaitExpr(e) => e.expr().is_some_and(|e| is_combinable_expr(&e)),
         // `m! { ... }` like a block: `Ok(quote! {` / `...` / `})`
@@ -74,8 +77,8 @@ fn has_list_content(expr: &Expr) -> bool {
 }
 
 /// Whether the expression is block-like, also behind operators: a block (also `unsafe`, `async`,
-/// labelled), a macro call with braces, or a `match` or `if` whose head cannot break (a simple
-/// scrutinee or condition, see `is_simple_expr`). As the only argument it hugs whenever it fits, as a
+/// labelled), a `loop`, a macro call with braces, or a `match`, `if`, `while` or `for` whose head
+/// cannot break (a simple scrutinee, condition or iterable, see `is_simple_expr`). As the only argument it hugs whenever it fits, as a
 /// closure does: broken over more lines (`f(` / `match x {` / `...` / `},` / `)`) it is never
 /// clearer, so the call breaks elsewhere first, e.g. after `=` (`let long =` / `    f(match x {`) or
 /// before the element of a chain (`a()` / `.b()` / `.f(m! {`), as rustfmt does. With a head that may
@@ -84,9 +87,11 @@ fn has_list_content(expr: &Expr) -> bool {
 fn is_block_like_expr(expr: &Expr) -> bool {
     let is_simple = |e: Option<Expr>| e.is_some_and(|e| is_simple_expr(&e));
     match without_operators(expr) {
-        Expr::BlockExpr(_) => true,
+        Expr::BlockExpr(_) | Expr::LoopExpr(_) => true,
         Expr::MatchExpr(e) => is_simple(e.expr()),
         Expr::IfExpr(e) => is_simple(e.condition()),
+        Expr::WhileExpr(e) => is_simple(e.condition()),
+        Expr::ForExpr(e) => is_simple(e.iterable()),
         expr => is_brace_macro(&expr),
     }
 }
@@ -480,6 +485,14 @@ mod tests {
             ("f(a, &mut unsafe { b })", Allowed),
             ("f(|x| x, |y| y)", Never),
             ("f(a, unsafe { b })", Allowed),
+            ("Poll::Ready(loop {})", Preferred),
+            ("f('a: loop {})", Preferred),
+            ("f(&loop {})", Preferred),
+            ("f(while a {})", Preferred),
+            ("f(while a.b() {})", Allowed),
+            ("f(for x in y {})", Preferred),
+            ("f(for x in y.iter() {})", Allowed),
+            ("f(a, loop {})", Never),
             ("Ok(m! { a })", Preferred),
             ("f(&m! { a })", Preferred),
             ("f(a, m! { b })", Never),
