@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use crate::comments::{is_code_kind, line_indentation};
 use ra_ap_syntax::ast::{self, HasAttrs, HasModuleItem};
 use ra_ap_syntax::{
-    AstNode, Edition, NodeOrToken, SourceFile, SyntaxKind, SyntaxNode, SyntaxToken, TextSize,
+    AstNode, Edition, NodeOrToken, SourceFile, SyntaxKind, SyntaxNode, SyntaxToken, T, TextSize,
 };
 
 /// Whether the node has attributes
@@ -121,6 +121,89 @@ fn substituted_text(
     })
 }
 
+/// Whether formatting `node` could change whether two adjacent punctuation tokens are joined (no
+/// whitespace between them), which a procedural macro sees (`Punct::spacing`) and may read as one
+/// operator: `arg!(-f --foo)` would become `-f - -foo` (the binary `-` and the unary one), `x<-y`
+/// would become `x < -y`, `& &x` would become `&&x`. A pair stays as it is only where afmt never
+/// puts whitespace between them and they are written joined (see `is_printed_joined`). Commas and
+/// semicolons are separators, never part of an operator, so their spacing may change; so may the
+/// spacing after `?`, which depends on the layout of a chain (`x?.y` or `x?` / `.y`), and `_` is a
+/// word, not punctuation, for a procedural macro.
+fn changes_punct_spacing(node: &SyntaxNode) -> bool {
+    // A nested token tree (`vec![...]` in the arguments) is checked when it is parsed itself
+    let is_punct = |t: &SyntaxToken| {
+        t.kind().is_punct()
+            && t.parent().is_none_or(|p| p.kind() != SyntaxKind::TOKEN_TREE)
+            && !matches!(
+                t.kind(),
+                T!['('] | T![')'] | T!['['] | T![']'] | T!['{'] | T!['}'] | T![,] | T![;] | T![_]
+            )
+    };
+    let tokens = node.descendants_with_tokens().filter_map(|e| e.into_token());
+    tokens
+        .filter(|t| is_punct(t) && t.kind() != T![?])
+        .any(|first| {
+            let Some(next) = first.next_token() else {
+                return false;
+            };
+            let (second, joined) = if next.kind() == SyntaxKind::WHITESPACE {
+                match next.next_token() {
+                    Some(second) => (second, false),
+                    None => return false,
+                }
+            } else {
+                (next, true)
+            };
+            is_punct(&second)
+                && node.text_range().contains_range(second.text_range())
+                && joined != is_printed_joined(&first, &second)
+        })
+}
+
+/// Whether afmt prints the punctuation tokens `first` and `second` without whitespace between
+/// them: a prefix operator and the start of its operand (`!!x`, `&*x`, `-!x`), the pipe opening
+/// closure parameters and a pattern (`|&x|`), a reference pattern or type (`&&x`, `&[T]`), a range
+/// and its end (`..*x`, `..=-1`, no spaces in ranges), a path and `*` or `<` (`a::*`, `::<&T>`),
+/// and the angle brackets of a type with what follows them (`>>`, `>::`, `|x: Vec<T>|`,
+/// `Vec<T>: Clone`). Every other pair gets whitespace, e.g. around a binary operator.
+fn is_printed_joined(first: &SyntaxToken, second: &SyntaxToken) -> bool {
+    let parent = first.parent().map(|p| p.kind());
+    let is_first_of_parent = || {
+        first
+            .parent()
+            .and_then(|p| p.first_token())
+            .is_some_and(|t| t == *first)
+    };
+    match (first.kind(), parent) {
+        (_, Some(SyntaxKind::PREFIX_EXPR | SyntaxKind::REF_EXPR)) => is_first_of_parent(),
+        (_, Some(SyntaxKind::REF_PAT | SyntaxKind::REF_TYPE | SyntaxKind::PTR_TYPE)) => {
+            is_first_of_parent()
+        }
+        (T![|], Some(SyntaxKind::PARAM_LIST)) => is_first_of_parent(),
+        (T![..] | T![..=] | T![...], Some(SyntaxKind::RANGE_EXPR | SyntaxKind::RANGE_PAT)) => true,
+        (T![::], _) => matches!(second.kind(), T![<] | T![*]),
+        (T![<], Some(kind)) => kind == SyntaxKind::GENERIC_PARAM_LIST || is_angle_list(kind),
+        (T![>], Some(kind)) => {
+            is_angle_list(kind)
+                && matches!(
+                    second.kind(),
+                    T![>] | T![::] | T![|] | T![:] | T![.] | T![?] | T![!]
+                )
+        }
+        _ => false,
+    }
+}
+
+/// Whether the node `kind` holds `<` and `>` as the angle brackets of a type (`Vec<T>`,
+/// `<T as A>::f`), not comparisons; the generic parameters of an item are followed by a space
+/// (`impl<T> ::a::B`)
+fn is_angle_list(kind: SyntaxKind) -> bool {
+    matches!(
+        kind,
+        SyntaxKind::GENERIC_ARG_LIST | SyntaxKind::TYPE_ANCHOR | SyntaxKind::PATH_SEGMENT
+    )
+}
+
 /// Whether `node` contains a comparison with an unparenthesized comparison as an operand
 /// (`a < b > c`, `a == b == c`): rust-analyzer parses it without an error, rustc rejects it
 /// ("comparison operators cannot be chained")
@@ -141,7 +224,8 @@ fn has_chained_comparison(node: &SyntaxNode) -> bool {
 /// `substituted` (the text of `tree`) parsed between `prefix` and `suffix` as the node `pick` finds
 /// in the file; `None` if the file has syntax errors (also those only rustc reports, see
 /// `has_chained_comparison`: such tokens are not code, e.g. `arg!(--opt <FILE> "help")`, and
-/// formatting them would change their spacing) or the node is not exactly the text. The parsed
+/// formatting them would change their spacing), if formatting could change whether punctuation is
+/// joined (see `changes_punct_spacing`), or if the node is not exactly the text. The parsed
 /// text starts with the indentation of the source line of `tree`, so the lines of the tree have the
 /// same indentation relative to its first line as in the source (see `Formatter::reindented_range`).
 fn reparse<N: AstNode>(
@@ -162,7 +246,7 @@ fn reparse<N: AstNode>(
         return None;
     }
     let node = pick(file.tree())?;
-    if node.syntax().text() != text.as_str() {
+    if node.syntax().text() != text.as_str() || changes_punct_spacing(node.syntax()) {
         return None;
     }
     let placeholders = (substituted.placeholders.iter())

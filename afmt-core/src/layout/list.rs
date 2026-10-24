@@ -1,14 +1,15 @@
 //! Delimited, comma-separated lists
 
 use crate::comments::{
-    is_code_kind, is_comment_kind, is_line_comment, own_line_comment_follows, trivia_from,
+    comments_at_closing_indentation, is_code_kind, is_comment_kind, is_line_comment,
+    next_code_token, own_line_comment_follows, trivia_from,
 };
 use crate::doc::WeakPreference;
 use crate::formatter::Edge::{BraceClose, BraceOpen, Close, Comma, Open, Word};
 use crate::formatter::{Builder, Edge, Formatter, Frag};
 use crate::utils::with_is_last;
 use ra_ap_syntax::ast::TokenTree;
-use ra_ap_syntax::{AstNode, SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken};
+use ra_ap_syntax::{AstNode, SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken, T};
 
 /// An item of a comma-separated list with the source comma following it. The item is usually
 /// the formatted `Frag`, or its parts when its layout is chosen later (see `ListItem::map`).
@@ -525,6 +526,10 @@ impl Delimiters {
     /// `{`, then `lines`, each on its own line and block indented, then `}`;
     /// the blank lines of the source between the lines are kept, those after `{` and
     /// in front of `}` dropped. Without lines, the empty container (see `format_empty`).
+    ///
+    /// In front of `} else`, own-line comments written at the indentation of `}` stay there, as they
+    /// introduce the `else` branch (see `comments_at_closing_indentation`); rustfmt keeps the
+    /// author's choice the same way. In front of another `}` they are indented with the lines.
     pub fn format_block(&self, fmt: &Formatter, lines: impl IntoIterator<Item = Frag>) -> Frag {
         let mut lines = lines.into_iter().peekable();
         if lines.peek().is_none() {
@@ -537,12 +542,22 @@ impl Delimiters {
         for line in lines {
             builder.push_on_new_line(line);
         }
-        builder.flush_trivia();
-        builder.push_newline();
-        self.wrap_body(
-            fmt,
-            fmt.body_after_opener(line_comments, builder.into_frag()),
-        )
+        let before_else = next_code_token(&self.close).is_some_and(|t| t.kind() == T![else]);
+        if !(before_else && comments_at_closing_indentation(&self.close)) {
+            builder.flush_trivia();
+            builder.push_newline();
+            return self.wrap_body(
+                fmt,
+                fmt.body_after_opener(line_comments, builder.into_frag()),
+            );
+        }
+        // The comments ending the last line stay on it; the others follow the indented lines
+        builder.push_comments_ending_line();
+        let mut body = Builder::new(fmt);
+        body.push(fmt.body_after_opener(line_comments, builder.into_frag()));
+        body.flush_trivia();
+        body.push_newline();
+        self.wrap_body(fmt, body.into_frag())
     }
 
     /// An own-line comment after the opening delimiter allows only broken layouts

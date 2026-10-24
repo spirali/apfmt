@@ -150,6 +150,27 @@ pub(crate) fn line_indentation(token: &SyntaxToken) -> String {
     line_start.map_or_else(String::new, |t| leading_whitespace(t.text()))
 }
 
+/// Whether the comments on their own lines in front of the closing brace `close` start at most at
+/// its indentation in the source: the first one decides for all (`Poll::Pending` / `// Safety: ...`
+/// / `} else if unsafe { ... } {`), as in rustfmt; comments ending the line of the last code are not
+/// on their own lines. A comment indented as the block's contents stays in it.
+pub(crate) fn comments_at_closing_indentation(close: &SyntaxToken) -> bool {
+    let Some(last_code) = prev_code_token(close) else {
+        return false;
+    };
+    let mut newlines = 0;
+    for t in tokens_between(&last_code, close) {
+        match t.kind() {
+            SyntaxKind::WHITESPACE => newlines += count_newlines(&t),
+            kind if is_comment_kind(kind) && newlines > 0 => {
+                return line_indentation(&t).len() <= line_indentation(close).len();
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 /// The first token after `token` that is not trivia
 pub(crate) fn next_code_token(token: &SyntaxToken) -> Option<SyntaxToken> {
     std::iter::successors(token.next_token(), |t| t.next_token()).find(|t| is_code_kind(t.kind()))
