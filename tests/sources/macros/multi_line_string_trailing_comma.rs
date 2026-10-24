@@ -13,7 +13,8 @@ fn g() -> String {
     )
 }
 
-// Without a trailing comma too; rustfmt hugs a literal after a callee shorter than `tab_spaces`
+// Without a trailing comma, hugged as in the source (rustfmt hugs a literal only after a callee
+// shorter than `tab_spaces`)
 fn h() -> String {
     foo(r#"<div class="stat-card">
         </div>"#)

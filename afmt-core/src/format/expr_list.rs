@@ -11,10 +11,11 @@ use crate::layout::list::TrailingSeparator;
 use crate::layout::list::{
     Delimiters, FlatLimit, Hug, ListItem, ListLayout, Overflow, delimited_list, list_items_cast,
 };
+use crate::comments::is_code_kind;
 use crate::syntax_utils::has_attrs;
 use crate::utils::with_is_last;
 use ra_ap_syntax::ast::{ArgList, ArrayExpr, CallExpr, Expr, HasArgList, TupleExpr};
-use ra_ap_syntax::{AstNode, SyntaxNode};
+use ra_ap_syntax::{AstNode, SyntaxKind, SyntaxNode, SyntaxToken};
 
 /// Whether a single argument can overflow, i.e. start on the line of `(` and end on the line of `)`:
 /// `f(if a {\n ...\n})`. Follows the combinable expressions of the style guide.
@@ -141,6 +142,28 @@ fn without_operators(expr: &Expr) -> Expr {
     operand.map_or_else(|| expr.clone(), |e| without_operators(&e))
 }
 
+/// Whether `expr` is a string literal spanning lines, also after `&` / `&mut`, that starts on the
+/// line of the token before it in the source, with only spaces between them (`f(r#"` / `...` /
+/// `"#)`): as a single item, it hugs the list as in the source. The Style Guide breaks a call with
+/// a multi-line argument (a literal is not combinable), rustfmt only after a callee of at least
+/// `tab_spaces` columns; Prettier and Ruff follow the source the same way.
+fn is_hugging_string(expr: &Expr) -> bool {
+    let Expr::Literal(literal) = without_refs(expr) else {
+        return false;
+    };
+    let token = literal.token();
+    let is_string = matches!(
+        token.kind(),
+        SyntaxKind::STRING | SyntaxKind::BYTE_STRING | SyntaxKind::C_STRING
+    );
+    let before = expr.syntax().first_token().and_then(|t| t.prev_token());
+    let mut preceding = std::iter::successors(before, SyntaxToken::prev_token)
+        .take_while(|t| !is_code_kind(t.kind()));
+    is_string
+        && token.text().contains('\n')
+        && preceding.all(|t| t.kind() == SyntaxKind::WHITESPACE && !t.text().contains('\n'))
+}
+
 /// The expression without the `&` / `&mut` in front of it (`|x| x` of `&&mut |x| x`)
 fn without_refs(expr: &Expr) -> Expr {
     match expr {
@@ -187,12 +210,15 @@ pub(super) fn is_literal_or_name(expr: &Expr) -> bool {
 /// How the last of the expressions `exprs` of the list `node` may hug it: a single combinable
 /// expression (see `is_combinable_expr`), rather than break the list in as many lines if it is a
 /// delimited list (see `is_delimited_list_expr`), whenever it fits after a constructor or as an
-/// array (see `is_preferred_hug`) or if it is block-like (see `is_block_like_expr`); a closure or a
-/// block after other expressions (`f(a, |x| {` / `...` / `})`, see `is_overflowing_last`)
+/// array (see `is_preferred_hug`) or if it is block-like (see `is_block_like_expr`), or if it is a
+/// multi-line string hugging the list in the source (see `is_hugging_string`); a closure or a block
+/// after other expressions (`f(a, |x| {` / `...` / `})`, see `is_overflowing_last`)
 fn last_item_hug(node: &SyntaxNode, exprs: &[Expr]) -> Hug {
     match exprs {
         [single] if is_preferred_hug(node, single) || is_block_like_expr(single) => Hug::Preferred,
         [single] if is_delimited_list_expr(single) => Hug::WeakPreference,
+        // Not a tuple: its comma would follow the string (`(r#"` / `...` / `"#,)`)
+        [single] if is_hugging_string(single) && !TupleExpr::can_cast(node.kind()) => Hug::Preferred,
         [single] if is_combinable_expr(single) => Hug::Allowed,
         _ if is_overflowing_last(exprs) => Hug::Allowed,
         _ => Hug::Never,
@@ -283,7 +309,7 @@ pub(super) fn format_expr_item(fmt: &Formatter, expr: Expr) -> ExprItem {
             }
         }
         expr => {
-            let combinable = is_combinable_expr(&expr);
+            let combinable = is_combinable_expr(&expr) || is_hugging_string(&expr);
             // A closure behind operators (`&|x| ...`) or with attributes, or a block-like expression,
             // whose single line has width rules of its own (`Ok(unsafe { ... })`, as rustfmt does)
             let own_width = matches!(without_operators(&expr), Expr::ClosureExpr(_))
@@ -348,7 +374,8 @@ pub(super) fn format_expr_list(
     };
     // A string spanning lines, also under an operator (`&"a⏎b"`), is not hugged: "If ... any
     // argument ... is multi-line, then format the call across multiple lines" (Style Guide; a
-    // literal is not combinable), as in rustfmt
+    // literal is not combinable), as in rustfmt; a single one hugs the list only if it does in the
+    // source (see `is_hugging_string`)
     let multi_line = items.iter().any(|item| fmt.has_multi_line_text(&item.frag));
     let layout = ListLayout::tall(flat)
         .fill_if(is_fillable_list(fmt, &exprs, &items))
@@ -471,6 +498,13 @@ mod tests {
             ("x.f(&[a, b])", Preferred),
             ("(g(a, b),)", WeakPreference),
             ("[g(a, b)]", WeakPreference),
+            ("f(r#\"\na\n\"#)", Preferred),
+            ("[ &\"a\nb\"]", Preferred),
+            ("f(\n    \"a\nb\",\n)", Never),
+            ("f(/* c */ \"a\nb\")", Never),
+            ("f(\"a\")", Never),
+            ("f(a, \"a\nb\")", Never),
+            ("(\"a\nb\",)", Never),
         ] {
             assert_eq!(hug(code), expected, "{code}");
         }
