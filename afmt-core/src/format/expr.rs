@@ -38,9 +38,13 @@ fn format_path_expr(fmt: &Formatter, path_expr: PathExpr) -> Frag {
     format_path(fmt, path_expr.path().unwrap())
 }
 
+/// `callee(args)`. "Prefer not to break a line in the callee expression" (Style Guide): a broken
+/// callee costs a split, so the arguments break first (`Some((self.filler)(` / `...` / `))`, not
+/// `Some((self` / `.filler)(...))`); a callee that cannot be on one line keeps the arguments on its
+/// last line (`})(input)`), as rustfmt does
 fn format_call_expr(fmt: &Formatter, call: CallExpr) -> Frag {
     let mut builder = Builder::new(fmt);
-    builder.push(format_expr(fmt, call.expr().unwrap()));
+    builder.push(fmt.keep_together(format_expr(fmt, call.expr().unwrap())));
     builder.push(format_arg_list(fmt, call.arg_list().unwrap()));
     builder.into_frag()
 }
