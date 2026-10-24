@@ -7,7 +7,9 @@ use super::ty::{format_ret_type, format_type};
 use crate::format::common::format_lifetime;
 use crate::formatter::Edge::{Operator, Tight, Word};
 use crate::formatter::{Builder, Formatter, Frag};
-use crate::layout::list::{Delimiters, FlatLimit, ListLayout, delimited_list, list_items_cast};
+use crate::layout::list::{
+    Delimiters, FlatLimit, Hug, ListLayout, delimited_list, hug_last_item, list_items_cast,
+};
 use ra_ap_syntax::AstNode;
 use ra_ap_syntax::ast::{
     AssocTypeArg, GenericArg, GenericArgList, HasGenericArgs, HasTypeBounds, NameRef,
@@ -76,13 +78,40 @@ fn format_type_anchor(fmt: &Formatter, anchor: TypeAnchor) -> Frag {
     Delimiters::angles_of(anchor.syntax()).enclose(fmt, inner.into_frag())
 }
 
-/// `<A, B>`, or the turbofish `::<A, B>`
+/// Whether a single generic argument may overflow its `<>`, i.e. start on the line of `<` and end on
+/// the line of `>`: `From<&(` / `...` / `)>`. A tuple type, also after `&` or `*`, as in rustfmt
+/// (`can_be_overflowed_type`); not a path, slice or array type.
+fn is_combinable_type(ty: &Type) -> bool {
+    match ty {
+        Type::TupleType(_) => true,
+        Type::RefType(ty) => ty.ty().is_some_and(|t| is_combinable_type(&t)),
+        Type::PtrType(ty) => ty.ty().is_some_and(|t| is_combinable_type(&t)),
+        _ => false,
+    }
+}
+
+/// How the last of the generic arguments `args` may hug their `<>`: a single combinable type (see
+/// `is_combinable_type`), when that takes fewer lines than the broken list; a type that fits on its
+/// own line is broken at the outermost scope instead (`Option<` / `(A, B),` / `>`, "prefer breaking
+/// at outermost scope", Style Guide)
+fn last_type_arg_hug(args: &[GenericArg]) -> Hug {
+    match args {
+        [GenericArg::TypeArg(arg)] if arg.ty().is_some_and(|t| is_combinable_type(&t)) => {
+            Hug::Allowed
+        }
+        _ => Hug::Never,
+    }
+}
+
+/// `<A, B>`, or the turbofish `::<A, B>`; a single tuple type may hug it (see `last_type_arg_hug`)
 pub(super) fn format_generic_arg_list(fmt: &Formatter, args: GenericArgList) -> Frag {
     let mut builder = Builder::new(fmt);
     if let Some(token) = args.coloncolon_token() {
         builder.push_token(token, Tight);
     }
-    let items = list_items_cast(args.syntax(), |a| format_generic_arg(fmt, a));
+    let hug = last_type_arg_hug(&args.generic_args().collect::<Vec<_>>());
+    let mut items = list_items_cast(args.syntax(), |a| format_generic_arg(fmt, a));
+    hug_last_item(&mut items, hug);
     builder.push(format_angle_list(fmt, args.syntax(), &items));
     builder.into_frag()
 }
@@ -128,4 +157,40 @@ fn format_parenthesized_arg_list(fmt: &Formatter, args: ParenthesizedArgList) ->
     // "Avoid breaking lines in types where possible" (Style Guide)
     builder.push(fmt.keep_together(list));
     builder.into_frag()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Hug, last_type_arg_hug};
+    use ra_ap_syntax::ast::GenericArgList;
+    use ra_ap_syntax::{AstNode, Edition, SourceFile};
+
+    /// The hug of the last argument of the first generic argument list in the type `ty`
+    fn hug(ty: &str) -> Hug {
+        let source = format!("type T = {ty};");
+        let parse = SourceFile::parse(&source, Edition::Edition2024);
+        let list = (parse.syntax_node().descendants())
+            .find_map(GenericArgList::cast)
+            .unwrap();
+        last_type_arg_hug(&list.generic_args().collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn last_type_arg_hugs() {
+        use Hug::{Allowed, Never};
+        for (ty, expected) in [
+            ("Option<(A, B)>", Allowed),
+            ("From<&(A, B)>", Allowed),
+            ("From<&mut (A, B)>", Allowed),
+            ("Box<*const (A, B)>", Allowed),
+            ("Vec<A>", Never),
+            ("Vec<[A; 2]>", Never),
+            ("Vec<&[A]>", Never),
+            ("Vec<Foo<A, B>>", Never),
+            ("HashMap<K, (A, B)>", Never),
+            ("Foo<'a, (A, B)>", Never),
+        ] {
+            assert_eq!(hug(ty), expected, "{ty}");
+        }
+    }
 }
