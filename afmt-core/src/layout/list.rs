@@ -193,21 +193,32 @@ fn push_or_skip_comma(builder: &mut Builder, item: &ListItem, comma: bool) {
 }
 
 /// Items filled on lines, as many on each line as fit: `a, b, c,` / `d, e,`; with a line break after `open`,
-/// indented, and a trailing comma. Items with `own_line` are alone on their line. Comments are placed
-/// like rustfmt does: a comment before the comma or ending the line belongs to the item and ends the
-/// line, a comment followed by an item on the same line stays in front of it, and an own-line comment
-/// gets its own line. Comments ending the line of `open` stay there, as in vertical lists.
-fn fill_list(fmt: &Formatter, items: &[ListItem], open: Option<SyntaxToken>) -> Frag {
+/// indented, and a trailing comma (unless it is `Never` or `Omitted`). Items with `own_line` are
+/// alone on their line. Comments are placed like rustfmt does: a comment before the comma or ending
+/// the line belongs to the item and ends the line, a comment followed by an item on the same line
+/// stays in front of it, and an own-line comment gets its own line. Comments ending the line of
+/// `open` stay there, as in vertical lists.
+fn fill_list(
+    fmt: &Formatter,
+    items: &[ListItem],
+    open: Option<SyntaxToken>,
+    trailing: TrailingSeparator,
+) -> Frag {
     let mut builder = Builder::with_cursor(fmt, open);
     let line_comments = builder.push_comments_ending_line();
     builder.align_trailing_comments(fmt.align_group());
     for (i, item) in items.iter().enumerate() {
         builder.push_leading_comments();
         builder.push(item.frag.clone());
-        let had_post_comment = builder.push_separator_with_trailing_comments(SyntaxKind::COMMA);
         let Some(next) = items.get(i + 1) else {
+            if trailing.comma_when_broken() {
+                builder.push_separator(SyntaxKind::COMMA);
+            } else {
+                builder.skip_separator(SyntaxKind::COMMA);
+            }
             break;
         };
+        let had_post_comment = builder.push_separator_with_trailing_comments(SyntaxKind::COMMA);
         if had_post_comment
             || item.own_line
             || next.own_line
@@ -280,11 +291,7 @@ fn vertical_list(
         } else {
             item.frag.clone()
         });
-        let skip = matches!(
-            trailing,
-            TrailingSeparator::Never | TrailingSeparator::Omitted
-        );
-        if is_last && skip {
+        if is_last && !trailing.comma_when_broken() {
             builder.skip_separator(SyntaxKind::COMMA);
         } else {
             builder.push_separator(SyntaxKind::COMMA);
@@ -645,6 +652,16 @@ pub(crate) enum TrailingSeparator {
     Omitted,
 }
 
+impl TrailingSeparator {
+    /// Whether a broken list (vertical or filled) has a comma after its last item
+    fn comma_when_broken(self) -> bool {
+        matches!(
+            self,
+            TrailingSeparator::IfVertical | TrailingSeparator::Required
+        )
+    }
+}
+
 /// When the items may be put on a single line
 #[derive(Clone, Copy)]
 pub(crate) enum FlatLimit {
@@ -810,7 +827,7 @@ pub(crate) fn delimited_list(
                 layout.trailing,
                 None,
             ),
-            BrokenList::Fill => fill_list(fmt, items, open.clone()),
+            BrokenList::Fill => fill_list(fmt, items, open.clone(), layout.trailing),
             BrokenList::Aligned => aligned_list(fmt, items, open.clone()),
         };
         // With a preferred overflow, the broken layouts are used only when it does not fit; an item

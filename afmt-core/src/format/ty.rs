@@ -78,10 +78,16 @@ fn format_paren_type(fmt: &Formatter, ty: ParenType) -> Frag {
     Delimiters::parens_of(ty.syntax()).enclose(fmt, inner)
 }
 
-/// `impl A + B` or `dyn A + B`
-fn format_bounds_type(fmt: &Formatter, keyword: SyntaxToken, bounds: TypeBoundList) -> Frag {
+/// `impl A + B`, `dyn A + B`, or a trait object without `dyn` (`A + B`, before edition 2018)
+fn format_bounds_type(
+    fmt: &Formatter,
+    keyword: Option<SyntaxToken>,
+    bounds: TypeBoundList,
+) -> Frag {
     let mut builder = Builder::new(fmt);
-    builder.push_keyword(keyword);
+    if let Some(keyword) = keyword {
+        builder.push_keyword(keyword);
+    }
     builder.push(format_type_bound_list(fmt, bounds));
     builder.into_frag()
 }
@@ -109,10 +115,10 @@ pub(super) fn format_type(fmt: &Formatter, ty: Type) -> Frag {
         Type::ArrayType(ty) => format_array_type(fmt, ty),
         Type::ParenType(ty) => format_paren_type(fmt, ty),
         Type::ImplTraitType(ty) => {
-            format_bounds_type(fmt, ty.impl_token().unwrap(), ty.type_bound_list().unwrap())
+            format_bounds_type(fmt, ty.impl_token(), ty.type_bound_list().unwrap())
         }
         Type::DynTraitType(ty) => {
-            format_bounds_type(fmt, ty.dyn_token().unwrap(), ty.type_bound_list().unwrap())
+            format_bounds_type(fmt, ty.dyn_token(), ty.type_bound_list().unwrap())
         }
         Type::FnPtrType(ty) => format_fn_ptr_type(fmt, ty),
         Type::NeverType(ty) => fmt.token(ty.excl_token().unwrap(), Word),
