@@ -14,7 +14,7 @@ use super::ty::{format_ret_type, format_type};
 use super::{format_unsupported, format_unsupported_kind};
 use crate::comments::{is_code_kind, is_comment_kind};
 use crate::format::common::{format_lifetime, format_name};
-use crate::formatter::Edge::{Comma, Keyword, Operator, Tight, Word};
+use crate::formatter::Edge::{Comma, Operator, Tight, Word};
 use crate::formatter::{Builder, Formatter, Frag};
 use crate::layout::list::{
     Delimiters, FlatLimit, ListItem, ListLayout, Overflow, TrailingSeparator, delimited_list,
@@ -299,7 +299,7 @@ fn format_visibility(fmt: &Formatter, visibility: Visibility) -> Frag {
         builder.push(Delimiters::parens_of(inner.syntax()).enclose(fmt, path.into_frag()));
     }
     // always a space after it, also before `&`, `*`, `(` or `[` of a type (`pub &'a str`)
-    builder.into_frag().with_end(Keyword)
+    fmt.followed_by_space(builder.into_frag())
 }
 
 /// `pub name: Type`, with its attributes on their own lines; the type moves to the next line if it does

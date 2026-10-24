@@ -25,6 +25,13 @@ pub enum Edge {
     LineStart,
 }
 
+impl Edge {
+    /// The edge after a closing delimiter: `)`, `]`, `}`
+    pub fn is_closing(self) -> bool {
+        matches!(self, Edge::Close | Edge::BraceClose)
+    }
+}
+
 /// One alternative of a fragment together with its edges
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Branch {
@@ -68,22 +75,11 @@ impl Frag {
         self
     }
 
-    /// The fragment with `end` as the edge after it, e.g. `Keyword` for a fragment always followed by
-    /// a space (`pub(crate) *const u8`); a layout ending with a line break keeps it
-    pub fn with_end(mut self, end: Edge) -> Self {
-        for branch in &mut self.branches {
-            if branch.end != Edge::Break {
-                branch.end = end;
-            }
-        }
-        self
-    }
-
     /// Whether a layout of the fragment may end with a closing delimiter, e.g. a call `f(...)`
     pub fn may_end_with_delimiter(&self) -> bool {
         self.branches
             .iter()
-            .any(|b| matches!(b.end, Edge::Close | Edge::BraceClose))
+            .any(|b| b.end.is_closing())
     }
 
     /// Whether a comment follows the cursor in the source, before the next code token

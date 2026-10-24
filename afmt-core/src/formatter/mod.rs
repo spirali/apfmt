@@ -342,9 +342,13 @@ impl<'a> Formatter<'a> {
     }
 
     /// The fragment is always followed by a space, e.g. an attribute in front of a parameter:
-    /// `#[cfg(x)] &self`
+    /// `#[cfg(x)] &self`, a visibility in front of a type (`pub(crate) *const u8`); a layout ending
+    /// with a line comment still ends the line
     pub fn followed_by_space(&self, frag: Frag) -> Frag {
-        self.map_branches(frag, |b| Branch { end: Keyword, ..b })
+        self.map_branches(frag, |b| match b.end {
+            Edge::Break => b,
+            _ => Branch { end: Keyword, ..b },
+        })
     }
 
     /// Restricts the fragment to layouts that span more than one line
@@ -452,7 +456,7 @@ impl<'a> Formatter<'a> {
         let branches: Branches = frag
             .branches
             .into_iter()
-            .filter(|b| matches!(b.end, Edge::Close | Edge::BraceClose))
+            .filter(|b| b.end.is_closing())
             .filter(|b| arena.has_line_break(b.doc_id))
             .collect();
         drop(arena);
