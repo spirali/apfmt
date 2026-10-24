@@ -267,8 +267,11 @@ pub(super) fn format_head_with_block(
 
 /// `head` followed by `block` (`{ ... }`, `else { ... }`). The block follows a head without a hanging indent on its
 /// last line if it fits; otherwise the control line is broken and `{` goes on its own line (Style
-/// Guide). Below a head broken with a hanging indent, it is always on its own line, so `{` is not
-/// mistaken for a part of the head.
+/// Guide). Below a head broken with a hanging indent, it is on its own line, so `{` is not mistaken
+/// for a part of the head, except after a last line of only closing delimiters at the indentation of
+/// the head's first line (`if e == Err(Store(` / `    a,` / `)) {`, `match f(` / `...` / `).g(` /
+/// `...` / `) {`), as the Style Guide puts it for control-flow expressions and `let`-`else` (for
+/// `match`, it does not say; as rustfmt).
 pub(super) fn format_head_followed_by(fmt: &Formatter, head: &HeadLayouts, block: Frag) -> Frag {
     let next_line = |head: Frag| {
         let mut builder = Builder::new(fmt);
@@ -276,8 +279,9 @@ pub(super) fn format_head_followed_by(fmt: &Formatter, head: &HeadLayouts, block
         builder.push(fmt.on_next_line(block.clone()));
         builder.into_frag()
     };
+    let closing = (head.hanging.clone()).and_then(|hanging| fmt.closing_last_line(hanging));
     let mut layouts = None;
-    if let Some(other) = &head.other {
+    if let Some(other) = &fmt.alt_some(head.other.clone(), closing) {
         let mut same_line = Builder::new(fmt);
         same_line.push(other.clone());
         same_line.push(block.clone());

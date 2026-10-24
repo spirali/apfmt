@@ -309,9 +309,11 @@ fn vertical_lines(fmt: &Formatter, head: &Frag, lines: &[Frag]) -> Frag {
             break;
         }
         // The head may take the next line only if its last line is short: the first fragment
-        // ending with a delimiter (`foo(` / `...` / `)`), otherwise a head on a single line
+        // ending with a delimiter (`foo(` / `...` / `)`), broken only where it does not fit on one
+        // line (otherwise the chain breaks before the operator, Style Guide), whatever the lines
+        // after it gain (`}) && matches!(` / `...` / `) {`); otherwise a head on a single line
         head = if k == 0 && head.may_end_with_delimiter() {
-            line_after(fmt, head, &lines[k])
+            line_after(fmt, fmt.flat_where_fits(head, 0), &lines[k])
         } else if let Some(longer_head) = short_head_then(fmt, head, &lines[k]) {
             longer_head
         } else {

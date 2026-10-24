@@ -431,6 +431,31 @@ impl<'a> Formatter<'a> {
         })
     }
 
+    /// The layouts of the fragment spanning more lines whose last line is only closing delimiters at
+    /// the indentation where the fragment starts (`foo(` / `    a,` / `)`): they end with a closing
+    /// delimiter (see `Frag::may_end_with_delimiter`) and their last line ends at most at the
+    /// indentation of a nested line (see `short_last_line`), so a line with more on it (`) + b`,
+    /// `).c()`) or a continuation line (`    )`) is ruled out, and so is a run of more delimiters than
+    /// `tab_spaces`. `None` if no layout can end with a closing delimiter on a line of its own.
+    pub fn closing_last_line(&self, frag: Frag) -> Option<Frag> {
+        let mut arena = self.doc_arena.borrow_mut();
+        let branches: Branches = frag
+            .branches
+            .into_iter()
+            .filter(|b| matches!(b.end, Edge::Close | Edge::BraceClose))
+            .filter(|b| arena.has_line_break(b.doc_id))
+            .collect();
+        drop(arena);
+        if branches.is_empty() {
+            return None;
+        }
+        let frag = Frag {
+            branches,
+            cursor: frag.cursor,
+        };
+        Some(self.short_last_line(self.multi_line(frag)))
+    }
+
     /// Restricts the fragment to layouts whose first line spans at most `width` columns from where it
     /// starts (see `DocNode::FirstLineWithin`)
     pub fn first_line_within(&self, frag: Frag, width: u32) -> Frag {
