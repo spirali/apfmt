@@ -34,6 +34,15 @@ impl HeadLayouts {
         }
     }
 
+    /// All layouts as hanging ones, so `{` goes on its own line after them: the head is on an
+    /// indented line, e.g. after comments ending the line in front of it
+    pub fn into_hanging(self, fmt: &Formatter) -> Self {
+        HeadLayouts {
+            hanging: Some(self.all(fmt)),
+            other: None,
+        }
+    }
+
     pub fn all(self, fmt: &Formatter) -> Frag {
         fmt.alt_some(self.hanging, self.other)
             .expect("a head has a layout")

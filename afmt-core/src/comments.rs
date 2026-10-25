@@ -111,6 +111,12 @@ pub(crate) fn own_line_comment_follows(token: &SyntaxToken) -> bool {
     first_own_line_comment(token).is_some()
 }
 
+/// Whether comments after `token` put the next code token on a later line: an own-line comment or
+/// a line comment ending the line of `token` (see `Builder::push`, which indents what follows them)
+pub(crate) fn comments_break_line_after(token: &SyntaxToken) -> bool {
+    trivia_from(token.next_token()).any(|t| is_line_comment(&t)) || own_line_comment_follows(token)
+}
+
 /// Whether `node` contains a comment
 pub(crate) fn has_comments(node: &SyntaxNode) -> bool {
     node.descendants_with_tokens()

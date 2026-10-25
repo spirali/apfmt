@@ -10,7 +10,7 @@ use super::expr::{
 use super::expr_list::{ExprItem, format_expr_item};
 use super::pat::pat_layouts;
 use super::stmt::{format_block_expr, format_block_expr_with_tail};
-use crate::comments::has_comments;
+use crate::comments::{comments_break_line_after, has_comments};
 use crate::doc::AlignGroup;
 use crate::formatter::Edge::{Operator, Word};
 use crate::formatter::{Builder, Formatter, Frag};
@@ -48,20 +48,32 @@ pub(super) fn format_while_expr(fmt: &Formatter, expr: WhileExpr) -> Frag {
 
 /// `'a: for pat in iterable {`; a broken head is preferably broken before `in` (Style Guide): `for pat`
 /// / `    in iterable` / `{`; a broken pattern costs a split (see `pat_layouts`), and after it `{`
-/// follows only an iterable spanning more lines (see `pattern_head`): `} in items` / `{`
+/// follows only an iterable spanning more lines (see `pattern_head`): `} in items` / `{`. After
+/// comments ending the line of `in`, the iterable is on an indented line, so the head hangs: `for p
+/// in` / `    // c` / `    items` / `{`
 pub(super) fn format_for_expr(fmt: &Formatter, expr: ForExpr) -> Frag {
     let mut builder = Builder::new(fmt);
     push_label(fmt, &mut builder, expr.label());
     let pat = pat_layouts(fmt, expr.pat().unwrap());
     let all_pat = pat.clone().all(fmt);
-    let in_keyword = fmt.keyword(expr.in_token().unwrap());
-    let iterable = format_head_expr(fmt, expr.iterable().unwrap());
+    let in_token = expr.in_token().unwrap();
+    let comment_after_in = comments_break_line_after(&in_token);
+    let in_keyword = fmt.keyword(in_token);
+    let mut iterable = format_head_expr(fmt, expr.iterable().unwrap());
+    if comment_after_in {
+        iterable = iterable.into_hanging(fmt);
+    }
     let head =
         |pat: Frag, iterable: Frag| Builder::concat(fmt, [pat, in_keyword.clone(), iterable]);
     // Broken before `in` is preferred to an iterable broken on the line of `for`, hanging or not
-    // (Style Guide): `for p` / `    in a.b().c(d)` / `{`, not `for p in a.b().c(` / `    d,` / `) {`
+    // (Style Guide): `for p` / `    in a.b().c(d)` / `{`, not `for p in a.b().c(` / `    d,` / `) {`;
+    // not after comments ending the line of `in`, which break it anyway
     let on_line = HeadLayouts {
-        hanging: iterable.hanging.clone().map(|i| fmt.dispreferred(i)),
+        hanging: if comment_after_in {
+            iterable.hanging.clone()
+        } else {
+            iterable.hanging.clone().map(|i| fmt.dispreferred(i))
+        },
         other: iterable.other.clone().map(|i| fmt.keep_together(i)),
     };
     let HeadLayouts { hanging, other } = pattern_head(fmt, &pat, &all_pat, &on_line, head);

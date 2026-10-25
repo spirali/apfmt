@@ -15,7 +15,7 @@ use super::stmt::{
 };
 use super::ty::format_type;
 use super::{format_unsupported_kind, format_unsupported_with_attrs};
-use crate::comments::{is_code_kind, is_comment_kind};
+use crate::comments::{comments_break_line_after, is_code_kind, is_comment_kind};
 use crate::doc::{CLOSE_BRACE_DOC, OPEN_BRACE_DOC};
 use crate::format::common::format_lifetime;
 use crate::formatter::Edge::{BraceClose, BraceOpen, Comma, Operator, Tight, Word};
@@ -255,17 +255,28 @@ fn is_hanging_expr(expr: &Expr) -> bool {
 /// `for pat in expr`) followed by its block, see `format_head_followed_by`. A head broken over more
 /// lines costs a split, as `{` on its own line does: the Style Guide breaks a control line only when
 /// it does not fit, so `let x =` / `    if a.b() {` is preferred to `let x = if a` / `    .b()` /
-/// `{`, and `if f(a, b)` / `{` to `if f(` / `    a,` / `    b,` / `) {` (as rustfmt).
+/// `{`, and `if f(a, b)` / `{` to `if f(` / `    a,` / `    b,` / `) {` (as rustfmt). After comments
+/// that end the line of the keyword (see `comments_break_line_after`), the head is block indented on
+/// the next line and, the control line being broken, `{` is on its own line (Style Guide): `if` /
+/// `    // c` / `    cond` / `{`; rustfmt keeps the head at the indentation of the keyword (`if` /
+/// `// c` / `cond {`).
 pub(super) fn format_head_with_block(
     fmt: &Formatter,
     keyword: SyntaxToken,
     head: &HeadLayouts,
     block: Frag,
 ) -> Frag {
+    let comment_after_keyword = comments_break_line_after(&keyword);
     let mut builder = Builder::new(fmt);
     builder.push_keyword(keyword);
     let head = head.clone().map(|head| fmt.keep_together(head));
-    builder.push(format_head_followed_by(fmt, &head, block));
+    if comment_after_keyword {
+        // A continuation after such comments goes on an indented line (`Builder::push`)
+        builder.push(head.all(fmt));
+        builder.push(fmt.on_next_line(block));
+    } else {
+        builder.push(format_head_followed_by(fmt, &head, block));
+    }
     builder.into_frag()
 }
 

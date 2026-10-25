@@ -1,8 +1,8 @@
 //! Delimited, comma-separated lists
 
 use crate::comments::{
-    comments_at_closing_indentation, is_code_kind, is_comment_kind, is_line_comment,
-    next_code_token, own_line_comment_follows, trivia_from,
+    comments_at_closing_indentation, comments_break_line_after, is_code_kind, is_comment_kind,
+    is_line_comment, next_code_token, own_line_comment_follows, prev_code_token, trivia_from,
 };
 use crate::doc::WeakPreference;
 use crate::formatter::Edge::{BraceClose, BraceOpen, Close, Comma, Open, Word};
@@ -475,11 +475,25 @@ impl Delimiters {
         )
     }
 
-    /// `inner` between the delimiters, e.g. `(a + b)`, `<T as Trait>`, `{ x }`;
-    /// the comments following the opening delimiter are placed in front of `inner`
+    /// `inner` between the delimiters, e.g. `(a + b)`, `<T as Trait>`, `{ x }`; the comments
+    /// following the opening delimiter are placed in front of `inner`. When comments put `inner` on
+    /// a line after the opening delimiter (see `comments_break_line_after`) or an own-line comment
+    /// follows it, the delimiters are broken as those of a block: `(` / `    // c` / `    a && b` /
+    /// `)`, with a comment ending the line of `(` kept there (see `body_after_opener`).
     pub fn enclose(&self, fmt: &Formatter, inner: Frag) -> Frag {
         let (open_edge, _) = self.edges();
-        self.surround(fmt, fmt.token(self.open.clone(), open_edge), inner)
+        let comment_before_close =
+            prev_code_token(&self.close).is_some_and(|t| own_line_comment_follows(&t));
+        if !(comments_break_line_after(&self.open) || comment_before_close) {
+            return self.surround(fmt, fmt.token(self.open.clone(), open_edge), inner);
+        }
+        let mut body = Builder::with_cursor(fmt, Some(self.open.clone()));
+        let line_comments = body.push_comments_ending_line();
+        body.push_comments();
+        body.push_on_new_line(inner);
+        body.flush_trivia();
+        body.push_newline();
+        self.wrap_body(fmt, fmt.body_after_opener(line_comments, body.into_frag()))
     }
 
     fn surround(&self, fmt: &Formatter, open: Frag, inner: Frag) -> Frag {
