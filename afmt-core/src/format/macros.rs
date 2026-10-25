@@ -6,7 +6,7 @@ use super::expr_list::{format_array_expr, format_expr_list, is_simple_expr};
 use super::format_reindented;
 use super::item::format_item_list;
 use super::path::format_path;
-use super::stmt::format_block_expr;
+use super::stmt::format_transcriber_block;
 use crate::comments::{has_comments, is_code_kind, prev_code_token};
 use crate::formatter::Edge::{BraceClose, BraceOpen, Close, Open, Operator, Tight, Word};
 use crate::formatter::{Builder, Formatter, Frag};
@@ -129,7 +129,7 @@ fn format_transcriber_body(fmt: &Formatter, node: SyntaxNode) -> Frag {
     let body = BlockExpr::cast(node).unwrap();
     match hugged_block(&body) {
         Some((list, block)) => format_hugged_block(fmt, list, block),
-        None => format_block_expr(fmt, body),
+        None => format_transcriber_block(fmt, body),
     }
 }
 

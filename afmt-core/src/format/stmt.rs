@@ -156,17 +156,22 @@ fn format_stmt(fmt: &Formatter, stmt: Stmt) -> Frag {
 }
 
 /// The statements of a broken block; `tail` is the already formatted tail expression, when it is
-/// shared with another layout. A `return`, `break` or `continue` ending the block gets `;` with
-/// `trailing_semicolon` and loses it without (as rustfmt): `break;`, `break`.
-fn format_stmt_list(fmt: &Formatter, stmt_list: StmtList, tail: Option<Frag>) -> Frag {
+/// shared with another layout. With `normalize_jump`, a `return`, `break` or `continue` ending the
+/// block gets `;` with `trailing_semicolon` and loses it without (as rustfmt): `break;`, `break`.
+fn format_stmt_list(
+    fmt: &Formatter,
+    stmt_list: StmtList,
+    tail: Option<Frag>,
+    normalize_jump: bool,
+) -> Frag {
     let delims = Delimiters::braces_of(stmt_list.syntax());
     let trailing_semicolon = fmt.config().trailing_semicolon;
     let tail = stmt_list.tail_expr().map(|expr| {
         let node = expr.syntax().clone();
         let tail = tail.unwrap_or_else(|| format_expr_at(fmt, expr, ExprPosition::Tail));
-        format_block_tail(fmt, &node, tail)
+        if normalize_jump { format_block_tail(fmt, &node, tail) } else { tail }
     });
-    let last_jump = (!trailing_semicolon)
+    let last_jump = (normalize_jump && !trailing_semicolon)
         .then(|| trailing_jump_stmt(&stmt_list))
         .flatten();
     let lines = stmt_list
@@ -211,8 +216,16 @@ pub(super) fn format_block_expr_with_tail(
     }
     let mut builder = Builder::new(fmt);
     push_block_prefix(fmt, &mut builder, &body);
-    builder.push(format_stmt_list(fmt, body.stmt_list().unwrap(), tail));
+    builder.push(format_stmt_list(fmt, body.stmt_list().unwrap(), tail, true));
     builder.into_frag()
+}
+
+/// The transcriber of a `macro_rules!` rule parsed as a block (see `parse_transcriber`), broken; a
+/// `return`, `break` or `continue` ending it keeps or lacks its `;` as in the source: it is not a
+/// block of the expansion, and `;` would end up in an expression where the macro is used
+/// (rustc's lint `semicolon_in_expressions_from_macros`), as rustfmt leaves it
+pub(super) fn format_transcriber_block(fmt: &Formatter, body: BlockExpr) -> Frag {
+    format_stmt_list(fmt, body.stmt_list().unwrap(), None, false)
 }
 
 /// Pushes the label and the modifiers of a block in front of its `{`: `'a: `, `unsafe `, `async move `
