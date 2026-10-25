@@ -95,15 +95,20 @@ pub(crate) fn line_ends_after(token: &SyntaxToken, separator: Option<SyntaxKind>
         .is_none_or(|t| t.kind() == SyntaxKind::WHITESPACE)
 }
 
+/// The first comment on a later line than `token` (an own-line comment), before the next code
+/// token; comments ending the line of `token` are skipped. Consecutive whitespace is a single
+/// token, so the token after the first line break is either that comment or code.
+pub(crate) fn first_own_line_comment(token: &SyntaxToken) -> Option<SyntaxToken> {
+    let line_break = trivia_from(token.next_token())
+        .find(|t| t.kind() == SyntaxKind::WHITESPACE && t.text().contains('\n'))?;
+    line_break
+        .next_token()
+        .filter(|t| is_comment_kind(t.kind()))
+}
+
 /// Whether an own-line comment (one on a later line) follows `token` before the next code token
 pub(crate) fn own_line_comment_follows(token: &SyntaxToken) -> bool {
-    let mut newlines = 0;
-    trivia_from(token.next_token()).any(|t| {
-        if t.kind() == SyntaxKind::WHITESPACE {
-            newlines += count_newlines(&t);
-        }
-        is_comment_kind(t.kind()) && newlines > 0
-    })
+    first_own_line_comment(token).is_some()
 }
 
 /// Whether `node` contains a comment
@@ -155,20 +160,8 @@ pub(crate) fn line_indentation(token: &SyntaxToken) -> String {
 /// / `} else if unsafe { ... } {`), as in rustfmt; comments ending the line of the last code are not
 /// on their own lines. A comment indented as the block's contents stays in it.
 pub(crate) fn comments_at_closing_indentation(close: &SyntaxToken) -> bool {
-    let Some(last_code) = prev_code_token(close) else {
-        return false;
-    };
-    let mut newlines = 0;
-    for t in tokens_between(&last_code, close) {
-        match t.kind() {
-            SyntaxKind::WHITESPACE => newlines += count_newlines(&t),
-            kind if is_comment_kind(kind) && newlines > 0 => {
-                return line_indentation(&t).len() <= line_indentation(close).len();
-            }
-            _ => {}
-        }
-    }
-    false
+    let comment = prev_code_token(close).and_then(|t| first_own_line_comment(&t));
+    comment.is_some_and(|c| line_indentation(&c).len() <= line_indentation(close).len())
 }
 
 /// The first token after `token` that is not trivia

@@ -133,30 +133,33 @@ fn changes_punct_spacing(node: &SyntaxNode) -> bool {
     // A nested token tree (`vec![...]` in the arguments) is checked when it is parsed itself
     let is_punct = |t: &SyntaxToken| {
         t.kind().is_punct()
-            && t.parent().is_none_or(|p| p.kind() != SyntaxKind::TOKEN_TREE)
+            && t.parent()
+                .is_none_or(|p| p.kind() != SyntaxKind::TOKEN_TREE)
             && !matches!(
                 t.kind(),
                 T!['('] | T![')'] | T!['['] | T![']'] | T!['{'] | T!['}'] | T![,] | T![;] | T![_]
             )
     };
-    let tokens = node.descendants_with_tokens().filter_map(|e| e.into_token());
+    let tokens = node
+        .descendants_with_tokens()
+        .filter_map(|e| e.into_token());
     tokens
         .filter(|t| is_punct(t) && t.kind() != T![?])
         .any(|first| {
             let Some(next) = first.next_token() else {
                 return false;
             };
-            let (second, joined) = if next.kind() == SyntaxKind::WHITESPACE {
-                match next.next_token() {
-                    Some(second) => (second, false),
-                    None => return false,
-                }
+            let joined = next.kind() != SyntaxKind::WHITESPACE;
+            let second = if joined {
+                Some(next)
             } else {
-                (next, true)
+                next.next_token()
             };
-            is_punct(&second)
-                && node.text_range().contains_range(second.text_range())
-                && joined != is_printed_joined(&first, &second)
+            second.is_some_and(|second| {
+                is_punct(&second)
+                    && node.text_range().contains_range(second.text_range())
+                    && joined != is_printed_joined(&first, &second)
+            })
         })
 }
 
@@ -167,19 +170,13 @@ fn changes_punct_spacing(node: &SyntaxNode) -> bool {
 /// and the angle brackets of a type with what follows them (`>>`, `>::`, `|x: Vec<T>|`,
 /// `Vec<T>: Clone`). Every other pair gets whitespace, e.g. around a binary operator.
 fn is_printed_joined(first: &SyntaxToken, second: &SyntaxToken) -> bool {
-    let parent = first.parent().map(|p| p.kind());
-    let is_first_of_parent = || {
-        first
-            .parent()
-            .and_then(|p| p.first_token())
-            .is_some_and(|t| t == *first)
-    };
-    match (first.kind(), parent) {
-        (_, Some(SyntaxKind::PREFIX_EXPR | SyntaxKind::REF_EXPR)) => is_first_of_parent(),
-        (_, Some(SyntaxKind::REF_PAT | SyntaxKind::REF_TYPE | SyntaxKind::PTR_TYPE)) => {
-            is_first_of_parent()
-        }
-        (T![|], Some(SyntaxKind::PARAM_LIST)) => is_first_of_parent(),
+    use SyntaxKind::{PARAM_LIST, PREFIX_EXPR, PTR_TYPE, REF_EXPR, REF_PAT, REF_TYPE};
+    let parent = first.parent();
+    let opens_parent = || parent.as_ref().and_then(|p| p.first_token()).as_ref() == Some(first);
+    match (first.kind(), parent.as_ref().map(|p| p.kind())) {
+        // An operator or `|` opening its node, followed by its operand or pattern: `!!x`, `&*x`, `|&x|`
+        (_, Some(PREFIX_EXPR | REF_EXPR | REF_PAT | REF_TYPE | PTR_TYPE))
+        | (T![|], Some(PARAM_LIST)) => opens_parent(),
         (T![..] | T![..=] | T![...], Some(SyntaxKind::RANGE_EXPR | SyntaxKind::RANGE_PAT)) => true,
         (T![::], _) => matches!(second.kind(), T![<] | T![*]),
         (T![<], Some(kind)) => kind == SyntaxKind::GENERIC_PARAM_LIST || is_angle_list(kind),

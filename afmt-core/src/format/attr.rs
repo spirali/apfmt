@@ -87,23 +87,23 @@ pub(super) fn attach_attrs(
     rest: Frag,
 ) -> Frag {
     let attrs = attrs.into_iter().collect::<Vec<_>>();
-    let on_own_lines = |attrs: Vec<Frag>, rest: Frag| {
-        let mut builder = Builder::new(fmt);
-        for frag in attrs.into_iter().chain([rest]) {
-            builder.push_on_new_line(frag);
-        }
-        builder.into_frag()
-    };
+    let mut own_lines = Builder::new(fmt);
+    for frag in attrs.iter().cloned().chain([rest.clone()]) {
+        own_lines.push_on_new_line(frag);
+    }
+    let own_lines = own_lines.into_frag();
     // a single attribute on one line in front of the node, unless a comment follows it
     let inline_attr = match attrs.as_slice() {
         [attr] if inline && !attr.comment_follows() => fmt.flat_if_possible(attr.clone()),
         _ => None,
     };
-    let Some(inline_attr) = inline_attr else {
-        return on_own_lines(attrs, rest);
-    };
-    let same_line = Builder::concat(fmt, [fmt.followed_by_space(inline_attr), rest.clone()]);
-    fmt.alt_frag(same_line, on_own_lines(attrs, rest))
+    match inline_attr {
+        Some(attr) => {
+            let same_line = Builder::concat(fmt, [fmt.followed_by_space(attr), rest]);
+            fmt.alt_frag(same_line, own_lines)
+        }
+        None => own_lines,
+    }
 }
 
 fn format_meta(fmt: &Formatter, meta: Meta) -> Frag {

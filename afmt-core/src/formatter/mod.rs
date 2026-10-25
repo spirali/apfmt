@@ -388,8 +388,11 @@ impl<'a> Formatter<'a> {
 
     /// The fragment on a single line, or spanning more lines and then ending its last line, so that
     /// what follows starts on the next line, e.g. `{` after the broken header of an item (`impl<` /
-    /// `    T: A,` / `> Trait for Type` / `{`)
-    pub fn ends_line_if_broken(&self, frag: Frag) -> Frag {
+    /// `    T: A,` / `> Trait for Type` / `{`); the fragment unchanged if not `ends_line`
+    pub fn ends_line_if_broken(&self, frag: Frag, ends_line: bool) -> Frag {
+        if !ends_line {
+            return frag;
+        }
         let mut broken = Builder::new(self);
         broken.push(self.multi_line(frag.clone()));
         broken.push_newline();

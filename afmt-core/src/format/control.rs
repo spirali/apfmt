@@ -266,19 +266,13 @@ fn format_match_arm(fmt: &Formatter, arm: &MatchArm, group: Option<AlignGroup>) 
     // room for ` => {` in the same way), also when the body could gain by it (by being less indented
     // than in a block): "If using a block form on the right-hand side of a match arm makes it
     // possible to avoid breaking on the left-hand side, do that" (Style Guide)
-    let lhs = {
+    let lhs = fmt.flat_where_fits(lhs.into_frag(), " {".len() as u32);
+    let with_body = |lhs: Frag, body: Frag, comma: bool| {
         let mut builder = Builder::new(fmt);
-        builder.push(fmt.flat_where_fits(lhs.into_frag(), " {".len() as u32));
-        builder
-    };
-    let with_body = |mut builder: Builder, body: Frag, comma: bool| {
+        builder.push(lhs);
         builder.push(body);
         builder.align_trailing_comments(group);
-        if comma {
-            builder.push_separator(SyntaxKind::COMMA);
-        } else {
-            builder.skip_separator(SyntaxKind::COMMA);
-        }
+        builder.push_or_skip_separator(SyntaxKind::COMMA, comma);
         // The comments ending the line of the arm are its trailing comments, aligned in `group`
         builder.push_comments_ending_line();
         builder.into_frag()
@@ -294,10 +288,10 @@ fn format_match_arm(fmt: &Formatter, arm: &MatchArm, group: Option<AlignGroup>) 
         // block starts on its own line, an empty one stays on the line of the guard (as in rustfmt).
         let broken = if is_empty_block(&arm.expr().unwrap()) {
             broken.push(fmt.indented_line(Builder::concat(fmt, [guard, arrow, block])));
-            with_body(broken, Frag::empty(), false)
+            with_body(broken.into_frag(), Frag::empty(), false)
         } else {
             broken.push(fmt.indented_line(Builder::concat(fmt, [guard, arrow])));
-            with_body(broken, fmt.on_next_line(block), false)
+            with_body(broken.into_frag(), fmt.on_next_line(block), false)
         };
         layouts = fmt.alt_frag(layouts, broken);
     }

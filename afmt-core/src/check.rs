@@ -32,8 +32,16 @@ pub(crate) fn check_result(
         .zip(&output_steps)
         .find(|((a, _), (b, _))| a != b);
     if let Some(((a, a_offset), (b, b_offset))) = mismatch {
+        // A macro argument is compared parsed only if formatting keeps whether its punctuation is
+        // joined (see `changes_punct_spacing`), so on one side only if the spacing has changed
+        let tree = Step::Enter(SyntaxKind::TOKEN_TREE);
+        let hint = if (*a == tree) != (*b == tree) {
+            " (macro tokens parsed on one side only: their punctuation spacing has changed)"
+        } else {
+            ""
+        };
         return Err(format!(
-            "the syntax tree differs: {a:?} at input {} vs. {b:?} at output {}",
+            "the syntax tree differs: {a:?} at input {} vs. {b:?} at output {}{hint}",
             position(input_text, *a_offset),
             position(output_text, *b_offset)
         ));
@@ -647,5 +655,23 @@ mod tests {
         let error =
             check_result_test("extern fn f() {}", "extern \"system\" fn f() {}").unwrap_err();
         assert!(error.contains("STRING"), "{error}");
+    }
+
+    #[test]
+    fn macro_punct_spacing_kept_passes() {
+        let input = "fn f() { m!(a,&*x, b..=c, x?.y); }";
+        let output = "fn f() {\n    m!(\n        a,\n        &*x,\n        b..=c,\n        x?\n            .y\n    );\n}";
+        assert_eq!(check_result_test(input, output), Ok(()));
+    }
+
+    #[test]
+    fn macro_punct_spacing_changed_fails() {
+        for (input, output) in [
+            ("fn f() { m!(&*x); }", "fn f() { m!(& *x); }"),
+            ("fn f() { m!(a - -b); }", "fn f() { m!(a --b); }"),
+        ] {
+            let error = check_result_test(input, output).unwrap_err();
+            assert!(error.contains("punctuation spacing"), "{error}");
+        }
     }
 }

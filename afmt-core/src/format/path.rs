@@ -94,9 +94,12 @@ fn is_combinable_type(ty: &Type) -> bool {
 /// `is_combinable_type`), when that takes fewer lines than the broken list; a type that fits on its
 /// own line is broken at the outermost scope instead (`Option<` / `(A, B),` / `>`, "prefer breaking
 /// at outermost scope", Style Guide)
-fn last_type_arg_hug(args: &[GenericArg]) -> Hug {
-    match args {
-        [GenericArg::TypeArg(arg)] if arg.ty().is_some_and(|t| is_combinable_type(&t)) => {
+fn last_type_arg_hug(args: &GenericArgList) -> Hug {
+    let mut args = args.generic_args();
+    match (args.next(), args.next()) {
+        (Some(GenericArg::TypeArg(arg)), None)
+            if arg.ty().is_some_and(|t| is_combinable_type(&t)) =>
+        {
             Hug::Allowed
         }
         _ => Hug::Never,
@@ -109,7 +112,7 @@ pub(super) fn format_generic_arg_list(fmt: &Formatter, args: GenericArgList) -> 
     if let Some(token) = args.coloncolon_token() {
         builder.push_token(token, Tight);
     }
-    let hug = last_type_arg_hug(&args.generic_args().collect::<Vec<_>>());
+    let hug = last_type_arg_hug(&args);
     let mut items = list_items_cast(args.syntax(), |a| format_generic_arg(fmt, a));
     hug_last_item(&mut items, hug);
     builder.push(format_angle_list(fmt, args.syntax(), &items));
@@ -172,7 +175,7 @@ mod tests {
         let list = (parse.syntax_node().descendants())
             .find_map(GenericArgList::cast)
             .unwrap();
-        last_type_arg_hug(&list.generic_args().collect::<Vec<_>>())
+        last_type_arg_hug(&list)
     }
 
     #[test]

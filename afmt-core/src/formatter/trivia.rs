@@ -260,6 +260,12 @@ impl<'a> Builder<'a> {
         self.take_separator(kind, false);
     }
 
+    /// `push_separator` if `push`, otherwise `skip_separator`, e.g. a trailing comma only when a list
+    /// is broken
+    pub fn push_or_skip_separator(&mut self, kind: SyntaxKind, push: bool) {
+        self.take_separator(kind, push);
+    }
+
     /// Takes the source separator `kind` after the cursor (if there is one) together with the comments
     /// in front of it, which are pushed after it; with `push`, a separator is pushed in front of them
     fn take_separator(&mut self, kind: SyntaxKind, push: bool) {

@@ -4,6 +4,7 @@ use super::chain::{operand_chain, operator_chain_parts};
 use super::closure::closure_layouts;
 use super::expr::format_expr;
 use super::macros::{is_array_macro, is_brace_macro, is_list_macro, macro_argument_count};
+use crate::comments::{prev_code_token, trivia_from};
 use crate::format::common::format_repeat;
 use crate::formatter::{Formatter, Frag};
 use crate::layout::chain::ChainLayouts;
@@ -11,11 +12,10 @@ use crate::layout::list::TrailingSeparator;
 use crate::layout::list::{
     Delimiters, FlatLimit, Hug, ListItem, ListLayout, Overflow, delimited_list, list_items_cast,
 };
-use crate::comments::is_code_kind;
 use crate::syntax_utils::has_attrs;
 use crate::utils::with_is_last;
-use ra_ap_syntax::ast::{ArgList, ArrayExpr, CallExpr, Expr, HasArgList, TupleExpr};
-use ra_ap_syntax::{AstNode, SyntaxKind, SyntaxNode, SyntaxToken};
+use ra_ap_syntax::ast::{ArgList, ArrayExpr, CallExpr, Expr, HasArgList, LiteralKind, TupleExpr};
+use ra_ap_syntax::{AstNode, SyntaxKind, SyntaxNode};
 
 /// Whether a single argument can overflow, i.e. start on the line of `(` and end on the line of `)`:
 /// `f(if a {\n ...\n})`. Follows the combinable expressions of the style guide.
@@ -156,17 +156,16 @@ fn is_hugging_string(expr: &Expr) -> bool {
     let Expr::Literal(literal) = without_refs(expr) else {
         return false;
     };
-    let token = literal.token();
     let is_string = matches!(
-        token.kind(),
-        SyntaxKind::STRING | SyntaxKind::BYTE_STRING | SyntaxKind::C_STRING
+        literal.kind(),
+        LiteralKind::String(_) | LiteralKind::ByteString(_) | LiteralKind::CString(_)
     );
-    let before = expr.syntax().first_token().and_then(|t| t.prev_token());
-    let mut preceding = std::iter::successors(before, SyntaxToken::prev_token)
-        .take_while(|t| !is_code_kind(t.kind()));
-    is_string
-        && token.text().contains('\n')
-        && preceding.all(|t| t.kind() == SyntaxKind::WHITESPACE && !t.text().contains('\n'))
+    if !is_string || !literal.token().text().contains('\n') {
+        return false;
+    }
+    let open = (expr.syntax().first_token()).and_then(|t| prev_code_token(&t));
+    trivia_from(open.and_then(|t| t.next_token()))
+        .all(|t| t.kind() == SyntaxKind::WHITESPACE && !t.text().contains('\n'))
 }
 
 /// The expression without the `&` / `&mut` in front of it (`|x| x` of `&&mut |x| x`)
@@ -223,7 +222,9 @@ fn last_item_hug(node: &SyntaxNode, exprs: &[Expr]) -> Hug {
         [single] if is_preferred_hug(node, single) || is_block_like_expr(single) => Hug::Preferred,
         [single] if is_delimited_list_expr(single) => Hug::WeakPreference,
         // Not a tuple: its comma would follow the string (`(r#"` / `...` / `"#,)`)
-        [single] if is_hugging_string(single) && !TupleExpr::can_cast(node.kind()) => Hug::Preferred,
+        [single] if is_hugging_string(single) && !TupleExpr::can_cast(node.kind()) => {
+            Hug::Preferred
+        }
         [single] if is_combinable_expr(single) => Hug::Allowed,
         _ if is_overflowing_last(exprs) => Hug::Allowed,
         _ => Hug::Never,

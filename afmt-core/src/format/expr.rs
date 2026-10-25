@@ -284,17 +284,13 @@ pub(super) fn format_head_followed_by(fmt: &Formatter, head: &HeadLayouts, block
         builder.into_frag()
     };
     let closing = (head.hanging.clone()).and_then(|hanging| fmt.closing_last_line(hanging));
-    let mut layouts = None;
-    if let Some(other) = &fmt.alt_some(head.other.clone(), closing) {
-        let mut same_line = Builder::new(fmt);
-        same_line.push(other.clone());
-        same_line.push(block.clone());
-        // `{` on its own line breaks the control line, so only when it does not fit otherwise: it
-        // costs a split, which outweighs any number of lines (e.g. moving a comment from `{`'s line
-        // into the block)
-        let broken = fmt.dispreferred(next_line(other.clone()));
-        layouts = Some(fmt.alt_frag(same_line.into_frag(), broken));
-    }
+    let same_line = (fmt.alt_some(head.other.clone(), closing))
+        .map(|head| Builder::concat(fmt, [head, block.clone()]));
+    // `{` on its own line breaks the control line, so only when it does not fit otherwise: it costs
+    // a split, which outweighs any number of lines (e.g. moving a comment from `{`'s line into the
+    // block). Not after `closing`: those layouts are among `next_line(hanging)` below, preferred.
+    let broken = (head.other.clone()).map(|other| fmt.dispreferred(next_line(other)));
+    let mut layouts = fmt.alt_some(same_line, broken);
     if let Some(hanging) = &head.hanging {
         layouts = Some(fmt.alt_opt(next_line(hanging.clone()), layouts));
     }

@@ -626,12 +626,8 @@ fn trait_header(
     supertraits: Option<(SyntaxToken, TypeBoundList)>,
     block_follows: bool,
 ) -> Frag {
-    let ends_line = |frag| match block_follows {
-        true => fmt.ends_line_if_broken(frag),
-        false => frag,
-    };
     let Some((colon, bounds)) = supertraits else {
-        return ends_line(head);
+        return fmt.ends_line_if_broken(head, block_follows);
     };
     let bounds = format_unindented_type_bound_list(fmt, bounds);
     let mut head_colon = Builder::new(fmt);
@@ -645,7 +641,10 @@ fn trait_header(
     if block_follows {
         broken.push_newline();
     }
-    fmt.alt_frag(ends_line(flat_bounds), broken.into_frag())
+    fmt.alt_frag(
+        fmt.ends_line_if_broken(flat_bounds, block_follows),
+        broken.into_frag(),
+    )
 }
 
 /// `{ items }` of a module, an impl, a trait or an extern block: the inner attributes of `list`
@@ -756,10 +755,8 @@ fn impl_header(
 ) -> Frag {
     let rest = Builder::concat(fmt, trait_.clone().into_iter().chain([self_ty.clone()]));
     let joined = Builder::concat(fmt, [head.clone(), rest.clone()]);
-    let mut joined = fmt.keep_together(fmt.keep_together(joined));
-    if block_follows {
-        joined = fmt.ends_line_if_broken(joined);
-    }
+    let joined =
+        fmt.ends_line_if_broken(fmt.keep_together(fmt.keep_together(joined)), block_follows);
     let broken = |first: Frag, lines: &[Frag]| {
         let mut builder = Builder::new(fmt);
         builder.push(fmt.flat(first));

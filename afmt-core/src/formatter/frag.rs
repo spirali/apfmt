@@ -77,9 +77,7 @@ impl Frag {
 
     /// Whether a layout of the fragment may end with a closing delimiter, e.g. a call `f(...)`
     pub fn may_end_with_delimiter(&self) -> bool {
-        self.branches
-            .iter()
-            .any(|b| b.end.is_closing())
+        self.branches.iter().any(|b| b.end.is_closing())
     }
 
     /// Whether a comment follows the cursor in the source, before the next code token

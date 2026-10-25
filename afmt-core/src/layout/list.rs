@@ -181,7 +181,9 @@ fn flat_list(
     builder.into_frag()
 }
 
-/// The comma after `item` if `comma`, otherwise only its source comma (if any) is consumed
+/// The comma after `item` if `comma`, otherwise only its source comma (if any) is consumed. Unlike
+/// `Builder::push_or_skip_separator`, the source comma itself is printed, so comments in front of it
+/// stay there (`a /* c */, b`), as on a single line
 fn push_or_skip_comma(builder: &mut Builder, item: &ListItem, comma: bool) {
     match &item.comma {
         // The source separator, so comments in front of it stay there: `a /* c */, b`
@@ -212,11 +214,7 @@ fn fill_list(
         builder.push_leading_comments();
         builder.push(item.frag.clone());
         let Some(next) = items.get(i + 1) else {
-            if trailing.comma_when_broken() {
-                builder.push_separator(SyntaxKind::COMMA);
-            } else {
-                builder.skip_separator(SyntaxKind::COMMA);
-            }
+            builder.push_or_skip_separator(SyntaxKind::COMMA, trailing.comma_when_broken());
             break;
         };
         let had_post_comment = builder.push_separator_with_trailing_comments(SyntaxKind::COMMA);
@@ -292,11 +290,7 @@ fn vertical_list(
         } else {
             item.frag.clone()
         });
-        if is_last && !trailing.comma_when_broken() {
-            builder.skip_separator(SyntaxKind::COMMA);
-        } else {
-            builder.push_separator(SyntaxKind::COMMA);
-        }
+        builder.push_or_skip_separator(SyntaxKind::COMMA, !is_last || trailing.comma_when_broken());
         if is_last && trailing == TrailingSeparator::Never {
             // The token after the list follows the last item on its line: `T: Clone;`
             break;
