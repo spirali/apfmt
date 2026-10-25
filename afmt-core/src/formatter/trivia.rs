@@ -179,6 +179,10 @@ impl<'a> Builder<'a> {
             return false;
         };
         let end = trivia_end(&cursor, separator, stop);
+        if end == cursor {
+            self.frag.cursor = Some(end);
+            return false;
+        }
         let mut pushed = false;
         let mut newlines = 0;
         // Comments in front of the separator are moved behind it, so they are never own-line

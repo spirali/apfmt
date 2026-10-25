@@ -18,9 +18,9 @@ pub(crate) use builder::Builder;
 use frag::{Branch, Branches};
 pub(crate) use frag::{Edge, Frag};
 use ra_ap_syntax::{SyntaxNode, SyntaxToken, TextRange};
+use rustc_hash::FxHashSet;
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
 use trivia::{multiline_comment_lines, normalize_comment_sigil_spacing, trim_comment_line};
 
 /// The cost of `Formatter::overflow_fallback`: more splits than any layout of real code has,
@@ -41,7 +41,7 @@ pub(crate) struct Formatter<'a> {
     unsupported: RefCell<Vec<Unsupported>>,
     align_group_id_counter: Cell<AlignGroup>,
     /// The source ranges of the nodes recorded by `mark_placed` (debug builds only)
-    placed: RefCell<HashSet<TextRange>>,
+    placed: RefCell<FxHashSet<TextRange>>,
     /// The placeholders of the nodes parsed again that are being formatted (see `format_reparsed`)
     placeholders: RefCell<Placeholders>,
 }
@@ -53,8 +53,8 @@ impl<'a> Formatter<'a> {
             doc_arena: RefCell::new(DocArena::new()),
             unsupported: RefCell::new(Vec::new()),
             align_group_id_counter: Cell::new(AlignGroup::new(0)),
-            placed: RefCell::new(HashSet::new()),
-            placeholders: RefCell::new(Placeholders::new()),
+            placed: RefCell::new(FxHashSet::default()),
+            placeholders: RefCell::new(Placeholders::default()),
         }
     }
 

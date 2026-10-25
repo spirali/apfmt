@@ -1,6 +1,6 @@
 //! Helpers on the syntax tree of `ra_ap_syntax`
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 use crate::comments::{is_code_kind, line_indentation};
 use ra_ap_syntax::ast::{self, HasAttrs, HasModuleItem};
@@ -57,7 +57,7 @@ pub(crate) fn is_stray_semicolon(token: &SyntaxToken) -> bool {
 /// The tokens of a tree parsed again that are written as other text, with that text: in a
 /// transcriber of `macro_rules!`, the placeholders of the metavariables (`_x` for `$x`, see
 /// `parse_transcriber`)
-pub(crate) type Placeholders = HashMap<SyntaxToken, String>;
+pub(crate) type Placeholders = FxHashMap<SyntaxToken, String>;
 
 /// A token tree parsed again as the node `N` (see `parse_token_tree`, `parse_transcriber`)
 pub(crate) struct Reparsed<N> {
@@ -91,7 +91,7 @@ struct SubstitutedText {
 /// already (`tree` is in a tree parsed again) stay placeholders.
 fn substituted_text(
     tree: &ast::TokenTree,
-    specifiers: Option<&HashMap<String, String>>,
+    specifiers: Option<&FxHashMap<String, String>>,
     placeholders: &Placeholders,
 ) -> Option<SubstitutedText> {
     let mut text = String::new();
@@ -363,7 +363,7 @@ pub(crate) fn macro_rules_rules(tree: &ast::TokenTree) -> Option<Vec<MacroRule>>
 }
 
 /// The fragment specifiers of the metavariables of a matcher, by name: `x` → `expr` for `$x:expr`
-fn fragment_specifiers(matcher: &ast::TokenTree) -> HashMap<String, String> {
+fn fragment_specifiers(matcher: &ast::TokenTree) -> FxHashMap<String, String> {
     let tokens: Vec<_> = (matcher.syntax().descendants_with_tokens())
         .filter_map(|e| e.into_token())
         .filter(|t| is_code_kind(t.kind()))

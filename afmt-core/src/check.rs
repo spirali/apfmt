@@ -98,7 +98,7 @@ fn is_optional_block(node: &SyntaxNode) -> bool {
 /// The preorder walk of the tree without trivia and without trailing commas, with source offsets
 fn steps(file: &SourceFile, edition: Edition) -> Vec<(Step, TextSize)> {
     let mut out = Vec::new();
-    let placeholders = Placeholders::new();
+    let placeholders = Placeholders::default();
     push_steps(
         file.syntax(),
         edition,

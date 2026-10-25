@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::fmt::Write;
 
 use crate::utils::text_width;
@@ -183,7 +183,7 @@ pub(crate) struct DocArena {
     nodes: Vec<DocNode>,
     strings: Vec<Box<str>>,
     /// The facts of the `Alt` nodes reached by the walks so far
-    alt_infos: HashMap<DocId, AltInfo>,
+    alt_infos: FxHashMap<DocId, AltInfo>,
 }
 
 /// The narrowest lines of a doc in its layouts that take no dispreferred choice (a `Cost`, a
@@ -235,7 +235,7 @@ impl DocArena {
         let mut arena = DocArena {
             nodes: Vec::new(),
             strings: Vec::new(),
-            alt_infos: HashMap::new(),
+            alt_infos: FxHashMap::default(),
         };
         let preallocated = [
             arena.make(DocNode::Newline),
@@ -554,7 +554,7 @@ impl DocArena {
         let mut out = String::from(
             "digraph doc {\n    ordering=out;\n    node [style=filled, fontname=\"monospace\"];\n",
         );
-        let mut visited = HashSet::new();
+        let mut visited = FxHashSet::default();
         let mut stack = vec![root];
         while let Some(doc) = stack.pop() {
             if !visited.insert(doc) {

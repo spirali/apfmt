@@ -199,8 +199,10 @@ pub(crate) fn trivia_end(
     separator: Option<SyntaxKind>,
     stop: TriviaStop,
 ) -> SyntaxToken {
-    let next_code = next_code_token(token).map(|t| t.kind());
-    let mut separator = separator.filter(|kind| next_code == Some(*kind));
+    // The separator is taken only as the first code token after `token`: any other code token ends
+    // the loop. Whether it follows the comments is looked up at the first comment, comments are rare.
+    let mut separator = separator;
+    let mut separator_follows = None;
     let first = token.next_token();
     let mut end = token.clone();
     let mut newlines = 0;
@@ -208,7 +210,11 @@ pub(crate) fn trivia_end(
         match t.kind() {
             SyntaxKind::WHITESPACE => newlines += count_newlines(&t),
             kind if is_comment_kind(kind) => {
-                if separator.is_some() {
+                let follows = *separator_follows.get_or_insert_with(|| {
+                    separator
+                        .is_some_and(|sep| next_code_token(&t).is_some_and(|c| c.kind() == sep))
+                });
+                if follows && separator.is_some() {
                     newlines = 0;
                 }
                 if newlines > 0 && stop != TriviaStop::Code {

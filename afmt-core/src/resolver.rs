@@ -2,9 +2,9 @@ use crate::config::Config;
 use crate::content::{Content, ContentArena};
 use crate::doc::{AlignGroup, Cost, DocArena, DocId, DocNode, LINE_COST, WeakPreference};
 use crate::utils::text_width;
+use rustc_hash::FxHashMap;
 use smallvec::{SmallVec, smallvec};
 use std::cmp::Ordering;
-use std::collections::HashMap;
 
 #[derive(Clone)]
 struct Measure {
@@ -305,7 +305,7 @@ fn align_marks(resolver: &Resolver, content: Content) -> Vec<u32> {
     let marks = collector.marks;
     let config = resolver.config;
     let mut paddings = vec![0; marks.len()];
-    let mut groups: HashMap<AlignGroup, Vec<Vec<usize>>> = HashMap::new();
+    let mut groups: FxHashMap<AlignGroup, Vec<Vec<usize>>> = FxHashMap::default();
     for (i, mark) in marks.iter().enumerate() {
         let runs = groups.entry(mark.group).or_default();
         match runs.last_mut() {
@@ -358,7 +358,7 @@ pub(crate) struct Resolver<'a> {
     root: DocId,
     /// The layouts of the docs that are shared by more alternatives (`Alt` nodes), by context; the
     /// doc is a DAG, so without it a shared doc is resolved again in every alternative containing it
-    memo: HashMap<(DocId, Context), LayoutSet>,
+    memo: FxHashMap<(DocId, Context), LayoutSet>,
 }
 
 impl<'a> Resolver<'a> {
@@ -368,7 +368,7 @@ impl<'a> Resolver<'a> {
             config,
             root,
             content_arena: ContentArena::new(),
-            memo: HashMap::new(),
+            memo: FxHashMap::default(),
         }
     }
 
