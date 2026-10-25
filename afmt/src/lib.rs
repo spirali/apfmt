@@ -48,22 +48,23 @@ pub struct FormatOptions {
 
 impl FormatOptions {
     /// The config for a source in `dir`: its config file and `edition`, or the edition of its
-    /// package (`afmt_core::config_for_source`), with these options
+    /// package (`afmt_core::config_for_source`), with these options, and the warnings about it
+    /// (an unreadable `Cargo.toml`)
     pub fn config_for_source(
         &self,
         dir: &Path,
         edition: Option<Edition>,
-    ) -> afmt_core::Result<Config> {
+    ) -> afmt_core::Result<(Config, Vec<String>)> {
         let options = ConfigOptions {
             config_path: self.config_path.clone(),
             no_config: self.no_config,
             no_rustfmt_toml: self.no_rustfmt_toml,
             edition,
         };
-        let mut config = afmt_core::config_for_source(dir, &options)?;
+        let (mut config, warnings) = afmt_core::config_for_source(dir, &options)?;
         config.check_result = self.result_check;
         config.allow_unsupported = self.unsupported != Unsupported::Error;
-        Ok(config)
+        Ok((config, warnings))
     }
 }
 

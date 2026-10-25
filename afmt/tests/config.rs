@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{TestDir, stderr, success};
+use common::{TestDir, stderr, stdout, success};
 
 /// A source whose indentation shows `tab_spaces`
 const NESTED: &str = "fn main() { if x { y(); } }\n";
@@ -280,19 +280,35 @@ fn virtual_workspace_keeps_the_rustfmt_edition() {
 }
 
 #[test]
-fn broken_cargo_toml_fails() {
+fn broken_cargo_toml_warns() {
     let dir = TestDir::new("cargo-broken");
     dir.write("project/Cargo.toml", "[package]\nedition = \"2020\"\n");
+    dir.write("project/afmt.toml", "edition = \"2015\"\n");
     let file = dir.write("project/main.rs", NESTED);
+    // The source is formatted with the edition of the config file
     let output = dir.afmt(&dir.root, &[file.to_str().unwrap()], "");
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(stdout(&output), indented(4));
+    let message = stderr(&output);
     assert!(
-        stderr(&output).contains("Cargo.toml"),
-        "{}",
-        stderr(&output)
+        message.contains("warning: using edition 2015, cannot read the edition of the package: ")
+            && message.contains("Cargo.toml"),
+        "{message}"
     );
     // --no-config does not read it
-    assert_eq!(dir.format_file(&file, &["--no-config"]), indented(4));
+    let output = dir.afmt(&dir.root, &["--no-config", file.to_str().unwrap()], "");
+    assert_eq!(
+        (stdout(&output), stderr(&output)),
+        (indented(4), String::new())
+    );
     // nor does --edition
-    assert_eq!(dir.format_file(&file, &["--edition", "2021"]), indented(4));
+    let output = dir.afmt(
+        &dir.root,
+        &["--edition", "2021", file.to_str().unwrap()],
+        "",
+    );
+    assert_eq!(
+        (stdout(&output), stderr(&output)),
+        (indented(4), String::new())
+    );
 }

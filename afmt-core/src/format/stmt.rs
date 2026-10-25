@@ -3,12 +3,13 @@
 use super::attr::{debug_assert_attrs_placed, format_attr, format_skippable_with_attrs};
 use super::expr::{
     ExprPosition, format_braced_block, format_expr, format_expr_at, format_head_expr,
-    format_head_followed_by, single_line_block_expr,
+    format_head_followed_by, push_head_after_comments, single_line_block_expr,
 };
 use super::format_unsupported;
 use super::item::format_item;
 use super::pat::format_pat;
 use super::ty::format_type;
+use crate::comments::comments_break_line_after;
 use crate::doc::SEMICOLON_DOC;
 use crate::format::common::{push_label, push_modifiers};
 use crate::formatter::Edge::{Comma, Operator, Word};
@@ -36,9 +37,15 @@ fn format_let_stmt(fmt: &Formatter, stmt: LetStmt) -> Frag {
     match (stmt.initializer(), stmt.let_else()) {
         (Some(init), Some(let_else)) => {
             let block = let_else.block_expr().unwrap();
-            let tail = single_line_block_expr(&block).map(|expr| format_expr(fmt, expr));
+            let eq_token = stmt.eq_token().unwrap();
+            // Comments ending the line of `=` rule out a single line and put the initializer on an
+            // indented line, so it hangs: `let x = // c` / `    init` / `else {`
+            let comment_after_eq = comments_break_line_after(&eq_token);
+            let tail = (!comment_after_eq)
+                .then(|| single_line_block_expr(&block).map(|expr| format_expr(fmt, expr)))
+                .flatten();
             let else_keyword = fmt.token(let_else.else_token().unwrap(), Word);
-            let eq = fmt.token(stmt.eq_token().unwrap(), Operator);
+            let eq = fmt.token(eq_token, Operator);
             let init = format_head_expr(fmt, init);
             if let (Some(tail), Some(init)) = (tail.clone(), init.other.clone()) {
                 let mut flat = builder.clone();
@@ -53,7 +60,13 @@ fn format_let_stmt(fmt: &Formatter, stmt: LetStmt) -> Frag {
                 fmt,
                 [else_keyword, format_block_expr_with_tail(fmt, block, tail)],
             );
-            builder.push(format_let_else(fmt, lhs, eq, init, else_block));
+            if comment_after_eq {
+                builder.push(lhs);
+                builder.push(eq);
+                push_head_after_comments(fmt, &mut builder, init, else_block);
+            } else {
+                builder.push(format_let_else(fmt, lhs, eq, init, else_block));
+            }
         }
         (Some(init), None) => {
             builder.push(lhs);
@@ -169,7 +182,11 @@ fn format_stmt_list(
     let tail = stmt_list.tail_expr().map(|expr| {
         let node = expr.syntax().clone();
         let tail = tail.unwrap_or_else(|| format_expr_at(fmt, expr, ExprPosition::Tail));
-        if normalize_jump { format_block_tail(fmt, &node, tail) } else { tail }
+        if normalize_jump {
+            format_block_tail(fmt, &node, tail)
+        } else {
+            tail
+        }
     });
     let last_jump = (normalize_jump && !trailing_semicolon)
         .then(|| trailing_jump_stmt(&stmt_list))

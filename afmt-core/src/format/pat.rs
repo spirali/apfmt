@@ -141,8 +141,7 @@ fn format_or_pat(fmt: &Formatter, pat: OrPat) -> Frag {
         .syntax()
         .first_token()
         .filter(|t| t.kind() == SyntaxKind::PIPE);
-    if leading
-        .is_some_and(|pipe| trivia_from(pipe.next_token()).any(|t| is_comment_kind(t.kind())))
+    if leading.is_some_and(|pipe| trivia_from(pipe.next_token()).any(|t| is_comment_kind(t.kind())))
     {
         return format_unsupported(fmt, pat.syntax(), "a comment after a leading `|`");
     }

@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
-use ra_ap_syntax::SyntaxToken;
 use crate::utils::text_width;
+use ra_ap_syntax::SyntaxToken;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct DocId(u32);
@@ -293,9 +293,7 @@ impl DocArena {
     /// for whether the doc can be on one line within a width (only `ShortLastLine` and `RoomAfter`,
     /// which depend on the column, are not checked), not the width of the layout placed: that is the resolver's.
     pub fn min_flat_width(&mut self, doc: DocId) -> Option<u32> {
-        let text_width = |text: &str| {
-            (!text.contains('\n')).then(|| text_width(text))
-        };
+        let text_width = |text: &str| (!text.contains('\n')).then(|| text_width(text));
         match self.get_node(doc) {
             DocNode::Token(token) => text_width(token.text()),
             DocNode::Text(t) => text_width(self.get_text(*t)),
@@ -377,7 +375,11 @@ impl DocArena {
     pub fn has_line_break(&mut self, doc: DocId) -> bool {
         match self.get_node(doc) {
             DocNode::Newline => true,
-            DocNode::Token(_) | DocNode::Text(_) | DocNode::Empty | DocNode::AlignMark(_) | DocNode::Flat(_) => false,
+            DocNode::Token(_)
+            | DocNode::Text(_)
+            | DocNode::Empty
+            | DocNode::AlignMark(_)
+            | DocNode::Flat(_) => false,
             &DocNode::Nest(d)
             | &DocNode::Align(d)
             | &DocNode::MultiLine(d)
@@ -493,7 +495,8 @@ impl DocArena {
         if let Some(info) = self.alt_infos.get(&doc) {
             return *info;
         }
-        let (&DocNode::Alt(doc1, doc2) | &DocNode::Fallback(doc1, doc2)) = self.get_node(doc) else {
+        let (&DocNode::Alt(doc1, doc2) | &DocNode::Fallback(doc1, doc2)) = self.get_node(doc)
+        else {
             panic!("alt_info of a node that is not `Alt` or `Fallback`");
         };
         let mut flags = AltFlags::empty();
@@ -516,7 +519,10 @@ impl DocArena {
         flags.set(AltFlags::HAS_SINGLE_LINE, min_flat_width.is_some());
         let natural = self.natural_widths(doc1).min(self.natural_widths(doc2));
         flags.set(AltFlags::HAS_NATURAL_FLAT, natural.flat.is_some());
-        flags.set(AltFlags::HAS_NATURAL_FIRST_LINE, natural.first_line.is_some());
+        flags.set(
+            AltFlags::HAS_NATURAL_FIRST_LINE,
+            natural.first_line.is_some(),
+        );
         let info = AltInfo {
             flags,
             min_flat_width: min_flat_width.unwrap_or(0),
@@ -552,16 +558,10 @@ impl DocArena {
                 DocNode::Align(_) => ("Align".into(), "parallelogram", "aquamarine"),
                 DocNode::Flat(_) => ("Flat".into(), "hexagon", "pink"),
                 DocNode::MultiLine(_) => ("MultiLine".into(), "octagon", "plum"),
-                DocNode::KeepTogether(_, cost) => (
-                    format!("KeepTogether {}", cost.0),
-                    "doubleoctagon",
-                    "khaki",
-                ),
-                DocNode::Cost(_, cost) => (
-                    format!("Cost {}", cost.0),
-                    "tripleoctagon",
-                    "khaki",
-                ),
+                DocNode::KeepTogether(_, cost) => {
+                    (format!("KeepTogether {}", cost.0), "doubleoctagon", "khaki")
+                }
+                DocNode::Cost(_, cost) => (format!("Cost {}", cost.0), "tripleoctagon", "khaki"),
                 DocNode::WeakPreference(_, preference) => (
                     format!("WeakPreference {}", preference.0),
                     "tripleoctagon",

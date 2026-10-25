@@ -271,13 +271,25 @@ pub(super) fn format_head_with_block(
     builder.push_keyword(keyword);
     let head = head.clone().map(|head| fmt.keep_together(head));
     if comment_after_keyword {
-        // A continuation after such comments goes on an indented line (`Builder::push`)
-        builder.push(head.all(fmt));
-        builder.push(fmt.on_next_line(block));
+        push_head_after_comments(fmt, &mut builder, head, block);
     } else {
         builder.push(format_head_followed_by(fmt, &head, block));
     }
     builder.into_frag()
+}
+
+/// `head` after comments that end the line of the builder's cursor (see
+/// `comments_break_line_after`), then `block` (`{ ... }`, `else { ... }`) on its own line: a
+/// continuation after such comments goes on an indented line (see `Builder::push`), so the head
+/// hangs and the control line is broken (Style Guide): `if` / `    // c` / `    cond` / `{`
+pub(super) fn push_head_after_comments(
+    fmt: &Formatter,
+    builder: &mut Builder,
+    head: HeadLayouts,
+    block: Frag,
+) {
+    builder.push(head.all(fmt));
+    builder.push(fmt.on_next_line(block));
 }
 
 /// `head` followed by `block` (`{ ... }`, `else { ... }`). The block follows a head without a hanging indent on its

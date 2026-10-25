@@ -106,9 +106,11 @@ fn configs_by_dir<'a>(
     for file in files {
         let dir = source_dir(&file.path);
         configs.entry((dir, file.edition)).or_insert_with(|| {
-            // The edition of the target, as `cargo fmt` passes it to rustfmt
+            // The edition of the target, as `cargo fmt` passes it to rustfmt; with it given,
+            // `Cargo.toml` is not read, so there are no warnings
             options
                 .config_for_source(dir, Some(file.edition))
+                .map(|(config, _)| config)
                 .map_err(|error| error.to_string())
         });
     }

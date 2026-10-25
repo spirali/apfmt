@@ -71,10 +71,13 @@ fn main() {
     let cli = Cli::parse();
     report::set_color(cli.color);
 
-    let mut cfg = cli
+    let (mut cfg, config_warnings) = cli
         .format
         .config_for_source(source_dir(&cli), cli.edition)
         .unwrap_or_else(|error| exit_with_error(&error.to_string()));
+    for warning in config_warnings {
+        report::warning(&warning);
+    }
     cfg.dump_parse_tree = cli.dump_parse_tree;
     cfg.dump_doc_tree = cli.dump_doc_tree;
 

@@ -381,7 +381,10 @@ impl<'a> Formatter<'a> {
     /// the last line of `first` when it spans more lines, e.g. the `where` clause of a function after
     /// its signature (`fn f(a: A)` / `where`, or `fn f(` / `    a: A,` / `) where`)
     pub fn concat_on_next_line_unless_broken(&self, first: Frag, second: Frag) -> Frag {
-        let flat = Builder::concat(self, [self.flat(first.clone()), self.on_next_line(second.clone())]);
+        let flat = Builder::concat(
+            self,
+            [self.flat(first.clone()), self.on_next_line(second.clone())],
+        );
         let broken = Builder::concat(self, [self.multi_line(first), second]);
         self.alt_frag(flat, broken)
     }

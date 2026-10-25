@@ -1,10 +1,10 @@
 use crate::config::Config;
 use crate::content::{Content, ContentArena};
 use crate::doc::{AlignGroup, Cost, DocArena, DocId, DocNode, LINE_COST, WeakPreference};
+use crate::utils::text_width;
 use smallvec::{SmallVec, smallvec};
 use std::cmp::Ordering;
 use std::collections::HashMap;
-use crate::utils::text_width;
 
 #[derive(Clone)]
 struct Measure {
@@ -478,7 +478,11 @@ impl<'a> Resolver<'a> {
                 }
                 Task::Fallback(ctx, fallback) => {
                     let primary = results.last().unwrap();
-                    if !primary.layouts.iter().any(|layout| layout.measure.badness == 0) {
+                    if !primary
+                        .layouts
+                        .iter()
+                        .any(|layout| layout.measure.badness == 0)
+                    {
                         results.pop();
                         next = Some((ctx, fallback));
                     }
@@ -622,11 +626,15 @@ impl<'a> Resolver<'a> {
                 return Some((ctx, *d));
             }
             DocNode::ShortLastLine(d) => {
-                tasks.push(Task::LastLineEndsWithin(ctx.indent + self.config.tab_spaces));
+                tasks.push(Task::LastLineEndsWithin(
+                    ctx.indent + self.config.tab_spaces,
+                ));
                 return Some((ctx, *d));
             }
             DocNode::RoomAfter(d, room) => {
-                tasks.push(Task::LastLineEndsWithin(self.config.max_width.saturating_sub(*room)));
+                tasks.push(Task::LastLineEndsWithin(
+                    self.config.max_width.saturating_sub(*room),
+                ));
                 return Some((ctx, *d));
             }
             DocNode::FirstLineWithin(d, width) => {
