@@ -352,7 +352,7 @@ fn align_marks(resolver: &Resolver, content: Content) -> Vec<u32> {
 }
 
 pub(crate) struct Resolver<'a> {
-    doc_arena: DocArena,
+    doc_arena: &'a DocArena,
     content_arena: ContentArena,
     config: &'a Config,
     root: DocId,
@@ -362,7 +362,7 @@ pub(crate) struct Resolver<'a> {
 }
 
 impl<'a> Resolver<'a> {
-    pub fn new(doc_arena: DocArena, config: &'a Config, root: DocId) -> Self {
+    pub fn new(doc_arena: &'a DocArena, config: &'a Config, root: DocId) -> Self {
         Resolver {
             doc_arena,
             config,
@@ -390,19 +390,20 @@ impl<'a> Resolver<'a> {
         (!s.is_empty()).then_some(s)
     }
 
-    pub fn render(&mut self, reserve_size: usize) -> String {
+    /// Appends the best layout of the root doc to `out`, which ends at the start of a line
+    pub fn render_into(&mut self, out: &mut String) {
         let layout_set = self.resolve();
         //layout_set.dump();
         let best = layout_set.best().unwrap();
         let mut renderer = Renderer {
             resolver: self,
-            out: String::with_capacity(reserve_size),
+            out: std::mem::take(out),
             fresh: true,
             paddings: align_marks(self, best.content),
             marks: 0,
         };
         renderer.render(best.content);
-        renderer.out
+        *out = renderer.out;
     }
 
     /// The layouts of the root doc at the start of a line; it runs on an explicit stack of `Task`s

@@ -60,6 +60,16 @@ impl<'a> Builder<'a> {
         self.frag.is_empty()
     }
 
+    /// The fragment built so far, leaving the builder empty, if it ends at the start of a line with
+    /// no trivia pending (every branch ends with a line break, no cursor); what follows cannot
+    /// change its layout
+    pub fn split_off_finished_lines(&mut self) -> Option<Frag> {
+        let finished = !self.frag.is_empty()
+            && self.frag.cursor.is_none()
+            && self.frag.branches.iter().all(|b| b.end == Nothing);
+        finished.then(|| std::mem::take(&mut self.frag))
+    }
+
     /// Appends line-breaking `doc_id` to the branches whose end edge satisfies `pred`; they then end with nothing
     pub(super) fn push_line_break_if(&mut self, doc_id: DocId, pred: impl Fn(Edge) -> bool) {
         let fmt = self.fmt;

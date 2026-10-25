@@ -660,9 +660,12 @@ impl<'a> Formatter<'a> {
         self.doc_arena.borrow().to_dot(root)
     }
 
-    pub fn into_resolver(self, root: Frag) -> Resolver<'a> {
-        let root = self.frag_to_doc(&root);
-        Resolver::new(self.doc_arena.into_inner(), self.config, root)
+    /// Appends the best layout of the fragment, which ends at the start of a line, to `out`, then
+    /// clears the arena: every fragment built before is invalid after it
+    pub fn render_into(&self, frag: Frag, out: &mut String) {
+        let root = self.frag_to_doc(&frag);
+        Resolver::new(&self.doc_arena.borrow(), self.config, root).render_into(out);
+        self.doc_arena.borrow_mut().clear();
     }
 
     fn align_mark(&self, group: AlignGroup) -> DocId {

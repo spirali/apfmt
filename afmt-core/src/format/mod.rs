@@ -25,7 +25,10 @@ use crate::formatter::{Builder, Formatter, Frag};
 use ra_ap_syntax::ast::{HasAttrs, HasModuleItem};
 use ra_ap_syntax::{AstNode, NodeOrToken, SourceFile, SyntaxKind, SyntaxNode, SyntaxToken};
 
-pub(crate) fn format_source_file(fmt: &Formatter, node: &SourceFile) -> Frag {
+/// The source file formatted, given to `emit` in chunks of finished lines in order: a chunk ends
+/// before a top-level attribute or item, where what follows cannot change its layout, so `emit` can
+/// resolve and render it and clear the arena before the next one is built
+pub(crate) fn format_source_file(fmt: &Formatter, node: &SourceFile, mut emit: impl FnMut(Frag)) {
     let mut builder = Builder::new(fmt);
     let mut first = node.syntax().first_token();
     if let Some(shebang) = first.clone().filter(|t| t.kind() == SyntaxKind::SHEBANG) {
@@ -46,15 +49,25 @@ pub(crate) fn format_source_file(fmt: &Formatter, node: &SourceFile) -> Frag {
     }
     // No token precedes the comments at the start of the file, so no cursor would place them
     builder.push_comments_from(first);
+    // The chunk before is emitted before `format` runs, whose docs must survive the clearing
+    let mut push_line = |builder: &mut Builder, format: &dyn Fn() -> Frag| {
+        if !builder.is_empty() {
+            builder.flush_trivia_and_end_line();
+        }
+        if let Some(lines) = builder.split_off_finished_lines() {
+            emit(lines);
+        }
+        builder.push(format());
+    };
     for attr in node.attrs() {
-        builder.push_on_new_line(format_attr(fmt, attr));
+        push_line(&mut builder, &|| format_attr(fmt, attr.clone()));
     }
     for child in node.items() {
-        builder.push_on_new_line(format_item(fmt, child));
+        push_line(&mut builder, &|| format_item(fmt, child.clone()));
     }
     builder.flush_trivia();
     assert!(builder.cursor().is_none());
-    builder.into_frag()
+    emit(builder.into_frag());
 }
 
 /// The first token of `node` after its leading comments and attributes, which the caller places (see

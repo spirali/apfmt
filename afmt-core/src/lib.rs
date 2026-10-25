@@ -18,7 +18,7 @@ mod utils;
 use crate::check::check_result;
 pub use crate::config::Config;
 use crate::format::format_source_file;
-use crate::formatter::{Formatter, Unsupported};
+use crate::formatter::{Builder, Formatter, Unsupported};
 use crate::rewrite::rewrite_source;
 use crate::syntax_utils::line_column;
 pub use config::cargo::{CARGO_MANIFEST_NAME, find_cargo_manifest};
@@ -97,8 +97,9 @@ fn prepare_source_code(config: &Config, code: &str) -> Result<(SourceFile, Sourc
 pub fn doc_graph_to_dot(config: &Config, code: &str) -> Result<String> {
     let (_, file) = prepare_source_code(config, code)?;
     let fmt = Formatter::new(config);
-    let frag = format_source_file(&fmt, &file);
-    Ok(fmt.doc_graph_to_dot(&frag))
+    let mut chunks = Vec::new();
+    format_source_file(&fmt, &file, |chunk| chunks.push(chunk));
+    Ok(fmt.doc_graph_to_dot(&Builder::concat(&fmt, chunks)))
 }
 
 /// The formatted code
@@ -143,17 +144,18 @@ pub fn format_source_code(config: &Config, code: &str) -> Result<Formatted> {
     let (file, prepared) = prepare_source_code(config, code)?;
 
     let fmt = Formatter::new(config);
-    let frag = format_source_file(&fmt, &prepared);
+    let mut out = String::with_capacity(code.len() * 2);
+    // Each chunk is rendered as soon as it is built, so the arenas hold one top-level item at a time
+    format_source_file(&fmt, &prepared, |chunk| {
+        if config.dump_doc_tree {
+            fmt.dump(&chunk);
+        }
+        fmt.render_into(chunk, &mut out);
+    });
     let unsupported = locate_unsupported(&prepared, fmt.take_unsupported());
     if !unsupported.is_empty() && !config.allow_unsupported {
         return Err(Error::Unsupported(unsupported));
     }
-
-    if config.dump_doc_tree {
-        fmt.dump(&frag);
-    }
-
-    let out = fmt.into_resolver(frag).render(code.len() * 2);
 
     if config.check_result {
         let out_parse = SourceFile::parse(&out, config.edition);

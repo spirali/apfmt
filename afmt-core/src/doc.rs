@@ -225,6 +225,10 @@ pub(crate) const COMMA_DOC: DocId = DocId(5);
 pub(crate) const SEMICOLON_DOC: DocId = DocId(6);
 pub(crate) const OPEN_BRACE_DOC: DocId = DocId(7);
 pub(crate) const CLOSE_BRACE_DOC: DocId = DocId(8);
+/// The number of preallocated nodes (`NEWLINE_DOC` ... `CLOSE_BRACE_DOC`), kept by `DocArena::clear`
+const PREALLOCATED_NODES: usize = 9;
+/// The number of strings of the preallocated nodes
+const PREALLOCATED_STRINGS: usize = 5;
 
 impl DocArena {
     pub fn new() -> Self {
@@ -258,7 +262,19 @@ impl DocArena {
                 CLOSE_BRACE_DOC,
             ]
         );
+        assert_eq!(
+            (arena.nodes.len(), arena.strings.len()),
+            (PREALLOCATED_NODES, PREALLOCATED_STRINGS)
+        );
         arena
+    }
+
+    /// Removes every node but the preallocated ones, keeping the allocated memory; the `DocId`s
+    /// made before are invalid after it
+    pub fn clear(&mut self) {
+        self.nodes.truncate(PREALLOCATED_NODES);
+        self.strings.truncate(PREALLOCATED_STRINGS);
+        self.alt_infos.clear();
     }
 
     #[inline]
