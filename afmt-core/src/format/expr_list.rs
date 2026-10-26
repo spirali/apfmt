@@ -316,10 +316,13 @@ pub(super) fn format_expr_item(fmt: &Formatter, expr: Expr) -> ExprItem {
         }
         expr => {
             let combinable = is_combinable_expr(&expr) || is_hugging_string(&expr);
-            // A closure behind operators (`&|x| ...`) or with attributes, or a block-like expression,
-            // whose single line has width rules of its own (`Ok(unsafe { ... })`, as rustfmt does)
-            let own_width = matches!(without_operators(&expr), Expr::ClosureExpr(_))
-                || is_block_like_expr(&expr);
+            // A closure behind operators (`&|x| ...`) or with attributes, a block-like expression, or
+            // a list with a width rule of its own (an array, a tuple, a struct literal), whose single
+            // line has width rules of its own (`Ok(unsafe { ... })`, `f([a.b(c)])`, as rustfmt does)
+            let own_width = matches!(
+                without_operators(&expr),
+                Expr::ClosureExpr(_) | Expr::ArrayExpr(_) | Expr::TupleExpr(_) | Expr::RecordExpr(_)
+            ) || is_block_like_expr(&expr);
             let frag = format_expr(fmt, expr);
             let overflow = if combinable {
                 Overflow::With(frag.clone())
