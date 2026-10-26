@@ -24,6 +24,10 @@ pub(crate) fn file_in_dir(dir: &Path, names: &[&str]) -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
+/// The display width of `text`; printable ASCII, most text, is one column per byte
 pub(crate) fn text_width(text: &str) -> u32 {
+    if text.bytes().all(|b| (b' '..=b'~').contains(&b)) {
+        return text.len() as u32;
+    }
     unicode_width::UnicodeWidthStr::width(text) as u32
 }

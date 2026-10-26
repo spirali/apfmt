@@ -183,8 +183,9 @@ fn exit_with_error(message: &str) -> ! {
     std::process::exit(1);
 }
 
-/// The files of the selected packages, in the order of their paths
-fn files_to_format(cli: &Cli) -> Vec<SourceFile> {
+/// The files of the selected packages, in the order of their paths; the module trees of the targets
+/// are read on `threads` threads
+fn files_to_format(cli: &Cli, threads: usize) -> Vec<SourceFile> {
     let metadata =
         metadata(cli.manifest_path.as_deref()).unwrap_or_else(|error| exit_with_error(&error));
     let selection = if cli.all {
@@ -201,49 +202,56 @@ fn files_to_format(cli: &Cli) -> Vec<SourceFile> {
     };
     let packages =
         select_packages(&metadata, &selection).unwrap_or_else(|error| exit_with_error(&error));
-    let mut files = BTreeMap::new();
-    for package in packages {
-        for target in &package.targets {
+    let targets: Vec<_> = (packages.iter())
+        .flat_map(|package| package.targets.iter().map(move |target| (package, target)))
+        .map(|(package, target)| {
             let edition = target
                 .edition()
                 .unwrap_or_else(|error| exit_with_error(&error));
-            let tree = afmt_core::module_files(&target.src_path, edition);
-            if !cli.quiet {
-                for warning in &tree.warnings {
-                    report::warning(warning);
-                }
+            (package, target, edition)
+        })
+        .collect();
+    let order: Vec<_> = (0..targets.len()).collect();
+    let trees = parallel_map(&targets, &order, threads, |(_, target, edition)| {
+        afmt_core::module_files(&target.src_path, *edition)
+    });
+    let mut files = BTreeMap::new();
+    for (&(package, target, edition), tree) in targets.iter().zip(trees) {
+        if !cli.quiet {
+            for warning in &tree.warnings {
+                report::warning(warning);
             }
-            // The files that no target before has
-            let mut new_files = Vec::new();
-            for (path, code) in tree.files {
-                match files.get(&path) {
-                    None => {
-                        new_files.push(display_path(&path));
-                        files.insert(path, (edition, code));
-                    }
-                    Some(&(first, _)) if first != edition && !cli.quiet => {
-                        report::warning(&format!(
-                            "{} is in targets of editions {first} and {edition}; \
-                             formatted as {first}",
-                            display_path(&path)
-                        ));
-                    }
-                    Some(_) => {}
+        }
+        // The files that no target before has
+        let mut new_files = Vec::new();
+        for (path, code) in tree.files {
+            match files.get(&path) {
+                None => {
+                    new_files.push(display_path(&path));
+                    files.insert(path, (edition, code));
                 }
+                Some(&(first, _)) if first != edition && !cli.quiet => {
+                    report::warning(&format!(
+                        "{} is in targets of editions {first} and {edition}; \
+                         formatted as {first}",
+                        display_path(&path)
+                    ));
+                }
+                Some(_) => {}
             }
-            if cli.verbose {
-                let text = format!(
-                    "{} v{} ({} `{}`, edition {edition}): {}",
-                    package.name,
-                    package.version,
-                    target.kind.join(", "),
-                    target.name,
-                    count(new_files.len(), "file", "files"),
-                );
-                report::status("Formatting", SUCCESS, &text);
-                for file in &new_files {
-                    report::status_detail(file);
-                }
+        }
+        if cli.verbose {
+            let text = format!(
+                "{} v{} ({} `{}`, edition {edition}): {}",
+                package.name,
+                package.version,
+                target.kind.join(", "),
+                target.name,
+                count(new_files.len(), "file", "files"),
+            );
+            report::status("Formatting", SUCCESS, &text);
+            for file in &new_files {
+                report::status_detail(file);
             }
         }
     }
@@ -267,11 +275,11 @@ fn main() {
     report::set_color(cli.color);
     let start = Instant::now();
 
-    let files = files_to_format(&cli);
     let threads = cli
         .jobs
         .or_else(|| std::thread::available_parallelism().ok())
         .map_or(1, NonZeroUsize::get);
+    let files = files_to_format(&cli, threads);
     let configs = configs_by_dir(&files, &cli.format);
     // The largest first: a large file started last would keep one thread busy after the others
     let mut largest_first: Vec<_> = (0..files.len()).collect();

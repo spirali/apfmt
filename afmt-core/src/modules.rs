@@ -83,6 +83,9 @@ pub fn module_files(root: &Path, edition: Edition) -> ModuleFiles {
 /// in a row (trivia between them). Every such declaration has them, so no module file is missed; the
 /// tokens in a macro call or an inline module only cost a parse.
 fn may_declare_module_file(source: &str, edition: Edition) -> bool {
+    if !may_contain_mod_name_semicolon(source) {
+        return false;
+    }
     let lexed = LexedStr::new(edition, source);
     let code: Vec<SyntaxKind> = (0..lexed.len())
         .map(|i| lexed.kind(i))
@@ -90,6 +93,49 @@ fn may_declare_module_file(source: &str, edition: Edition) -> bool {
         .collect();
     code.windows(3)
         .any(|tokens| tokens == [SyntaxKind::MOD_KW, SyntaxKind::IDENT, SyntaxKind::SEMICOLON])
+}
+
+/// Whether the text may have `mod`, a name and `;` in a row, a scan of the bytes much cheaper than
+/// lexing; `false` only when it has none. Between the words only ASCII whitespace is skipped: a
+/// comment (`/`) or a non-ASCII byte (Unicode whitespace, a non-ASCII name) counts as a match.
+fn may_contain_mod_name_semicolon(source: &str) -> bool {
+    let bytes = source.as_bytes();
+    let is_ascii_word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    // The index after the ASCII whitespace from `i`; `None` for a comment or a non-ASCII byte
+    let skip_space = |mut i: usize| {
+        while let Some(&b) = bytes.get(i) {
+            match b {
+                b' ' | b'\t' | b'\n' | b'\r' | b'\x0b' | b'\x0c' => i += 1,
+                b'/' => return None,
+                _ if !b.is_ascii() => return None,
+                _ => break,
+            }
+        }
+        Some(i)
+    };
+    for (start, _) in source.match_indices("mod") {
+        let after = start + 3;
+        if start > 0 && is_ascii_word(bytes[start - 1])
+            || bytes.get(after).is_some_and(|&b| is_ascii_word(b))
+        {
+            continue;
+        }
+        let Some(mut name_start) = skip_space(after) else {
+            return true;
+        };
+        if source[name_start..].starts_with("r#") {
+            name_start += 2;
+        }
+        let name_end = (name_start..bytes.len())
+            .find(|&i| !is_ascii_word(bytes[i]))
+            .unwrap_or(bytes.len());
+        match skip_space(name_end) {
+            None => return true,
+            Some(i) if name_end > name_start && bytes.get(i) == Some(&b';') => return true,
+            Some(_) => {}
+        }
+    }
+    false
 }
 
 /// Where the modules declared in a file, or in an inline module of it, live
@@ -217,6 +263,41 @@ mod tests {
             "const S: &str = \"mod a;\";",
         ] {
             assert!(!declares(source), "{source}");
+        }
+    }
+
+    #[test]
+    fn mod_name_semicolon_scan() {
+        for source in [
+            "mod a;",
+            "pub(crate) mod a ;",
+            "mod r#type;",
+            "mod\ta\n;",
+            "x;mod a;",
+            // A comment or a non-ASCII byte may hide a declaration
+            "mod /* c */ a\n;",
+            "mod a // c\n;",
+            "mod\u{2028}a;",
+            "\u{2028}mod a;",
+            "mod é;",
+            // Comments and strings are not told apart from code
+            "// mod a;",
+            "const S: &str = \"mod a;\";",
+        ] {
+            assert!(may_contain_mod_name_semicolon(source), "{source:?}");
+        }
+        for source in [
+            "",
+            "fn f() {}",
+            "mod a {}",
+            "mod a\n{\n}",
+            "model;",
+            "a_mod b;",
+            "let model = module;",
+            "mod;",
+            "mod",
+        ] {
+            assert!(!may_contain_mod_name_semicolon(source), "{source:?}");
         }
     }
 
