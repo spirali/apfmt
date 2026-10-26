@@ -17,7 +17,7 @@ use crate::format::common::{format_lifetime, format_name};
 use crate::formatter::Edge::{Comma, Operator, Tight, Word};
 use crate::formatter::{Builder, Formatter, Frag};
 use crate::layout::list::{
-    Delimiters, FlatLimit, ListItem, ListLayout, Overflow, TrailingSeparator, delimited_list,
+    Delimiters, FlatLimit, Hug, ListItem, ListLayout, Overflow, TrailingSeparator, delimited_list,
     flat_layout, list_items, list_items_cast,
 };
 use crate::syntax_utils::has_attrs;
@@ -339,16 +339,14 @@ fn format_record_field_list(fmt: &Formatter, list: RecordFieldList) -> Frag {
 }
 
 /// `(A, B)` of a tuple struct or a tuple variant: on a single line if the fields fit within
-/// `fn_call_width`, otherwise one field per line with a trailing comma
+/// `fn_call_width` (a single field, which never hugs the list, within `max_width`, see
+/// `FlatLimit::of_arguments`, as rustfmt lays out fields as call arguments), otherwise one field
+/// per line with a trailing comma
 fn format_tuple_field_list(fmt: &Formatter, list: TupleFieldList) -> Frag {
     let fields = list_items_cast(list.syntax(), |f| format_tuple_field(fmt, f));
     let delims = Delimiters::parens_of(list.syntax());
-    delimited_list(
-        fmt,
-        &delims,
-        &fields,
-        ListLayout::tall(FlatLimit::Within(fmt.config().fn_call_width)),
-    )
+    let flat = FlatLimit::of_arguments(fmt, &fields, Hug::Never, fmt.config().fn_call_width);
+    delimited_list(fmt, &delims, &fields, ListLayout::tall(flat))
 }
 
 /// `struct Name;`, `struct Name { a: A }` or `struct Name(A);`
