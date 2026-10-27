@@ -17,8 +17,8 @@ use crate::format::common::{format_lifetime, format_name};
 use crate::formatter::Edge::{Comma, Operator, Tight, Word};
 use crate::formatter::{Builder, Formatter, Frag};
 use crate::layout::list::{
-    Delimiters, FlatLimit, Hug, ListItem, ListLayout, Overflow, TrailingSeparator, delimited_list,
-    flat_layout, list_items, list_items_cast,
+    Delimiters, FlatLimit, Hug, ListItem, ListLayout, Overflow, TrailingSeparator,
+    aligned_list_with_tail, delimited_list, flat_layout, list_items, list_items_cast,
 };
 use crate::syntax_utils::has_attrs;
 use ra_ap_syntax::ast::{
@@ -75,21 +75,34 @@ pub(super) fn format_param_list(fmt: &Formatter, param_list: ParamList) -> Frag 
     delimited_list(fmt, &delims, &params, ListLayout::tall(FlatLimit::MaxWidth))
 }
 
-/// `|a, b: B|` of a closure on a single line (`None` if a comment prevents it), and broken (`None`
-/// without parameters, or with a single one that fits on a single line): aligned after `|` as rustfmt
-/// does (`|a: A,` / ` b: B|`), an explicit exception to the Style Guide's "function definition syntax"
-/// (see CLAUDE.md). A single tuple-like parameter is hugged instead (see `is_hugged_closure_param`).
-pub(super) fn closure_params_layouts(
+/// The header of a closure, `|a, b: B|` and its return type `-> T`, with the parameters on a single
+/// line (`None` if a comment prevents it), and broken (`None` without parameters, or with a single one
+/// that fits on a single line): aligned after `|` as rustfmt does (`|a: A,` / ` b: B|`), an explicit
+/// exception to the Style Guide's "function definition syntax" (see CLAUDE.md), the return type then
+/// on a line of its own aligned with them, as rustfmt puts it on its own line (`|a: A,` / ` b: B|` /
+/// ` -> T`). A single tuple-like parameter is hugged instead (see `is_hugged_closure_param`), the
+/// return type following it (`|(` / `    a,` / `)| -> T`).
+pub(super) fn closure_header_layouts(
     fmt: &Formatter,
     param_list: ParamList,
+    ret_type: Option<Frag>,
 ) -> (Option<Frag>, Option<Frag>) {
     let mut param_nodes = param_list.params();
     let single = param_nodes.next().filter(|_| param_nodes.next().is_none());
     let hugged = single.as_ref().is_some_and(is_hugged_closure_param);
     let mut params = param_items(fmt, &param_list);
     let delims = Delimiters::pipes_of(param_list.syntax());
+    let with_ret_type = |params: Frag| match &ret_type {
+        Some(ret_type) => {
+            let mut builder = Builder::new(fmt);
+            builder.push(fmt.followed_by_space(params));
+            builder.push(ret_type.clone());
+            builder.into_frag()
+        }
+        None => params,
+    };
     if params.is_empty() {
-        return (Some(delims.format_empty(fmt)), None);
+        return (Some(with_ret_type(delims.format_empty(fmt))), None);
     }
     if hugged {
         params[0].overflow = Overflow::Only(params[0].frag.clone());
@@ -101,33 +114,43 @@ pub(super) fn closure_params_layouts(
         FlatLimit::MaxWidth,
         TrailingSeparator::IfVertical,
     )
-    .map(|flat| delims.wrap_body(fmt, flat));
+    .map(|flat| with_ret_type(delims.wrap_body(fmt, flat)));
     // A single parameter on one line is the same broken, unless it is hugged; one that cannot be on
     // one line (`|S {` / `    long_field,` / `}|`, or a comment forcing a line break) has only
     // broken layouts
     if single.is_some() && !hugged && flat.is_some() {
         return (flat, None);
     }
-    let layout = ListLayout::tall(FlatLimit::MaxWidth)
-        .broken_if(true)
-        .aligned();
-    (flat, Some(delimited_list(fmt, &delims, &params, layout)))
+    let broken = match &ret_type {
+        Some(ret_type) if !hugged => {
+            aligned_list_with_tail(fmt, &delims, &params, ret_type.clone())
+        }
+        _ => {
+            let layout = ListLayout::tall(FlatLimit::MaxWidth)
+                .broken_if(true)
+                .aligned();
+            with_ret_type(delimited_list(fmt, &delims, &params, layout))
+        }
+    };
+    (flat, Some(broken))
 }
 
 /// Whether the single parameter of a closure is hugged by the pipes when it does not fit on one
 /// line, its elements block indented, as rustfmt does: a tuple, slice or tuple struct pattern, also
-/// after `&` or followed by a type (`|(` / `    a,` / `    b,` / `)| body`); a struct pattern is
-/// aligned after `|` like other parameters (`|S {` / `     a,` / ` }|`)
+/// after `&` (`|(` / `    a,` / `    b,` / `)| body`), or a parameter with a type, whose generic
+/// arguments break (`|res: Result<` / `    Vec<u8>,` / `>| body`); a struct pattern is aligned
+/// after `|` like other parameters (`|S {` / `     a,` / ` }|`)
 fn is_hugged_closure_param(param: &Param) -> bool {
     let mut pat = param.pat();
     while let Some(Pat::RefPat(ref_pat)) = &pat {
         pat = ref_pat.pat();
     }
     !has_attrs(param)
-        && matches!(
-            pat,
-            Some(Pat::TuplePat(_) | Pat::SlicePat(_) | Pat::TupleStructPat(_))
-        )
+        && (param.ty().is_some()
+            || matches!(
+                pat,
+                Some(Pat::TuplePat(_) | Pat::SlicePat(_) | Pat::TupleStructPat(_))
+            ))
 }
 
 fn param_items(fmt: &Formatter, param_list: &ParamList) -> Vec<ListItem> {

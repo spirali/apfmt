@@ -248,6 +248,11 @@ fn fill_list(
 /// comma; the closing delimiter follows the last item: `|a: A,` / ` b: B|`. Only for closure
 /// parameters, an explicit exception to the Style Guide (see CLAUDE.md).
 fn aligned_list(fmt: &Formatter, items: &[ListItem], open: Option<SyntaxToken>) -> Frag {
+    fmt.align(aligned_items(fmt, items, open))
+}
+
+/// The items of `aligned_list`, not aligned yet
+fn aligned_items(fmt: &Formatter, items: &[ListItem], open: Option<SyntaxToken>) -> Frag {
     let mut builder = Builder::with_cursor(fmt, open);
     builder.flush_trivia();
     for (item, is_last) in with_is_last(items) {
@@ -263,7 +268,26 @@ fn aligned_list(fmt: &Formatter, items: &[ListItem], open: Option<SyntaxToken>) 
     builder.flush_trivia();
     // A line comment would swallow the closing delimiter
     builder.end_line_after_line_comment();
-    fmt.align(builder.into_frag())
+    builder.into_frag()
+}
+
+/// The items aligned after the opening delimiter as in `aligned_list`, followed by `tail` on a line
+/// of its own, aligned with them: `|a: A,` / ` b: B|` / ` -> T` (closure parameters and return type)
+pub(crate) fn aligned_list_with_tail(
+    fmt: &Formatter,
+    delims: &Delimiters,
+    items: &[ListItem],
+    tail: Frag,
+) -> Frag {
+    let mut aligned = Builder::new(fmt);
+    aligned.push(aligned_items(fmt, items, Some(delims.open.clone())));
+    aligned.push(delims.format_close(fmt));
+    aligned.push_newline();
+    aligned.push(tail);
+    let mut builder = Builder::new(fmt);
+    builder.push(delims.format_open(fmt));
+    builder.push(fmt.align(aligned.into_frag()));
+    builder.into_frag()
 }
 
 /// One item per line with a trailing comma (unless it is `Never` or `Omitted`), indented; `open` is the opening
@@ -478,12 +502,7 @@ impl Delimiters {
     /// `inner` between the delimiters; `inner` places the comments following the opening delimiter, as
     /// the list layouts do (they start with the opening delimiter as their cursor)
     pub fn wrap_body(&self, fmt: &Formatter, inner: Frag) -> Frag {
-        let (open_edge, _) = self.edges();
-        self.surround(
-            fmt,
-            fmt.token_without_cursor(self.open.clone(), open_edge),
-            inner,
-        )
+        self.surround(fmt, self.format_open(fmt), inner)
     }
 
     /// `inner` between the delimiters, e.g. `(a + b)`, `<T as Trait>`, `{ x }`; the comments
@@ -507,12 +526,21 @@ impl Delimiters {
         self.wrap_body(fmt, fmt.body_after_opener(line_comments, body.into_frag()))
     }
 
+    /// The opening delimiter, whose following comments are placed by the fragment after it
+    fn format_open(&self, fmt: &Formatter) -> Frag {
+        fmt.token_without_cursor(self.open.clone(), self.edges().0)
+    }
+
+    /// The closing delimiter
+    fn format_close(&self, fmt: &Formatter) -> Frag {
+        fmt.token(self.close.clone(), self.edges().1)
+    }
+
     fn surround(&self, fmt: &Formatter, open: Frag, inner: Frag) -> Frag {
-        let (_, close_edge) = self.edges();
         let mut builder = Builder::new(fmt);
         builder.push(open);
         builder.push(inner);
-        builder.push_token(self.close.clone(), close_edge);
+        builder.push(self.format_close(fmt));
         builder.into_frag()
     }
 

@@ -6,7 +6,7 @@ use super::expr::{
     inline_and_broken_block, plain_stmt_list, single_line_block_expr,
 };
 use super::generics::format_for_binder;
-use super::item::closure_params_layouts;
+use super::item::closure_header_layouts;
 use super::stmt::format_block_expr_with_tail;
 use super::ty::format_ret_type;
 use crate::format::common::push_modifiers;
@@ -58,7 +58,7 @@ pub(super) struct ClosureLayouts {
 }
 
 /// `move |a, b| body` or `for<'a> |a: &'a T| body` (Style Guide "Closures"), see `closure_body_layouts`. Parameters that do not fit
-/// on one line are aligned after `|` (see `closure_params_layouts`); a body in braces then keeps them,
+/// on one line are aligned after `|` (see `closure_header_layouts`); a body in braces then keeps them,
 /// as in rustfmt.
 pub(super) fn closure_layouts(fmt: &Formatter, expr: ClosureExpr) -> ClosureLayouts {
     debug_assert_attrs_placed(fmt, &expr);
@@ -67,25 +67,30 @@ pub(super) fn closure_layouts(fmt: &Formatter, expr: ClosureExpr) -> ClosureLayo
         prefix.push(format_for_binder(fmt, binder));
     }
     push_modifiers(&mut prefix, expr.syntax());
-    let (flat_params, broken_params) = closure_params_layouts(fmt, expr.param_list().unwrap());
-    let ret_type = expr
-        .ret_type()
-        .map(|ret_type| format_ret_type(fmt, ret_type));
-    let (body, braced_body) = closure_body_layouts(fmt, &expr, broken_params.is_some());
-    let closure = |params: Frag, body: Frag| {
-        let mut builder = prefix.clone();
-        builder.push(fmt.followed_by_space(params));
-        if let Some(ret_type) = &ret_type {
-            builder.push(ret_type.clone());
+    // The return type on a single line, its generic arguments broken only when nothing else fits:
+    // rather the closure on a line of its own, or the return type on its own line after broken
+    // parameters (as rustfmt, which never breaks it)
+    let ret_type = expr.ret_type().map(|ret_type| {
+        let ret_type = format_ret_type(fmt, ret_type);
+        match fmt.flat_if_possible(ret_type.clone()) {
+            Some(flat) => fmt.alt_frag(flat, fmt.dispreferred(ret_type)),
+            None => ret_type,
         }
+    });
+    let (flat_header, broken_header) =
+        closure_header_layouts(fmt, expr.param_list().unwrap(), ret_type);
+    let (body, braced_body) = closure_body_layouts(fmt, &expr, broken_header.is_some());
+    let closure = |header: Frag, body: Frag| {
+        let mut builder = prefix.clone();
+        builder.push(fmt.followed_by_space(header));
         builder.push(body);
         builder.into_frag()
     };
-    let flat = flat_params.map(|params| closure(params, body));
+    let flat = flat_header.map(|header| closure(header, body));
     // Broken parameters cost a split: only when they do not fit otherwise
-    let broken = broken_params
+    let broken = broken_header
         .zip(braced_body)
-        .map(|(params, body)| closure(fmt.dispreferred(params), body));
+        .map(|(header, body)| closure(fmt.dispreferred(header), body));
     let all = fmt.alt_some(flat.clone(), broken);
     ClosureLayouts {
         all: all.expect("parameters have a layout"),
