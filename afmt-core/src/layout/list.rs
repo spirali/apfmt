@@ -806,8 +806,10 @@ pub(crate) fn keyword_list(
 
 /// The last item overflows with its layouts `last_layouts` (see `Overflow`); the items in front of it
 /// and the first line of the last one are on the line of the opening delimiter, within the width of
-/// `limit` (as rustfmt does: `f(a, b, |x| {` is a single-line call as wide as its first line). The
-/// last item has a comma only if it is `Required` (`(match a {` / `...` / `},)`).
+/// `limit` (as rustfmt does: `f(a, b, |x| {` is a single-line call as wide as its first line), and
+/// none of them spans more lines on its single line (a string literal: "If ... any argument ... is
+/// multi-line, then format the call across multiple lines", Style Guide; not `f(r#"` / `...` /
+/// `"#, |x| {`). The last item has a comma only if it is `Required` (`(match a {` / `...` / `},)`).
 fn overflow_layout(
     fmt: &Formatter,
     delims: &Delimiters,
@@ -817,6 +819,9 @@ fn overflow_layout(
     trailing: TrailingSeparator,
 ) -> Option<Frag> {
     let rest = &items[..items.len() - 1];
+    if rest.iter().any(|item| fmt.has_multi_line_text(&item.frag)) {
+        return None;
+    }
     let (mut overflow, last_layouts) = if rest.is_empty() {
         let overflow = Builder::with_cursor(fmt, Some(delims.open.clone()));
         (overflow, last_layouts.clone())
