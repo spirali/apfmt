@@ -5,6 +5,7 @@ use super::closure::closure_layouts;
 use super::expr::format_expr;
 use super::macros::{is_array_macro, is_brace_macro, is_list_macro, macro_argument_count};
 use crate::comments::{prev_code_token, trivia_from};
+use crate::doc::WeakPreference;
 use crate::format::common::format_repeat;
 use crate::formatter::{Formatter, Frag};
 use crate::layout::chain::ChainLayouts;
@@ -49,6 +50,42 @@ fn is_delimited_list_expr(expr: &Expr) -> bool {
     match without_operators(expr) {
         Expr::CallExpr(_) | Expr::ArrayExpr(_) | Expr::RecordExpr(_) => true,
         expr => is_list_macro(&expr),
+    }
+}
+
+/// Whether the hugs of the expression, a call whose last argument hugs it in turn, and so on, end
+/// in an expression whose first line has width rules of its own (see `ExprItem::own_width`): a
+/// closure, a chain or control flow (`Ok(X(Box::new(move |x| {`, `Some(a.b(c).map_err(|e| {`), not
+/// call arguments, an array or a struct literal; only these are limited to `fn_call_width` as
+/// the first line of a hug (see `format_expr_list`)
+fn ends_in_own_width_hug(expr: &Expr) -> bool {
+    match without_operators(expr) {
+        Expr::ClosureExpr(_)
+        | Expr::MethodCallExpr(_)
+        | Expr::AwaitExpr(_)
+        | Expr::IfExpr(_)
+        | Expr::MatchExpr(_)
+        | Expr::BlockExpr(_)
+        | Expr::LoopExpr(_)
+        | Expr::WhileExpr(_)
+        | Expr::ForExpr(_) => true,
+        Expr::CallExpr(call) => (call.arg_list().and_then(|args| args.args().last()))
+            .is_some_and(|last| ends_in_own_width_hug(&last)),
+        expr => is_brace_macro(&expr),
+    }
+}
+
+/// How many calls, also behind operators, are nested as the only argument of each other, the
+/// innermost around a delimited list (see `is_delimited_list_expr`) that may hug it in turn: 2 for
+/// `X(Y(z(a, b)))` and `X(Y(Z { a }))`, 0 for `x(a, b)`
+fn nested_hug_depth(expr: &Expr) -> u32 {
+    let Expr::CallExpr(call) = without_operators(expr) else {
+        return 0;
+    };
+    let mut args = call.arg_list().into_iter().flat_map(|args| args.args());
+    match (args.next(), args.next()) {
+        (Some(arg), None) if is_delimited_list_expr(&arg) => 1 + nested_hug_depth(&arg),
+        _ => 0,
     }
 }
 
@@ -355,7 +392,7 @@ pub(super) fn format_expr_list(
     let hug = last_item_hug(node, &exprs);
     let items = list_items_cast(node, |e| format_expr_item(fmt, e));
     let own_width = matches!(items.as_slice(), [item] if item.frag.own_width);
-    let items = with_is_last(&items)
+    let mut items = with_is_last(&items)
         .map(|(item, is_last)| {
             let ExprItem { frag, overflow, .. } = &item.frag;
             // "Where a function call has a single argument, and that argument is formatted across
@@ -381,6 +418,32 @@ pub(super) fn format_expr_list(
     } else {
         FlatLimit::of_arguments(fmt, &items, hug, width)
     };
+    // A single call hugging the list is as wide as its first line, which is within the width as the
+    // first line of a last item after others is (see `overflow_layout`), so the limits of nested
+    // hugs add up: `Ok(A(b(` / `x,` / `)))` only while `A(b(` is within it, otherwise `Ok(A(` /
+    // `b(x),` / `))`, as rustfmt does. Not control flow, whose head hugs whatever its width, nor a
+    // call with a string spanning lines, whose first line is the text of the string (see
+    // `is_hugging_string`), nor calls hugging in turn an expression with width rules of its own
+    // (see `ends_in_own_width_hug`). Where that rules out hugging all of them, the outer calls hug
+    // rather than the inner ones at the same cost ("format the outer call as if it were a
+    // single-line call", Style Guide), so a hug is preferred by the depth of the hugs below it:
+    // `Some(X(` / `Y {` / `...` / `},` / `))`, not `Some(` / `X(Y {` / `...` / `}),` / `)`.
+    if let (FlatLimit::Within(width), [expr], [item]) =
+        (flat, exprs.as_slice(), items.as_mut_slice())
+        && is_delimited_list_expr(expr)
+        && !ends_in_own_width_hug(expr)
+        && !fmt.has_multi_line_text(&item.frag)
+    {
+        let depth = nested_hug_depth(expr);
+        item.overflow = item.overflow.map(|layouts| {
+            let layouts = fmt.first_line_within(layouts.clone(), width);
+            if depth > 0 {
+                fmt.weak_preference(layouts, WeakPreference::preferred_by(depth))
+            } else {
+                layouts
+            }
+        });
+    }
     // A string spanning lines, also under an operator (`&"a⏎b"`), is not hugged: "If ... any
     // argument ... is multi-line, then format the call across multiple lines" (Style Guide; a
     // literal is not combinable), as in rustfmt; a single one hugs the list only if it does in the

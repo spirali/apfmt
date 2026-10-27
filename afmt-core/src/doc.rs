@@ -61,6 +61,11 @@ impl WeakPreference {
     pub const NEUTRAL: WeakPreference = WeakPreference(0);
     pub const PREFERRED: WeakPreference = WeakPreference(1);
 
+    /// Preferred `n` times as much as `PREFERRED`
+    pub fn preferred_by(n: u32) -> Self {
+        WeakPreference(i32::try_from(n).unwrap_or(i32::MAX))
+    }
+
     #[inline]
     pub fn saturating_add(self, other: WeakPreference) -> Self {
         WeakPreference(self.0.saturating_add(other.0))

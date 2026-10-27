@@ -20,5 +20,11 @@ fn f() {
             // comment in the block
             g(1)
         }
+        E => foo(a, /* c */ b),
+        F => foo(a, b), // after
+        G => x.map(|v| {
+            // inside closure
+            v + 1
+        }),
     }
 }

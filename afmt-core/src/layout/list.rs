@@ -57,6 +57,17 @@ impl Overflow {
             | Overflow::Only(layouts) => Some(layouts),
         }
     }
+
+    /// The same overflow with the layouts of the item changed by `f`
+    pub fn map(&self, f: impl FnOnce(&Frag) -> Frag) -> Overflow {
+        match self {
+            Overflow::Never => Overflow::Never,
+            Overflow::With(layouts) => Overflow::With(f(layouts)),
+            Overflow::WeakPreference(layouts) => Overflow::WeakPreference(f(layouts)),
+            Overflow::Preferred(layouts) => Overflow::Preferred(f(layouts)),
+            Overflow::Only(layouts) => Overflow::Only(f(layouts)),
+        }
+    }
 }
 
 impl<T> ListItem<T> {

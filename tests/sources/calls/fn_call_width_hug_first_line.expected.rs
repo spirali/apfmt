@@ -3,10 +3,10 @@ fn main() {
     outer(pppppppppppppppppppppppppppppppppppppppppppppppppppp::new(
         b, c,
     ));
-    outer(pppppppppppppppppppppppppppppppppppppppppppppppppppppppp::new(
-        b, c,
-    ));
-    outer(pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp::new(
-        b, c,
-    ));
+    outer(
+        pppppppppppppppppppppppppppppppppppppppppppppppppppppppp::new(b, c),
+    );
+    outer(
+        pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp::new(b, c),
+    );
 }

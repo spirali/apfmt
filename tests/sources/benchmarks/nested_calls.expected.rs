@@ -4,9 +4,11 @@
 // line, so the number of layout alternatives grows with the nesting depth.
 
 fn nested_calls() {
-    let result = alpha(beta(gamma(delta(epsilon(zeta(eta(theta(iota(kappa(lambda(mu(nu(xi(omicron(
-        pi(rho(sigma(tau(upsilon(phi(chi(psi(omega(value))))))))),
-    )))))))))))))));
+    let result = alpha(beta(gamma(delta(epsilon(zeta(eta(theta(iota(kappa(lambda(
+        mu(nu(xi(omicron(pi(rho(sigma(tau(upsilon(phi(chi(psi(omega(
+            value,
+        ))))))))))))),
+    )))))))))));
     let result = alpha(
         first_argument,
         beta(
