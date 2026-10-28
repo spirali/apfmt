@@ -1,6 +1,8 @@
 //! Facts about comments and trivia in the source: token queries (what follows a token, where a
 //! comment is); placing and normalizing comments in the output is `formatter/trivia.rs`
 
+use std::borrow::Cow;
+
 use ra_ap_syntax::{SyntaxKind, SyntaxNode, SyntaxToken};
 
 /// Whether `kind` is a comment: `//`, `/* */` or a doc comment. The parser puts a doc comment in a
@@ -159,6 +161,40 @@ pub(crate) fn line_indentation(token: &SyntaxToken) -> String {
         line_start = Some(t);
     }
     line_start.map_or_else(String::new, |t| leading_whitespace(t.text()))
+}
+
+/// The column after the source text `text` placed at column `col` of a line: a tab advances to the
+/// next multiple of `tab_spaces` columns, as in an editor with that tab width, another character by
+/// its display width
+pub(crate) fn source_text_end(text: &str, col: usize, tab_spaces: u32) -> usize {
+    let tab = tab_spaces.max(1) as usize;
+    text.chars().fold(col, |col, c| match c {
+        '\t' => (col / tab + 1) * tab,
+        c => col + unicode_width::UnicodeWidthChar::width(c).unwrap_or(0),
+    })
+}
+
+/// The source line `line` without the first `base` columns of its indentation, the rest of the
+/// indentation written as spaces (tabs measured as in `source_text_end`); `None` if the indentation
+/// is narrower than `base` or contains other whitespace than spaces and tabs
+pub(crate) fn reindent_source_line(
+    line: &str,
+    base: usize,
+    tab_spaces: u32,
+) -> Option<Cow<'_, str>> {
+    let rest = line.trim_start_matches([' ', '\t']);
+    let indent = &line[..line.len() - rest.len()];
+    if rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let width = source_text_end(indent, 0, tab_spaces);
+    if width < base {
+        return None;
+    }
+    if !indent.contains('\t') {
+        return Some(Cow::Borrowed(&line[base..]));
+    }
+    Some(Cow::Owned(" ".repeat(width - base) + rest))
 }
 
 /// Whether the comments on their own lines in front of the closing brace `close` start at most at

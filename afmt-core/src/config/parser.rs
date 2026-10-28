@@ -46,6 +46,7 @@ struct TomlConfig {
     trailing_semicolon: Option<bool>,
     match_block_trailing_comma: Option<bool>,
     newline_style: Option<NewlineStyleSetting>,
+    hard_tabs: Option<bool>,
     format_macro_bodies: Option<bool>,
     edition: Option<EditionSetting>,
     disable_all_formatting: Option<bool>,
@@ -120,6 +121,7 @@ impl TomlConfig {
             self.match_block_trailing_comma,
         );
         set_value(&mut config.newline_style, self.newline_style.map(|s| s.0));
+        set_value(&mut config.hard_tabs, self.hard_tabs);
         set_value(&mut config.format_macro_bodies, self.format_macro_bodies);
         set_value(
             &mut config.trailing_comment_align_threshold,
@@ -280,7 +282,7 @@ mod tests {
     fn rustfmt_options() {
         let config = apply(
             "max_width = 80\nuse_small_heuristics = \"Max\"\nchain_width = 40\ntab_spaces = 2\n\
-             edition = \"2021\"\nmatch_block_trailing_comma = true\nnewline_style = \"windows\"\n",
+             edition = \"2021\"\nmatch_block_trailing_comma = true\nnewline_style = \"windows\"\nhard_tabs = true\n",
         );
         assert_eq!(config.max_width, 80);
         assert_eq!(config.fn_call_width, 80);
@@ -289,6 +291,7 @@ mod tests {
         assert_eq!(config.edition, Edition::Edition2021);
         assert!(config.match_block_trailing_comma);
         assert_eq!(config.newline_style, NewlineStyle::Windows);
+        assert!(config.hard_tabs);
     }
 
     #[test]
@@ -306,7 +309,7 @@ mod tests {
     fn unknown_option_is_an_error() {
         for toml in [
             "max_widht = 80",
-            "hard_tabs = true",
+            "wrap_comments = true",
             "dump_parse_tree = true",
         ] {
             let config = TomlConfig::parse(toml).unwrap();
@@ -327,7 +330,7 @@ mod tests {
     #[test]
     fn unknown_options_are_ignored_in_rustfmt_config_only() {
         let dir = TempDir::new("read-config", &[]);
-        let toml = "hard_tabs = true\nmax_width = 80\n";
+        let toml = "wrap_comments = true\nmax_width = 80\n";
         for (name, ok) in [
             ("rustfmt.toml", true),
             (".rustfmt.toml", true),

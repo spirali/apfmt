@@ -2,12 +2,13 @@ use super::frag::{Edge, Frag};
 use super::{Builder, Formatter};
 use crate::comments::{
     TriviaStop, count_newlines, is_comment_kind, is_leading_block_comment, is_line_comment,
-    line_ends_after, line_indentation, next_code_token, post_comments_stop,
-    rest_of_line_is_comments, tokens_between, trivia_end, trivia_from,
+    line_ends_after, line_indentation, next_code_token, post_comments_stop, reindent_source_line,
+    rest_of_line_is_comments, source_text_end, tokens_between, trivia_end, trivia_from,
 };
 use crate::doc::{COMMA_DOC, DocId, EMPTY_DOC, EMPTYLINE_DOC, NEWLINE_DOC, SEMICOLON_DOC};
 use crate::formatter::Edge::{Break, Comma, Nothing, Word};
 use ra_ap_syntax::{SyntaxKind, SyntaxToken};
+use std::borrow::Cow;
 
 fn separator_doc(kind: SyntaxKind) -> DocId {
     match kind {
@@ -44,36 +45,46 @@ pub(super) fn trim_comment_line(line: &str, doc: bool) -> &str {
     if doc { line } else { line.trim_end() }
 }
 
-fn source_column(token: &SyntaxToken) -> usize {
-    let mut col = 0;
-    let mut element = token.prev_token();
-    while let Some(token) = element {
-        let text = token.text();
-        if let Some(pos) = text.rfind('\n') {
-            return col + unicode_width::UnicodeWidthStr::width(&text[pos + 1..]);
+/// The column of `token` in its source line (tabs measured as in `source_text_end`)
+fn source_column(token: &SyntaxToken, tab_spaces: u32) -> usize {
+    let mut before = Vec::new();
+    for t in std::iter::successors(token.prev_token(), |t| t.prev_token()) {
+        let ends_line = t.text().contains('\n');
+        before.push(t);
+        if ends_line {
+            break;
         }
-        col += unicode_width::UnicodeWidthStr::width(text);
-        element = token.prev_token();
     }
-    col
+    before.iter().rev().fold(0, |col, t| {
+        let text = t.text();
+        match text.rfind('\n') {
+            Some(pos) => source_text_end(&text[pos + 1..], 0, tab_spaces),
+            None => source_text_end(text, col, tab_spaces),
+        }
+    })
 }
 
 /// Lines of a multi-line block comment with the indentation of the comment start removed, so they can
-/// be aligned to the new column of the comment; blank lines are empty. `None` when the comment is
+/// be aligned to the new column of the comment, the rest of their indentation in spaces (a tab of the
+/// source counts as up to `tab_spaces` columns); blank lines are empty. `None` when the comment is
 /// single-line or a line is indented less than the comment start.
-pub(super) fn multiline_comment_lines(token: &SyntaxToken) -> Option<Vec<&str>> {
+pub(super) fn multiline_comment_lines(
+    token: &SyntaxToken,
+    tab_spaces: u32,
+) -> Option<Vec<Cow<'_, str>>> {
     let (first, rest) = token.text().split_once('\n')?;
-    let col = source_column(token);
+    let col = source_column(token, tab_spaces);
     let is_blank = |line: &str| line.trim().is_empty();
-    if !rest.split('\n').all(|line| {
-        is_blank(line) || (line.len() >= col && line.as_bytes()[..col].iter().all(|c| *c == b' '))
-    }) {
-        return None;
-    }
-    let rest = rest
-        .split('\n')
-        .map(|line| if is_blank(line) { "" } else { &line[col..] });
-    Some(std::iter::once(first).chain(rest).collect())
+    let rest = rest.split('\n').map(|line| {
+        if is_blank(line) {
+            Some(Cow::Borrowed(""))
+        } else {
+            reindent_source_line(line, col, tab_spaces)
+        }
+    });
+    std::iter::once(Some(Cow::Borrowed(first)))
+        .chain(rest)
+        .collect()
 }
 
 impl<'a> Builder<'a> {
@@ -340,30 +351,25 @@ impl Formatter<'_> {
     /// The source text from `first` to `last` (inclusive) as lines, with the indentation of the source
     /// line of `first` removed from the following lines, so they can be indented as the line the text is
     /// placed on. A line break inside a token (a multi-line string literal or block comment) is kept in
-    /// its line unchanged; trailing whitespace is removed and blank lines are empty. `None` when a line
-    /// starts with less indentation than the line of `first`, or with a tab. A placeholder token is
-    /// written as the text it stands for (see `Formatter::format_reparsed`).
+    /// its line unchanged; trailing whitespace is removed and blank lines are empty. The indentation
+    /// left is written in spaces, a tab of the source counting as up to `tab_spaces` columns (see
+    /// `source_text_end`). `None` when a line starts with less indentation than the line of `first`.
+    /// A placeholder token is written as the text it stands for (see `Formatter::format_reparsed`).
     pub(super) fn reindented_lines(
         &self,
         first: &SyntaxToken,
         last: &SyntaxToken,
     ) -> Option<Vec<String>> {
-        let base = line_indentation(first);
-        if base.contains(|c| c != ' ') {
-            return None;
-        }
-        let base = base.len();
+        let tab_spaces = self.config().tab_spaces;
+        let base = reindent_source_line(&line_indentation(first), 0, tab_spaces)?.len();
         let mut lines = vec![String::new()];
         for token in tokens_between(first, last) {
             let text = token.text();
             match text.rfind('\n') {
                 Some(pos) if token.kind() == SyntaxKind::WHITESPACE => {
-                    let indent = &text[pos + 1..];
-                    if indent.len() < base || indent.contains(|c| c != ' ') {
-                        return None;
-                    }
+                    let indent = reindent_source_line(&text[pos + 1..], base, tab_spaces)?;
                     lines.extend((1..count_newlines(&token)).map(|_| String::new()));
-                    lines.push(indent[base..].to_string());
+                    lines.push(indent.into_owned());
                 }
                 _ => lines.last_mut().unwrap().push_str(&self.token_text(&token)),
             }

@@ -1,5 +1,5 @@
 use crate::config::Config;
-use crate::content::{Content, ContentArena};
+use crate::content::{Content, ContentArena, Indentation, Levels};
 use crate::doc::{AlignGroup, Cost, DocArena, DocId, DocNode, LINE_COST, WeakPreference};
 use crate::utils::text_width;
 use rustc_hash::FxHashMap;
@@ -94,6 +94,8 @@ pub struct Context {
     /// `None` at the start of a line, before its indentation (see `Measure::last`)
     col: Option<u32>,
     indent: u32,
+    /// The block indentation levels in `indent` (see `Indentation`)
+    levels: Levels,
     /// Newlines are not allowed
     flat: bool,
     /// Text must end at most at this column until the first line break (`DocNode::FirstLineWithin`)
@@ -108,6 +110,13 @@ impl Context {
 
     /// The context after a layout with `measure` placed in this one: at its last column, and free of
     /// the first-line limit after a line break
+    fn indentation(&self) -> Indentation {
+        Indentation {
+            cols: self.indent,
+            levels: self.levels,
+        }
+    }
+
     fn after(&self, measure: &Measure) -> Context {
         Context {
             col: measure.last,
@@ -171,20 +180,23 @@ impl LayoutSet {
 /// an explicit stack instead of recursing, a content nests as deeply as its doc (e.g. a long chain)
 struct Leaves<'a> {
     content_arena: &'a ContentArena,
-    stack: Vec<(Content, u32)>,
+    stack: Vec<(Content, Indentation)>,
 }
 
 impl Iterator for Leaves<'_> {
-    type Item = (Content, u32);
+    type Item = (Content, Indentation);
 
-    fn next(&mut self) -> Option<(Content, u32)> {
+    fn next(&mut self) -> Option<(Content, Indentation)> {
         while let Some((content, indent)) = self.stack.pop() {
             match content {
                 Content::Concat(c1, c2) => {
                     self.stack.push((self.content_arena.get(c2), indent));
                     self.stack.push((self.content_arena.get(c1), indent));
                 }
-                Content::Indent(indent, c) => self.stack.push((self.content_arena.get(c), indent)),
+                Content::Indent(cols, levels, c) => {
+                    let indent = Indentation { cols, levels };
+                    self.stack.push((self.content_arena.get(c), indent));
+                }
                 leaf => return Some((leaf, indent)),
             }
         }
@@ -211,9 +223,7 @@ impl<'a> Renderer<'a> {
                     // The indentation of a new line is written with its first text
                     if self.fresh {
                         self.fresh = false;
-                        for _ in 0..indent {
-                            self.out.push(' ');
-                        }
+                        self.push_indentation(indent);
                     }
                     self.out.push_str(s);
                 }
@@ -230,6 +240,21 @@ impl<'a> Renderer<'a> {
                 Content::Concat(..) | Content::Indent(..) => unreachable!(),
             }
         }
+    }
+
+    /// With `hard_tabs`, the block indentation as tabs and the alignment as spaces (as many whole
+    /// tabs as fit when an alignment is left of the block indentation, after a multi-line text);
+    /// otherwise spaces
+    fn push_indentation(&mut self, indent: Indentation) {
+        let config = self.resolver.config;
+        let mut spaces = indent.cols;
+        if config.hard_tabs {
+            let tab = config.tab_spaces.max(1);
+            let tabs = u32::from(indent.levels).min(indent.cols / tab);
+            self.out.extend(std::iter::repeat_n('\t', tabs as usize));
+            spaces -= tabs * tab;
+        }
+        self.out.extend(std::iter::repeat_n(' ', spaces as usize));
     }
 }
 
@@ -256,7 +281,7 @@ impl MarkCollector<'_> {
                     let Some(s) = self.resolver.text_of(t) else {
                         continue;
                     };
-                    let start = self.col.unwrap_or(indent);
+                    let start = self.col.unwrap_or(indent.cols);
                     let mut lines = s.split('\n');
                     let mut col = start + text_width(lines.next().unwrap());
                     for line in lines {
@@ -274,7 +299,7 @@ impl MarkCollector<'_> {
                     self.marks.push(MarkedComment {
                         group,
                         line: self.line,
-                        start: self.col.unwrap_or(indent),
+                        start: self.col.unwrap_or(indent.cols),
                         end: 0,
                     });
                 }
@@ -375,7 +400,7 @@ impl<'a> Resolver<'a> {
     fn leaves(&self, content: Content) -> Leaves<'_> {
         Leaves {
             content_arena: &self.content_arena,
-            stack: vec![(content, 0)],
+            stack: vec![(content, Indentation::default())],
         }
     }
 
@@ -417,6 +442,7 @@ impl<'a> Resolver<'a> {
             Context {
                 col: None,
                 indent: 0,
+                levels: 0,
                 flat: false,
                 first_line_end: None,
             },
@@ -600,8 +626,16 @@ impl<'a> Resolver<'a> {
             }),
             DocNode::Nest(d) => {
                 let indent = ctx.indent + self.config.tab_spaces;
-                tasks.push(Task::Indent(indent));
-                return Some((Context { indent, ..ctx }, *d));
+                // Counted only for tabs, so the contexts (memo keys) are the same without them
+                let level = Levels::from(self.config.hard_tabs);
+                let levels = ctx.levels.saturating_add(level);
+                let ctx = Context {
+                    indent,
+                    levels,
+                    ..ctx
+                };
+                tasks.push(Task::Indent(ctx.indentation()));
+                return Some((ctx, *d));
             }
             DocNode::Concat(doc1, doc2) => {
                 tasks.push(Task::ConcatStart(ctx, *doc2));
@@ -668,9 +702,12 @@ impl<'a> Resolver<'a> {
                 return Some((ctx, *primary));
             }
             DocNode::Align(d) => {
-                let indent = ctx.text_col();
-                tasks.push(Task::Indent(indent));
-                return Some((Context { indent, ..ctx }, *d));
+                let ctx = Context {
+                    indent: ctx.text_col(),
+                    ..ctx
+                };
+                tasks.push(Task::Indent(ctx.indentation()));
+                return Some((ctx, *d));
             }
         };
         results.push(layout_set);
@@ -680,7 +717,7 @@ impl<'a> Resolver<'a> {
 
 enum Task {
     Resolve(Context, DocId),
-    Indent(u32),
+    Indent(Indentation),
     Cost(Cost),
     WeakPreference(WeakPreference),
     KeepTogether(Cost),
@@ -697,9 +734,14 @@ enum Task {
 
 /// The layouts rendered with `indent`; a layout ending with a line break keeps `last: None`, the next
 /// text after it is indented by the indentation current there
-fn indented(content_arena: &mut ContentArena, indent: u32, mut layout_set: LayoutSet) -> LayoutSet {
+fn indented(
+    content_arena: &mut ContentArena,
+    indent: Indentation,
+    mut layout_set: LayoutSet,
+) -> LayoutSet {
     for layout in &mut layout_set.layouts {
-        layout.content = Content::Indent(indent, content_arena.make(layout.content));
+        let content = content_arena.make(layout.content);
+        layout.content = Content::Indent(indent.cols, indent.levels, content);
     }
     layout_set
 }

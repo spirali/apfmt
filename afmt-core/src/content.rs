@@ -3,12 +3,26 @@ use crate::doc::{AlignGroup, DocId};
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct ContentId(u32);
 
+/// The number of block indentation levels (`DocNode::Nest`) in an indentation
+pub type Levels = u16;
+
+/// The indentation of a line: `cols` columns, the first `levels × tab_spaces` of them block
+/// indentation (`DocNode::Nest`), the rest alignment (`DocNode::Align`); with `hard_tabs`, the block
+/// indentation is written as tabs and the alignment as spaces. `levels` is counted only with
+/// `hard_tabs` (0 otherwise).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct Indentation {
+    pub cols: u32,
+    pub levels: Levels,
+}
+
 #[derive(Clone, Copy)]
 pub enum Content {
     Text(DocId),
     Newline,
     Concat(ContentId, ContentId),
-    Indent(u32, ContentId),
+    /// The fields of an `Indentation`, flat so that the tag of `Content` fits in the padding
+    Indent(u32, Levels, ContentId),
     Mark(AlignGroup),
 }
 

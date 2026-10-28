@@ -177,7 +177,30 @@ impl<'a> Formatter<'a> {
         let Some(lines) = self.reindented_lines(first, last) else {
             return self.verbatim_range(first, last, start, end);
         };
-        Frag::new(self.lines_doc(lines), start, end, Some(last.clone()))
+        Frag::new(self.block_lines_doc(&lines), start, end, Some(last.clone()))
+    }
+
+    /// The lines one below another as in `lines_doc`, the leading spaces of each line written as
+    /// block indentation levels of `tab_spaces` columns (tabs with `hard_tabs`, see `Indentation`)
+    /// and the spaces left: the nesting of code copied from the source
+    fn block_lines_doc(&self, lines: &[String]) -> DocId {
+        let tab = self.config().tab_spaces.max(1) as usize;
+        let mut doc_id = EMPTY_DOC;
+        for (i, line) in lines.iter().enumerate() {
+            if i > 0 {
+                doc_id = self.concat(doc_id, NEWLINE_DOC);
+            }
+            if line.is_empty() {
+                continue;
+            }
+            let spaces = line.len() - line.trim_start_matches(' ').len();
+            let mut text = self.text_node(&line[spaces / tab * tab..]);
+            for _ in 0..spaces / tab {
+                text = self.make_node(DocNode::Nest(text));
+            }
+            doc_id = self.concat(doc_id, text);
+        }
+        doc_id
     }
 
     /// The lines one below another, each at the indentation of the doc; a blank line is empty
@@ -702,9 +725,9 @@ impl<'a> Formatter<'a> {
 
     fn comment_doc(&self, token: &SyntaxToken) -> DocId {
         let doc = is_doc_comment(token.text());
-        if let Some(lines) = multiline_comment_lines(token) {
+        if let Some(lines) = multiline_comment_lines(token, self.config().tab_spaces) {
             // The lines are aligned to the column of the comment start
-            let lines = lines.into_iter().map(|line| trim_comment_line(line, doc));
+            let lines = lines.iter().map(|line| trim_comment_line(line, doc));
             return self.make_node(DocNode::Align(self.lines_doc(lines)));
         }
         let source = token.text();

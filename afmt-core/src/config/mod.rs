@@ -76,6 +76,9 @@ pub struct Config {
     pub normalize_comment_sigil_spacing: bool,
     /// The line endings of the output
     pub newline_style: NewlineStyle,
+    /// Indentation with tabs (rustfmt's `hard_tabs`): a tab for each block level, spaces for
+    /// alignment; a tab counts as `tab_spaces` columns
+    pub hard_tabs: bool,
     /// The edition of the syntax
     pub edition: Edition,
     /// The source is not formatted at all (rustfmt's `disable_all_formatting`); the caller outputs
@@ -111,6 +114,7 @@ impl Default for Config {
             overflow_line_penalty: 20,
             normalize_comment_sigil_spacing: false,
             newline_style: NewlineStyle::Auto,
+            hard_tabs: false,
             edition: Edition::CURRENT,
             disable_all_formatting: false,
             dump_parse_tree: false,
