@@ -246,13 +246,24 @@ fn fill_list(
 
 /// One item per line, aligned to the column after `open` (visual indentation), without a trailing
 /// comma; the closing delimiter follows the last item: `|a: A,` / ` b: B|`. Only for closure
-/// parameters, an explicit exception to the Style Guide (see CLAUDE.md).
-fn aligned_list(fmt: &Formatter, items: &[ListItem], open: Option<SyntaxToken>) -> Frag {
-    fmt.align(aligned_items(fmt, items, open))
+/// parameters, an explicit exception to the Style Guide (see CLAUDE.md). With `keep_blank_lines`, blank
+/// lines between items are kept, as in `vertical_list`.
+fn aligned_list(
+    fmt: &Formatter,
+    items: &[ListItem],
+    open: Option<SyntaxToken>,
+    keep_blank_lines: bool,
+) -> Frag {
+    fmt.align(aligned_items(fmt, items, open, keep_blank_lines))
 }
 
 /// The items of `aligned_list`, not aligned yet
-fn aligned_items(fmt: &Formatter, items: &[ListItem], open: Option<SyntaxToken>) -> Frag {
+fn aligned_items(
+    fmt: &Formatter,
+    items: &[ListItem],
+    open: Option<SyntaxToken>,
+    keep_blank_lines: bool,
+) -> Frag {
     let mut builder = Builder::with_cursor(fmt, open);
     builder.flush_trivia();
     for (item, is_last) in with_is_last(items) {
@@ -262,8 +273,12 @@ fn aligned_items(fmt: &Formatter, items: &[ListItem], open: Option<SyntaxToken>)
             break;
         }
         builder.push_separator(SyntaxKind::COMMA);
-        builder.flush_trivia();
-        builder.push_newline();
+        if keep_blank_lines {
+            builder.flush_trivia_and_end_line();
+        } else {
+            builder.flush_trivia();
+            builder.push_newline();
+        }
     }
     builder.flush_trivia();
     // A line comment would swallow the closing delimiter
@@ -277,10 +292,12 @@ pub(crate) fn aligned_list_with_tail(
     fmt: &Formatter,
     delims: &Delimiters,
     items: &[ListItem],
+    keep_blank_lines: bool,
     tail: Frag,
 ) -> Frag {
     let mut aligned = Builder::new(fmt);
-    aligned.push(aligned_items(fmt, items, Some(delims.open.clone())));
+    let open = Some(delims.open.clone());
+    aligned.push(aligned_items(fmt, items, open, keep_blank_lines));
     aligned.push(delims.format_close(fmt));
     aligned.push_newline();
     aligned.push(tail);
@@ -621,12 +638,15 @@ impl Delimiters {
 }
 
 /// The layouts a delimited list may take, see `delimited_list`. Start with `tall` or `fixed_vertical`
-/// and refine it with `fill_if`, `broken_if` and `trailing_separator`. The last item may overflow if
-/// it allows it, see `Overflow`.
+/// and refine it with `fill_if`, `broken_if`, `keep_blank_lines` and `trailing_separator`. The last
+/// item may overflow if it allows it, see `Overflow`.
 pub(crate) struct ListLayout {
     /// The items on a single line; `None` allows only the broken layout
     flat: Option<FlatLimit>,
     broken: BrokenList,
+    /// Whether the blank lines between items are kept when they are one per line (vertical or
+    /// aligned); never on a single line or filled
+    keep_blank_lines: bool,
     trailing: TrailingSeparator,
     /// The numbers of items on the lines of another broken layout, see `lines_if`
     lines: Option<Vec<usize>>,
@@ -637,9 +657,8 @@ impl ListLayout {
     pub fn tall(flat: FlatLimit) -> Self {
         ListLayout {
             flat: Some(flat),
-            broken: BrokenList::Vertical {
-                keep_blank_lines: false,
-            },
+            broken: BrokenList::Vertical,
+            keep_blank_lines: false,
             trailing: TrailingSeparator::IfVertical,
             lines: None,
         }
@@ -649,9 +668,8 @@ impl ListLayout {
     pub fn fixed_vertical() -> Self {
         ListLayout {
             flat: None,
-            broken: BrokenList::Vertical {
-                keep_blank_lines: true,
-            },
+            broken: BrokenList::Vertical,
+            keep_blank_lines: true,
             trailing: TrailingSeparator::IfVertical,
             lines: None,
         }
@@ -668,6 +686,13 @@ impl ListLayout {
         if fill {
             self.broken = BrokenList::Fill;
         }
+        self
+    }
+
+    /// Blank lines between items are kept when they are one per line, as between struct fields
+    /// (declarations, not expressions: function parameters, as rustfmt does)
+    pub fn keep_blank_lines(mut self) -> Self {
+        self.keep_blank_lines = true;
         self
     }
 
@@ -759,7 +784,7 @@ impl FlatLimit {
 #[derive(Clone, Copy)]
 enum BrokenList {
     /// One item per line, see `vertical_list`
-    Vertical { keep_blank_lines: bool },
+    Vertical,
     /// As many items per line as fit, except items with `own_line`, see `fill_list`
     Fill,
     /// One item per line, visually aligned, see `aligned_list`
@@ -886,16 +911,16 @@ pub(crate) fn delimited_list(
     let overflow_only = matches!(last_overflow, Overflow::Only(_));
     let broken = (overflow.is_none() || !overflow_only).then(|| {
         let broken = match layout.broken {
-            BrokenList::Vertical { keep_blank_lines } => vertical_list(
+            BrokenList::Vertical => vertical_list(
                 fmt,
                 items,
                 open.clone(),
-                keep_blank_lines,
+                layout.keep_blank_lines,
                 layout.trailing,
                 None,
             ),
             BrokenList::Fill => fill_list(fmt, items, open.clone(), layout.trailing),
-            BrokenList::Aligned => aligned_list(fmt, items, open.clone()),
+            BrokenList::Aligned => aligned_list(fmt, items, open.clone(), layout.keep_blank_lines),
         };
         // With a preferred overflow, the broken layouts are used only when it does not fit; an item
         // that cannot span more lines has no overflow (a macro call copied on one line)

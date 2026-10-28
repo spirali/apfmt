@@ -72,7 +72,9 @@ fn format_param(fmt: &Formatter, param: Param) -> Frag {
 pub(super) fn format_param_list(fmt: &Formatter, param_list: ParamList) -> Frag {
     let params = param_items(fmt, &param_list);
     let delims = Delimiters::parens_of(param_list.syntax());
-    delimited_list(fmt, &delims, &params, ListLayout::tall(FlatLimit::MaxWidth))
+    // Blank lines between parameters are kept, as between struct fields (rustfmt too)
+    let layout = ListLayout::tall(FlatLimit::MaxWidth).keep_blank_lines();
+    delimited_list(fmt, &delims, &params, layout)
 }
 
 /// The header of a closure, `|a, b: B|` and its return type `-> T`, with the parameters on a single
@@ -123,12 +125,13 @@ pub(super) fn closure_header_layouts(
     }
     let broken = match &ret_type {
         Some(ret_type) if !hugged => {
-            aligned_list_with_tail(fmt, &delims, &params, ret_type.clone())
+            aligned_list_with_tail(fmt, &delims, &params, true, ret_type.clone())
         }
         _ => {
             let layout = ListLayout::tall(FlatLimit::MaxWidth)
                 .broken_if(true)
-                .aligned();
+                .aligned()
+                .keep_blank_lines();
             with_ret_type(delimited_list(fmt, &delims, &params, layout))
         }
     };
