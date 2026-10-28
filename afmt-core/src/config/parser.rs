@@ -44,6 +44,7 @@ struct TomlConfig {
     blank_lines_upper_bound: Option<u32>,
     short_array_element_width_threshold: Option<u32>,
     trailing_semicolon: Option<bool>,
+    match_block_trailing_comma: Option<bool>,
     format_macro_bodies: Option<bool>,
     edition: Option<EditionSetting>,
     disable_all_formatting: Option<bool>,
@@ -113,6 +114,10 @@ impl TomlConfig {
             self.short_array_element_width_threshold,
         );
         set_value(&mut config.trailing_semicolon, self.trailing_semicolon);
+        set_value(
+            &mut config.match_block_trailing_comma,
+            self.match_block_trailing_comma,
+        );
         set_value(&mut config.format_macro_bodies, self.format_macro_bodies);
         set_value(
             &mut config.trailing_comment_align_threshold,
@@ -250,13 +255,14 @@ mod tests {
     fn rustfmt_options() {
         let config = apply(
             "max_width = 80\nuse_small_heuristics = \"Max\"\nchain_width = 40\ntab_spaces = 2\n\
-             edition = \"2021\"\n",
+             edition = \"2021\"\nmatch_block_trailing_comma = true\n",
         );
         assert_eq!(config.max_width, 80);
         assert_eq!(config.fn_call_width, 80);
         assert_eq!(config.chain_width, 40);
         assert_eq!(config.tab_spaces, 2);
         assert_eq!(config.edition, Edition::Edition2021);
+        assert!(config.match_block_trailing_comma);
     }
 
     #[test]

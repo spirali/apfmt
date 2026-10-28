@@ -244,7 +244,8 @@ fn arm_body_layouts(fmt: &Formatter, body: Expr) -> ArmBodyLayouts {
 }
 
 /// `pat if guard => body,` (Style Guide "Match"): the body on the line of `=>` with a comma, or in a
-/// block without one (see `arm_body_layouts`). A broken left-hand side costs a split; with a guard, it
+/// block without one (see `arm_body_layouts`), with one with `match_block_trailing_comma` (rustfmt's
+/// option). A broken left-hand side costs a split; with a guard, it
 /// breaks before `if`, and the block starts on its own line: `pat` / `    if guard =>` / `{`.
 fn format_match_arm(fmt: &Formatter, arm: &MatchArm, group: Option<AlignGroup>) -> Frag {
     let pat = pat_layouts(fmt, arm.pat().unwrap());
@@ -289,7 +290,8 @@ fn format_match_arm(fmt: &Formatter, arm: &MatchArm, group: Option<AlignGroup>) 
         builder.push_comments_ending_line();
         builder.into_frag()
     };
-    let mut layouts = with_body(lhs.clone(), block.clone(), false);
+    let block_comma = fmt.config().match_block_trailing_comma;
+    let mut layouts = with_body(lhs.clone(), block.clone(), block_comma);
     if let Some(same_line) = same_line {
         layouts = fmt.alt_frag(with_body(lhs, same_line, true), layouts);
     }
@@ -300,10 +302,10 @@ fn format_match_arm(fmt: &Formatter, arm: &MatchArm, group: Option<AlignGroup>) 
         // block starts on its own line, an empty one stays on the line of the guard (as in rustfmt).
         let broken = if is_empty_block(&arm.expr().unwrap()) {
             broken.push(fmt.indented_line(Builder::concat(fmt, [guard, arrow, block])));
-            with_body(broken.into_frag(), Frag::empty(), false)
+            with_body(broken.into_frag(), Frag::empty(), block_comma)
         } else {
             broken.push(fmt.indented_line(Builder::concat(fmt, [guard, arrow])));
-            with_body(broken.into_frag(), fmt.on_next_line(block), false)
+            with_body(broken.into_frag(), fmt.on_next_line(block), block_comma)
         };
         layouts = fmt.alt_frag(layouts, broken);
     }

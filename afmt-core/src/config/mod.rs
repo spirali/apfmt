@@ -32,6 +32,8 @@ pub struct Config {
     pub short_array_element_width_threshold: u32,
     /// `;` after a `return`, `break` or `continue` ending a broken block (`break;`), or none (`break`)
     pub trailing_semicolon: bool,
+    /// `,` after a match arm whose body is a block (`A => {` / `...` / `},`); the Style Guide puts none
+    pub match_block_trailing_comma: bool,
     /// Formats the transcribers of `macro_rules!` that parse as items, statements or an expression
     /// (rustfmt's `format_macro_bodies`); otherwise they are copied
     pub format_macro_bodies: bool,
@@ -73,6 +75,7 @@ impl Default for Config {
             single_line_let_else_max_width: 50,
             short_array_element_width_threshold: 10,
             trailing_semicolon: true,
+            match_block_trailing_comma: false,
             format_macro_bodies: true,
             trailing_comment_align_threshold: 40,
             overflow_line_penalty: 20,
