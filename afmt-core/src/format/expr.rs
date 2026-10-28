@@ -703,6 +703,8 @@ pub(super) fn format_expr_without_attrs(fmt: &Formatter, expr: Expr) -> Frag {
     debug_assert_attrs_placed(fmt, &expr);
     match expr {
         Expr::Literal(expr) => format_literal(fmt, expr),
+        // Also a call of a chain's result, see `is_chain_call`
+        expr if is_postfix_expr(&expr) => format_postfix_chain(fmt, expr),
         Expr::CallExpr(expr) => format_call_expr(fmt, expr),
         Expr::PathExpr(expr) => format_path_expr(fmt, expr),
         Expr::BinExpr(expr) => format_bin_expr(fmt, expr),
@@ -720,7 +722,6 @@ pub(super) fn format_expr_without_attrs(fmt: &Formatter, expr: Expr) -> Frag {
         Expr::BreakExpr(expr) => format_break_expr(fmt, expr),
         Expr::ContinueExpr(expr) => format_continue_expr(fmt, expr),
         Expr::UnderscoreExpr(expr) => fmt.token(expr.underscore_token().unwrap(), Word),
-        expr if is_postfix_expr(&expr) => format_postfix_chain(fmt, expr),
         Expr::ClosureExpr(expr) => format_closure_expr(fmt, expr),
         Expr::RecordExpr(expr) => format_record_expr(fmt, expr),
         Expr::MatchExpr(expr) => format_match_expr(fmt, expr),

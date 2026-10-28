@@ -1,6 +1,6 @@
 //! Lists of expressions: call arguments, tuples and arrays, and how their last item hugs them
 
-use super::chain::{operand_chain, operator_chain_parts};
+use super::chain::{is_chain_call, operand_chain, operator_chain_parts};
 use super::closure::closure_layouts;
 use super::expr::format_expr;
 use super::macros::{is_array_macro, is_brace_macro, is_list_macro, macro_argument_count};
@@ -45,10 +45,12 @@ fn is_combinable_expr(expr: &Expr) -> bool {
 
 /// Whether the expression is a delimited list itself: a call, a list-like macro call, a struct
 /// literal or an array, also behind operators (`f(&[` / `...` / `])`, `f(g(` / `...` / `)?)`, see
-/// `without_operators`); the Style Guide's examples of a combined single argument
+/// `without_operators`); the Style Guide's examples of a combined single argument. Not a call of a
+/// chain's result, which is a chain (`a.b()(x)`, see `is_chain_call`).
 fn is_delimited_list_expr(expr: &Expr) -> bool {
     match without_operators(expr) {
-        Expr::CallExpr(_) | Expr::ArrayExpr(_) | Expr::RecordExpr(_) => true,
+        expr @ Expr::CallExpr(_) => !is_chain_call(&expr),
+        Expr::ArrayExpr(_) | Expr::RecordExpr(_) => true,
         expr => is_list_macro(&expr),
     }
 }
@@ -69,6 +71,7 @@ fn ends_in_own_width_hug(expr: &Expr) -> bool {
         | Expr::LoopExpr(_)
         | Expr::WhileExpr(_)
         | Expr::ForExpr(_) => true,
+        expr if is_chain_call(&expr) => true,
         Expr::CallExpr(call) => (call.arg_list().and_then(|args| args.args().last()))
             .is_some_and(|last| ends_in_own_width_hug(&last)),
         expr => is_brace_macro(&expr),
@@ -319,17 +322,18 @@ pub(super) fn format_expr_item(fmt: &Formatter, expr: Expr) -> ExprItem {
         // `ChainLayouts::joined`)
         expr if !has_attrs(&expr)
             && let Some(chain) = operand_chain(&expr).filter(|chain| {
-                matches!(
+                (matches!(
                     chain,
                     Expr::MethodCallExpr(_) | Expr::TryExpr(_) | Expr::AwaitExpr(_)
-                ) && is_combinable_expr(chain)
+                ) || is_chain_call(chain))
+                    && is_combinable_expr(chain)
             }) =>
         {
             // A chain without elements, `g(...)?`, is limited as the call is
             let own_width = matches!(
                 without_operators(&chain),
                 Expr::MethodCallExpr(_) | Expr::AwaitExpr(_)
-            );
+            ) || is_chain_call(&without_operators(&chain));
             let ChainLayouts { layouts, joined } = operator_chain_parts(fmt, &expr, chain);
             let overflow = fmt
                 .alt_some(layouts.other.clone(), joined)

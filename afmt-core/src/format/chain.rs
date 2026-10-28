@@ -87,7 +87,8 @@ fn format_index(fmt: &Formatter, expr: &IndexExpr) -> Frag {
 /// Splits a postfix chain `a.b()?.c()` into its root (`a`, the return value) and the postfix
 /// expressions applied to it, innermost first. An index is not a part of a chain, as in rustfmt (the
 /// Style Guide's chain is of field accesses, method calls and `?`): it ends the root, so the root of
-/// `a.b[i].c()` is `a.b[i]`, itself a chain followed by an index (see `postfix_chain_parts`).
+/// `a.b[i].c()` is `a.b[i]`, itself a chain followed by an index (see `postfix_chain_parts`); so does
+/// a call of the chain's result (`a.b()(x).c()`, see `is_chain_call`).
 fn collect_postfix_chain(expr: Expr, postfix: &mut Vec<Expr>) -> Expr {
     let inner = match &expr {
         Expr::MethodCallExpr(e) => e.receiver(),
@@ -109,7 +110,8 @@ pub(super) fn format_postfix_chain(fmt: &Formatter, expr: Expr) -> Frag {
 /// The layouts of a postfix chain, see `postfix_chain_layouts`. `?` stays with the element (or root)
 /// in front of it: `a.b()?`. An index follows the chain in front of it, on the line of its last
 /// element, whose `chain_width` it does not count, as in rustfmt: `a.b().c()[0]`, `a` / `.b()` /
-/// `.c()[0]`; a root ending with an index is such a chain itself (see `collect_postfix_chain`).
+/// `.c()[0]`; so do the arguments of a call of the chain's result (`a.b()(x)`, see `is_chain_call`).
+/// A root ending with an index or such a call is a chain itself (see `collect_postfix_chain`).
 pub(super) fn postfix_chain_parts(fmt: &Formatter, expr: Expr) -> ChainLayouts {
     postfix_chain_parts_then(fmt, expr, &Frag::empty())
 }
@@ -121,6 +123,12 @@ fn postfix_chain_parts_then(fmt: &Formatter, expr: Expr, suffix: &Frag) -> Chain
     if let Expr::IndexExpr(index_expr) = &expr {
         let index = Builder::concat(fmt, [format_index(fmt, index_expr), suffix.clone()]);
         return ChainLayouts::new(chain_root_layouts(fmt, index_expr.base().unwrap(), &index));
+    }
+    // A call of the chain's result follows it as an index does
+    if let Expr::CallExpr(call) = &expr {
+        let args = format_arg_list(fmt, call.arg_list().unwrap());
+        let args = Builder::concat(fmt, [args, suffix.clone()]);
+        return ChainLayouts::new(chain_root_layouts(fmt, call.expr().unwrap(), &args));
     }
     let mut postfix = Vec::new();
     let root_expr = collect_postfix_chain(expr, &mut postfix);
@@ -194,5 +202,15 @@ pub(super) fn is_postfix_expr(expr: &Expr) -> bool {
             | Expr::AwaitExpr(_)
             | Expr::TryExpr(_)
             | Expr::IndexExpr(_)
-    )
+    ) || is_chain_call(expr)
+}
+
+/// Whether the expression calls the result of a postfix chain (`a.b()(x)`, `a.handlers[i](x)`): a
+/// chain itself, its arguments following the chain as an index does (see `postfix_chain_parts`)
+pub(super) fn is_chain_call(expr: &Expr) -> bool {
+    let Expr::CallExpr(call) = expr else {
+        return false;
+    };
+    call.expr()
+        .is_some_and(|callee| is_postfix_expr(&callee) && !has_attrs(&callee))
 }
