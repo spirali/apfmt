@@ -1,5 +1,5 @@
-// Blank lines between the fields of a struct literal are removed, as between call arguments: within
-// an expression only statements keep them (rustfmt keeps them in struct literals)
+// Blank lines between the fields of a broken struct literal are kept (at most one), as between the
+// fields of a struct declaration (rustfmt too); on one line they are dropped
 fn f() -> ParquetResult<Self> {
     let s = Decoder {
         prefix_lengths: delta_bitpacked::Decoder::new(values),

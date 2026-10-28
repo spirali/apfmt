@@ -1,5 +1,5 @@
-// Blank lines between the fields of a struct pattern are removed, as in a struct literal (rustfmt
-// keeps them)
+// Blank lines between the fields of a broken struct pattern are kept (at most one), as in a struct
+// literal (rustfmt too); on one line they are dropped
 fn f(event: Event) {
     let Event {
         window_identifier,

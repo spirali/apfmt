@@ -555,8 +555,10 @@ fn format_record_expr(fmt: &Formatter, expr: RecordExpr) -> Frag {
         }
         None => TrailingSeparator::IfVertical,
     };
+    // Blank lines between the fields are kept, as in a struct declaration (rustfmt too)
     let layout = ListLayout::tall(FlatLimit::Within(fmt.config().struct_lit_width))
-        .trailing_separator(trailing);
+        .trailing_separator(trailing)
+        .keep_blank_lines();
     let delims = Delimiters::braces_of(list.syntax());
     builder.push(delimited_list(fmt, &delims, &fields, layout));
     builder.into_frag()
