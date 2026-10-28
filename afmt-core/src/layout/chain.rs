@@ -93,7 +93,7 @@ fn chain(fmt: &Formatter, first: Frag, rest: &[(Frag, Frag)], indent: bool) -> F
 }
 
 /// An element of a postfix chain: `.field`, `.method::<T>(args)` or `.await`, with the `?`
-/// following it (an index is not a part of a chain, see `postfix_chain_parts` in `format/expr.rs`).
+/// following it (an index is not a part of a chain, see `postfix_chain_parts` in `format/chain.rs`).
 /// `head` stays on one line; `tail` (the arguments and what follows them, may be empty) may break.
 pub(crate) struct ChainElement {
     pub head: Frag,
@@ -139,29 +139,37 @@ impl ChainLayouts {
 ///   does.
 ///
 /// `root` is a chain itself when it ends with an index (`a.b[i].c()`, see `postfix_chain_parts` in
-/// `format/expr.rs`): broken before its own elements (`root.hanging`), the elements follow on lines at
-/// the same indentation, as if it were one chain; `root.other` are its other layouts.
+/// `format/chain.rs`): broken before its own elements (`root.hanging`), the elements follow on lines
+/// at the same indentation, as if it were one chain; `root.other` are its other layouts.
+///
+/// `suffix` (the indexes after the chain, `a.b().c()[i]`, may be empty) follows the last element on
+/// its line, whatever the layout, so an index broken between its brackets is indented from that
+/// line; it does not count in `chain_width`.
 ///
 /// Returns the broken layout as `hanging` (indented continuation lines) and the others as `other`;
-/// without elements (`a?`), the root. With a single element after a root that may end with a
-/// delimiter, also that layout of `hanging` alone (`ChainLayouts::joined`).
+/// without elements (`a?`), the root followed by `suffix`. With a single element after a root that
+/// may end with a delimiter, also that layout of `hanging` alone (`ChainLayouts::joined`).
 pub(crate) fn postfix_chain_layouts(
     fmt: &Formatter,
     root: HeadLayouts,
     elements: &[ChainElement],
+    suffix: &Frag,
 ) -> ChainLayouts {
+    let then_suffix = |frag: Frag| Builder::concat(fmt, [frag, suffix.clone()]);
     if elements.is_empty() {
-        return ChainLayouts::new(root);
+        return ChainLayouts::new(root.map(then_suffix));
     }
     let full = elements
         .iter()
         .map(|e| Builder::concat(fmt, [e.head.clone(), e.tail.clone()]))
         .collect::<Vec<_>>();
     // An element broken over more lines costs a split: the Style Guide prefers single-line elements
-    let lines = full
+    let mut lines = full
         .iter()
         .map(|e| fmt.keep_together(e.clone()))
         .collect::<Vec<_>>();
+    let last_line = lines.pop().unwrap();
+    lines.push(then_suffix(last_line));
     // A broken root chain continued by the elements, see `vertical_chain`
     let continued = root.hanging.map(|root| {
         let mut builder = Builder::new(fmt);
@@ -201,6 +209,7 @@ pub(crate) fn postfix_chain_layouts(
         }
         other = Some(fmt.alt_opt(fmt.dispreferred(overflow), other));
     }
+    let other = other.map(then_suffix);
     ChainLayouts {
         layouts: HeadLayouts {
             hanging: vertical,

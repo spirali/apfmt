@@ -107,19 +107,23 @@ pub(super) fn format_postfix_chain(fmt: &Formatter, expr: Expr) -> Frag {
 }
 
 /// The layouts of a postfix chain, see `postfix_chain_layouts`. `?` stays with the element (or root)
-/// in front of it: `a.b()?`. An index follows the chain in front of it, whose `chain_width` it does
-/// not count, as in rustfmt: `a.b().c()[0]`, `a` / `.b()` / `.c()[0]`; a root ending with an index
-/// is such a chain itself (see `collect_postfix_chain`).
+/// in front of it: `a.b()?`. An index follows the chain in front of it, on the line of its last
+/// element, whose `chain_width` it does not count, as in rustfmt: `a.b().c()[0]`, `a` / `.b()` /
+/// `.c()[0]`; a root ending with an index is such a chain itself (see `collect_postfix_chain`).
 pub(super) fn postfix_chain_parts(fmt: &Formatter, expr: Expr) -> ChainLayouts {
+    postfix_chain_parts_then(fmt, expr, &Frag::empty())
+}
+
+/// The layouts of the postfix chain `expr` followed by `suffix` on the line of its last element
+/// (the indexes after it), see `postfix_chain_parts`
+fn postfix_chain_parts_then(fmt: &Formatter, expr: Expr, suffix: &Frag) -> ChainLayouts {
     debug_assert_attrs_placed(fmt, &expr);
     if let Expr::IndexExpr(index_expr) = &expr {
-        let index = format_index(fmt, index_expr);
-        let layouts = chain_root_layouts(fmt, index_expr.base().unwrap())
-            .map(|base| Builder::concat(fmt, [base, index.clone()]));
-        return ChainLayouts::new(layouts);
+        let index = Builder::concat(fmt, [format_index(fmt, index_expr), suffix.clone()]);
+        return ChainLayouts::new(chain_root_layouts(fmt, index_expr.base().unwrap(), &index));
     }
     let mut postfix = Vec::new();
-    let root_layouts = chain_root_layouts(fmt, collect_postfix_chain(expr, &mut postfix));
+    let root_expr = collect_postfix_chain(expr, &mut postfix);
     // `?` following the root
     let mut root = Builder::new(fmt);
     let mut elements: Vec<(Builder, Builder)> = Vec::new();
@@ -161,17 +165,23 @@ pub(super) fn postfix_chain_parts(fmt: &Formatter, expr: Expr) -> ChainLayouts {
         })
         .collect::<Vec<_>>();
     let root_suffix = root.into_frag();
-    let root = root_layouts.map(|root| Builder::concat(fmt, [root, root_suffix.clone()]));
-    postfix_chain_layouts(fmt, root, &elements)
+    if elements.is_empty() {
+        // `a[i]?`: the root is followed by the `?` and the suffix on its last line
+        let suffix = Builder::concat(fmt, [root_suffix, suffix.clone()]);
+        return ChainLayouts::new(chain_root_layouts(fmt, root_expr, &suffix));
+    }
+    let root = chain_root_layouts(fmt, root_expr, &root_suffix);
+    postfix_chain_layouts(fmt, root, &elements, suffix)
 }
 
-/// The layouts of the root of a postfix chain: a root ending with an index is a chain itself (see
-/// `collect_postfix_chain`), another one an expression
-fn chain_root_layouts(fmt: &Formatter, expr: Expr) -> HeadLayouts {
+/// The layouts of the root of a postfix chain followed by `suffix` on its last line: a root ending
+/// with an index is a chain itself (see `collect_postfix_chain`), another one an expression
+fn chain_root_layouts(fmt: &Formatter, expr: Expr, suffix: &Frag) -> HeadLayouts {
     if is_postfix_expr(&expr) && !has_attrs(&expr) {
-        postfix_chain_parts(fmt, expr).layouts
+        postfix_chain_parts_then(fmt, expr, suffix).layouts
     } else {
-        HeadLayouts::other(format_expr(fmt, expr))
+        let expr = format_expr(fmt, expr);
+        HeadLayouts::other(Builder::concat(fmt, [expr, suffix.clone()]))
     }
 }
 

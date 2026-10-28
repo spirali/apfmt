@@ -31,4 +31,36 @@ fn f() {
     let x = a[
         b // c
     ];
+    // After a broken chain, an index is indented from the line of the last element
+    foo(
+        self.morsel_idxs_values_per_p
+            .get_some_values_xxxxxxx()
+            .otherxxxxxxxxxxxxxxxxxxxxx()[
+                p_morsel_idxs_start_xxxxxxxxxxxxxxxxxxx..p_morsel_idxs_stop
+            ],
+    );
+    foo(
+        self.morsel_idxs_values_per_p
+            .get_some_values_xxxxxxx()
+            .otherxxxxxxxxxxxxxxxxxxxxx()[p][
+                p_morsel_idxs_start_xxxxxxxxxxxxxxxxxxx..p_morsel_idxs_stop
+            ],
+    );
+    {
+        {
+            {
+                {
+                    {
+                        {
+                            let p_morsel_idxs = l
+                                .morsel_idxs_values_per_p[p][
+                                    p_morsel_idxs_start..p_morsel_idxs_stop
+                                ]
+                                .foo();
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
