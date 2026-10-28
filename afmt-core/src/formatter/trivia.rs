@@ -271,10 +271,17 @@ impl<'a> Builder<'a> {
     }
 
     /// Takes the source separator `kind` after the cursor (if there is one) together with the comments
-    /// in front of it, which are pushed after it; with `push`, a separator is pushed in front of them
+    /// in front of it, which are pushed after it; with `push`, a separator is pushed in front of them,
+    /// but after a repetition of `macro_rules!` only where the source has one: the repetition may end
+    /// with its own separator or expand to nothing (`$($id,)+,` and `f($($a),*,)` would not compile)
     fn take_separator(&mut self, kind: SyntaxKind, push: bool) {
         // Pushed without processing the trivia after the cursor, which follows the separator
         let cursor = self.frag.cursor.take();
+        let push = push
+            && cursor.as_ref().is_none_or(|cursor| {
+                !self.fmt.is_repetition_placeholder(cursor)
+                    || next_code_token(cursor).is_some_and(|t| t.kind() == kind)
+            });
         if push {
             self.push(Frag::new_simple(separator_doc(kind), Comma, None));
         }

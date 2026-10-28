@@ -86,9 +86,11 @@ struct SubstitutedText {
 /// The text of `tree`, with its delimiters. With `specifiers` (in a transcriber of `macro_rules!`,
 /// the fragment specifiers of its matcher), each metavariable `$name` (and `$crate`) is replaced
 /// with one token that may stand where the fragment may, of the same width except for `vis`:
-/// `'name` for a `lifetime`, `pub` for a `vis`, otherwise the identifier `_name`; `None` when a `$`
-/// is not followed by a name (a repetition `$( ... )`). The tokens of `tree` that are `placeholders`
-/// already (`tree` is in a tree parsed again) stay placeholders.
+/// `'name` for a `lifetime`, `pub` for a `vis`, otherwise the identifier `_name`; and each
+/// repetition `$( ... ) sep? op` on a single line with the identifier `_rep`, written as the source
+/// text of the repetition (see `repetition_end`); `None` when a `$` is followed by neither (or by a
+/// repetition spanning lines). The tokens of `tree` that are `placeholders` already (`tree` is in a
+/// tree parsed again) stay placeholders.
 fn substituted_text(
     tree: &ast::TokenTree,
     specifiers: Option<&FxHashMap<String, String>>,
@@ -96,10 +98,28 @@ fn substituted_text(
 ) -> Option<SubstitutedText> {
     let mut text = String::new();
     let mut substituted = Vec::new();
-    let mut tokens = (tree.syntax().descendants_with_tokens()).filter_map(|e| e.into_token());
-    while let Some(token) = tokens.next() {
+    let tokens: Vec<_> = (tree.syntax().descendants_with_tokens())
+        .filter_map(|e| e.into_token())
+        .collect();
+    let mut i = 0;
+    while let Some(token) = tokens.get(i) {
+        i += 1;
         if let Some(specifiers) = specifiers.filter(|_| token.kind() == SyntaxKind::DOLLAR) {
-            let name = tokens.next().filter(|n| n.kind().is_any_identifier())?;
+            let next = tokens.get(i)?;
+            if next.kind() == T!['('] {
+                let end = repetition_end(&tokens, i)?;
+                let source: String = tokens[i - 1..=end].iter().map(|t| t.text()).collect();
+                if source.contains('\n') {
+                    return None;
+                }
+                let placeholder = "_rep";
+                substituted.push((text.len(), placeholder.len(), source));
+                text.push_str(placeholder);
+                i = end + 1;
+                continue;
+            }
+            let name = Some(next).filter(|n| n.kind().is_any_identifier())?;
+            i += 1;
             let placeholder = match specifiers.get(name.text()).map(String::as_str) {
                 Some("lifetime") => format!("'{}", name.text()),
                 Some("vis") => "pub".to_string(),
@@ -110,7 +130,7 @@ fn substituted_text(
             text.push_str(&placeholder);
             continue;
         }
-        if let Some(source) = placeholders.get(&token) {
+        if let Some(source) = placeholders.get(token) {
             substituted.push((text.len(), token.text().len(), source.clone()));
         }
         text.push_str(token.text());
@@ -119,6 +139,23 @@ fn substituted_text(
         text,
         placeholders: substituted,
     })
+}
+
+/// The index in `tokens` of the last token of the repetition `$( ... ) sep? op` whose `(` is at
+/// `open`: the operator `*`, `+` or `?`, after an optional separator token; `None` if there is no
+/// operator
+fn repetition_end(tokens: &[SyntaxToken], open: usize) -> Option<usize> {
+    let group = tokens[open].parent()?;
+    let is_close = |t: &SyntaxToken| t.kind() == T![')'] && t.parent().as_ref() == Some(&group);
+    let close = open + tokens[open..].iter().position(is_close)?;
+    let is_op = |t: &SyntaxToken| matches!(t.kind(), T![*] | T![+] | T![?]);
+    let after = |i: usize| (i..tokens.len()).find(|&i| is_code_kind(tokens[i].kind()));
+    let first = after(close + 1)?;
+    if is_op(&tokens[first]) {
+        return Some(first);
+    }
+    let op = after(first + 1)?;
+    is_op(&tokens[op]).then_some(op)
 }
 
 /// Whether formatting `node` could change whether two adjacent punctuation tokens are joined (no

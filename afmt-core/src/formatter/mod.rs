@@ -128,6 +128,12 @@ impl<'a> Formatter<'a> {
         }
     }
 
+    /// Whether the token is the placeholder of a repetition of `macro_rules!`, `$( ... ) sep? op` (see
+    /// `parse_transcriber`), which may end with its own separator or expand to nothing
+    pub fn is_repetition_placeholder(&self, token: &SyntaxToken) -> bool {
+        (self.placeholders.borrow().get(token)).is_some_and(|text| text.starts_with("$("))
+    }
+
     /// The doc of a token: the token, or the text it is written as (see `format_reparsed`)
     fn token_node(&self, token: SyntaxToken) -> DocId {
         let placeholders = self.placeholders.borrow();

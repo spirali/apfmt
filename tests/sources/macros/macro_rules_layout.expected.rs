@@ -1,5 +1,7 @@
 macro_rules! b {
-    ($($x:expr),* $(,)?) => { vec![$($x),*] };
+    ($($x:expr),* $(,)?) => {
+        vec![$($x),*]
+    };
 }
 
 mod m {
@@ -18,8 +20,12 @@ mod m {
 }
 
 macro_rules! e {
-    ($a:expr) => { $($a)* };
-    ($a:expr) /* c */ => /* d */ { $($a)* };
+    ($a:expr) => {
+        $($a)*
+    };
+    ($a:expr) /* c */ => /* d */ {
+        $($a)*
+    };
 }
 
 macro_rules! not_rules {
