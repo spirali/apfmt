@@ -68,7 +68,8 @@ impl FormatOptions {
     }
 }
 
-/// `code` formatted with `config`, ending with a line break unless it is empty, and the warnings
+/// `code` formatted with `config`, ending with a line break unless it is empty (`\r\n` or `\n`, see
+/// `NewlineStyle`), and the warnings
 /// about the syntax copied unchanged (with `Unsupported::Warn`) in the source named `file`; with
 /// `disable_all_formatting`, `code` unchanged
 pub fn format_code(
@@ -88,7 +89,11 @@ pub fn format_code(
     };
     let mut out = formatted.code;
     if !out.is_empty() {
-        out.push('\n');
+        out.push_str(if config.newline_style.uses_crlf(code) {
+            "\r\n"
+        } else {
+            "\n"
+        });
     }
     Ok((out, warnings))
 }
@@ -115,5 +120,17 @@ pub fn error_messages(file: &str, error: afmt_core::Error) -> Vec<String> {
             .map(|error| format!("{file}: {error:?}"))
             .collect(),
         error => vec![format!("{file}: {error}")],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn final_line_break_follows_newline_style() {
+        let format = |code| format_code(&Config::default(), code, "a.rs", Unsupported::Allow);
+        assert_eq!(format("fn f() {}\r\n").unwrap().0, "fn f() {}\r\n");
+        assert_eq!(format("fn f() {}\n").unwrap().0, "fn f() {}\n");
     }
 }

@@ -5,6 +5,34 @@ pub(crate) mod source;
 
 use ra_ap_syntax::Edition;
 
+/// The line endings of the output (rustfmt's `newline_style`)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NewlineStyle {
+    /// Those of the first line of the source (rustfmt documents it so, but compares with the source
+    /// after rustc has turned its `\r\n` into `\n`, so it always writes `\n`)
+    Auto,
+    /// `\r\n` on Windows, `\n` elsewhere
+    Native,
+    /// `\n`
+    Unix,
+    /// `\r\n`
+    Windows,
+}
+
+impl NewlineStyle {
+    /// Whether the output of `source` ends its lines with `\r\n`
+    pub fn uses_crlf(self, source: &str) -> bool {
+        match self {
+            NewlineStyle::Auto => source
+                .find('\n')
+                .is_some_and(|i| source[..i].ends_with('\r')),
+            NewlineStyle::Native => cfg!(windows),
+            NewlineStyle::Unix => false,
+            NewlineStyle::Windows => true,
+        }
+    }
+}
+
 pub struct Config {
     pub max_width: u32,
     pub tab_spaces: u32,
@@ -46,6 +74,8 @@ pub struct Config {
     /// `//a` -> `// a`, `/*a*/` -> `/* a */` (see `normalize_comment_sigil_spacing`); off by default,
     /// as rustfmt leaves the text of comments alone
     pub normalize_comment_sigil_spacing: bool,
+    /// The line endings of the output
+    pub newline_style: NewlineStyle,
     /// The edition of the syntax
     pub edition: Edition,
     /// The source is not formatted at all (rustfmt's `disable_all_formatting`); the caller outputs
@@ -80,6 +110,7 @@ impl Default for Config {
             trailing_comment_align_threshold: 40,
             overflow_line_penalty: 20,
             normalize_comment_sigil_spacing: false,
+            newline_style: NewlineStyle::Auto,
             edition: Edition::CURRENT,
             disable_all_formatting: false,
             dump_parse_tree: false,

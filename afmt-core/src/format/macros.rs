@@ -40,12 +40,7 @@ fn format_token_tree(fmt: &Formatter, call: &MacroCall) -> Frag {
         SyntaxKind::L_PAREN => fmt.format_reparsed(
             |placeholders| parse_token_tree::<ArgList>(tree, edition, placeholders),
             |args| {
-                // The trailing comma is kept as it is: a macro may not accept one, or require it
-                let trailing = if has_trailing_comma(args.syntax()) {
-                    TrailingSeparator::Required
-                } else {
-                    TrailingSeparator::Omitted
-                };
+                let trailing = source_trailing_comma(args.syntax());
                 format_expr_list(
                     fmt,
                     args.syntax(),
@@ -60,7 +55,7 @@ fn format_token_tree(fmt: &Formatter, call: &MacroCall) -> Frag {
         ),
         SyntaxKind::L_BRACK => fmt.format_reparsed(
             |placeholders| parse_token_tree::<ArrayExpr>(tree, edition, placeholders),
-            |array| format_array_expr(fmt, array),
+            |array| format_bracket_args(fmt, call, array),
         ),
         _ => None,
     };
@@ -204,6 +199,36 @@ fn format_string_lines(call: &MacroCall, args: &ArgList) -> Option<Vec<usize>> {
 /// Whether the list `node` ends with a comma before its closing delimiter: `(a, b,)`
 fn has_trailing_comma(node: &SyntaxNode) -> bool {
     prev_code_token(&node.last_token().unwrap()).is_some_and(|t| t.kind() == SyntaxKind::COMMA)
+}
+
+/// The trailing comma of the arguments `node` of a macro call kept as it is in the source, on a
+/// single line too: the pattern of the macro may reject one (`$($x:expr),*`) or require it
+/// (`$($x:expr,)*`), as rustfmt keeps it
+fn source_trailing_comma(node: &SyntaxNode) -> TrailingSeparator {
+    if has_trailing_comma(node) {
+        TrailingSeparator::Required
+    } else {
+        TrailingSeparator::Omitted
+    }
+}
+
+/// The arguments of `name![...]` laid out as an array; `vec!` accepts a trailing comma or none, so
+/// it gets one when broken, as an array does, another macro keeps the comma of the source (see
+/// `source_trailing_comma`)
+fn format_bracket_args(fmt: &Formatter, call: &MacroCall, array: ArrayExpr) -> Frag {
+    let is_vec =
+        (call.path().and_then(|p| p.segment())).is_some_and(|s| s.syntax().text() == "vec");
+    if is_vec || array.semicolon_token().is_some() {
+        return format_array_expr(fmt, array);
+    }
+    let trailing = source_trailing_comma(array.syntax());
+    format_expr_list(
+        fmt,
+        array.syntax(),
+        &Delimiters::brackets_of(array.syntax()),
+        fmt.config().array_width,
+        |layout| layout.trailing_separator(trailing),
+    )
 }
 
 /// The number of arguments of a list-like macro call (see `is_list_macro`), from the commas of its

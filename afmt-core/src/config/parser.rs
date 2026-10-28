@@ -6,7 +6,7 @@ use serde::Deserialize;
 use toml::{Table, Value};
 
 use crate::Error::GenericError;
-use crate::config::Config;
+use crate::config::{Config, NewlineStyle};
 
 /// Applies the config file at `path` to `cfg`. The format is told by the name: in a rustfmt config
 /// file (a name ending with `rustfmt.toml`), the options that afmt does not have are ignored; in an
@@ -45,6 +45,7 @@ struct TomlConfig {
     short_array_element_width_threshold: Option<u32>,
     trailing_semicolon: Option<bool>,
     match_block_trailing_comma: Option<bool>,
+    newline_style: Option<NewlineStyleSetting>,
     format_macro_bodies: Option<bool>,
     edition: Option<EditionSetting>,
     disable_all_formatting: Option<bool>,
@@ -118,6 +119,7 @@ impl TomlConfig {
             &mut config.match_block_trailing_comma,
             self.match_block_trailing_comma,
         );
+        set_value(&mut config.newline_style, self.newline_style.map(|s| s.0));
         set_value(&mut config.format_macro_bodies, self.format_macro_bodies);
         set_value(
             &mut config.trailing_comment_align_threshold,
@@ -193,6 +195,29 @@ impl TryFrom<Value> for EditionSetting {
     }
 }
 
+/// `newline_style` in a config file
+#[derive(Clone, Copy, Deserialize)]
+#[serde(try_from = "String")]
+struct NewlineStyleSetting(NewlineStyle);
+
+impl TryFrom<String> for NewlineStyleSetting {
+    type Error = &'static str;
+
+    /// Ignoring the case like rustfmt does
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        [
+            ("Auto", NewlineStyle::Auto),
+            ("Native", NewlineStyle::Native),
+            ("Unix", NewlineStyle::Unix),
+            ("Windows", NewlineStyle::Windows),
+        ]
+        .into_iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(&s))
+        .map(|(_, style)| NewlineStyleSetting(style))
+        .ok_or(r#"expected "Auto", "Native", "Unix" or "Windows""#)
+    }
+}
+
 /// How rustfmt derives the width heuristics from `max_width` (its `use_small_heuristics`)
 #[derive(Clone, Copy, Deserialize)]
 #[serde(try_from = "String")]
@@ -255,7 +280,7 @@ mod tests {
     fn rustfmt_options() {
         let config = apply(
             "max_width = 80\nuse_small_heuristics = \"Max\"\nchain_width = 40\ntab_spaces = 2\n\
-             edition = \"2021\"\nmatch_block_trailing_comma = true\n",
+             edition = \"2021\"\nmatch_block_trailing_comma = true\nnewline_style = \"windows\"\n",
         );
         assert_eq!(config.max_width, 80);
         assert_eq!(config.fn_call_width, 80);
@@ -263,6 +288,7 @@ mod tests {
         assert_eq!(config.tab_spaces, 2);
         assert_eq!(config.edition, Edition::Edition2021);
         assert!(config.match_block_trailing_comma);
+        assert_eq!(config.newline_style, NewlineStyle::Windows);
     }
 
     #[test]

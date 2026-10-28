@@ -16,7 +16,7 @@ mod test_utils;
 mod utils;
 
 use crate::check::check_result;
-pub use crate::config::Config;
+pub use crate::config::{Config, NewlineStyle};
 use crate::format::format_source_file;
 use crate::formatter::{Builder, Formatter, Unsupported};
 use crate::rewrite::rewrite_source;
@@ -140,7 +140,11 @@ fn locate_unsupported(
         .collect()
 }
 
+/// Formats `code`. Its `\r\n` line endings are read as `\n`, as rustc reads them (also inside
+/// comments and literals); the output has those of `newline_style`.
 pub fn format_source_code(config: &Config, code: &str) -> Result<Formatted> {
+    let source = code;
+    let code = &*code.replace("\r\n", "\n");
     let (file, prepared) = prepare_source_code(config, code)?;
 
     let fmt = Formatter::new(config);
@@ -171,6 +175,9 @@ pub fn format_source_code(config: &Config, code: &str) -> Result<Formatted> {
         }
     }
 
+    if config.newline_style.uses_crlf(source) {
+        out = out.replace('\n', "\r\n");
+    }
     Ok(Formatted {
         code: out,
         unsupported,
@@ -190,6 +197,27 @@ mod tests {
             out,
             format!("fn f() {{\n    g(\n        {literal},\n        1,\n    );\n}}")
         );
+    }
+
+    /// `code` formatted with `newline_style`
+    fn with_newlines(style: NewlineStyle, code: &str) -> String {
+        let config = Config {
+            newline_style: style,
+            ..Config::default()
+        };
+        format_source_code(&config, code).unwrap().code
+    }
+
+    #[test]
+    fn crlf_is_read_as_lf_and_written_by_newline_style() {
+        // A comment and a block comment, whose text would keep a `\r`, and a string literal
+        let lf = "fn f() {\n    // c\n    let x = 1; /* a\n b */\n    \"s\nt\"\n}";
+        let crlf = lf.replace('\n', "\r\n");
+        let crlf_input = crlf.replace("let x", "let  x") + "\r\n";
+        assert_eq!(with_newlines(NewlineStyle::Unix, &crlf_input), lf);
+        assert_eq!(with_newlines(NewlineStyle::Auto, &crlf_input), crlf);
+        assert_eq!(with_newlines(NewlineStyle::Auto, lf), lf);
+        assert_eq!(with_newlines(NewlineStyle::Windows, lf), crlf);
     }
 
     const UNSUPPORTED: &str = "fn f() {\n    let   v: m!() = 1;\n    try { 1 }\n}";
