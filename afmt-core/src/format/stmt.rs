@@ -3,7 +3,7 @@
 use super::attr::{debug_assert_attrs_placed, format_attr, format_skippable_with_attrs};
 use super::expr::{
     ExprPosition, format_braced_block, format_expr, format_expr_at, format_head_expr,
-    format_head_followed_by, push_head_after_comments, single_line_block_expr,
+    format_head_followed_by, format_rhs, push_head_after_comments, single_line_block_expr,
 };
 use super::format_unsupported;
 use super::item::format_item;
@@ -71,7 +71,7 @@ fn format_let_stmt(fmt: &Formatter, stmt: LetStmt) -> Frag {
         (Some(init), None) => {
             builder.push(lhs);
             builder.push_token(stmt.eq_token().unwrap(), Operator);
-            builder.push(fmt.same_or_indented_line_saving_lines(format_expr(fmt, init)));
+            builder.push(format_rhs(fmt, init));
         }
         (None, _) => builder.push(lhs),
     }

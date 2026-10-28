@@ -312,13 +312,35 @@ impl<'a> Formatter<'a> {
 
     /// As `same_or_indented_line`, but broken on the next line costs a line and a half more than
     /// broken on the current line instead of a split: it wins when it saves at least two lines, e.g.
-    /// the right-hand side of `let` and of an assignment (as rustfmt's `prefer_next_line`, which
-    /// counts the lines of the right-hand side: one less in total is enough for it, which moves
-    /// `x = cmd` / `.args([` to `x =` / `cmd.args([` and `]).output()?` here)
+    /// the right-hand side of `let` and of an assignment (rustfmt's `prefer_next_line` counts the
+    /// lines of the right-hand side: one less in total is enough for it, which would move `x = cmd` /
+    /// `.args([` to `x =` / `cmd.args([` and `]).output()?` here; see
+    /// `same_or_indented_line_saving_lines_preferring` for the layouts where one line is enough)
     pub fn same_or_indented_line_saving_lines(&self, frag: Frag) -> Frag {
-        let next = Cost::new(SPLIT_COST + LINE_COST * 3 / 2);
+        let next = Cost::new(Self::SAVING_LINES_NEXT_COST);
         let (same, next) = self.same_and_indented_line_with(frag, next);
         self.alt_frag(same, next)
+    }
+
+    /// The cost of a fragment broken on the next line in `same_or_indented_line_saving_lines`
+    const SAVING_LINES_NEXT_COST: i32 = SPLIT_COST + LINE_COST * 3 / 2;
+
+    /// As `same_or_indented_line_saving_lines` for a fragment whose layouts are `other` and
+    /// `preferred`: `preferred` broken on the next line costs a line less, so it wins when it saves
+    /// one line. E.g. a chain on a single line except the arguments of its last element, on the next
+    /// line, against the chain broken before its elements on the current line, as rustfmt
+    /// (`x =` / `a.b().c(|y| {` against `x = a` / `.b()` / `.c(|y| {`)
+    pub fn same_or_indented_line_saving_lines_preferring(
+        &self,
+        other: Frag,
+        preferred: Frag,
+    ) -> Frag {
+        let all = self.alt_frag(other.clone(), preferred.clone());
+        let same = self.keep_together_with(all, Cost::SPLIT);
+        let other = self.keep_together_with(other, Cost::new(Self::SAVING_LINES_NEXT_COST));
+        let preferred_cost = Cost::new(Self::SAVING_LINES_NEXT_COST - LINE_COST);
+        let preferred = self.keep_together_with(preferred, preferred_cost);
+        self.alt_frag(same, self.indented_line(self.alt_frag(other, preferred)))
     }
 
     /// The two layouts of `same_or_indented_line`: on the current line, and on the next line

@@ -93,8 +93,27 @@ fn format_assignment(fmt: &Formatter, expr: BinExpr) -> Frag {
     let mut builder = Builder::new(fmt);
     builder.push(fmt.keep_together(format_expr(fmt, expr.lhs().unwrap())));
     builder.push_token(expr.op_token().unwrap(), Operator);
-    builder.push(fmt.same_or_indented_line_saving_lines(format_expr(fmt, expr.rhs().unwrap())));
+    builder.push(format_rhs(fmt, expr.rhs().unwrap()));
     builder.into_frag()
+}
+
+/// The right side of `let` or of an assignment, after `=`: on the line of `=`, or on the next line
+/// when that saves at least two lines (see `Formatter::same_or_indented_line_saving_lines`). A chain
+/// on a single line except the arguments of its last element moves there already when it saves one
+/// line against the chain broken before its elements, as in rustfmt (`x =` / `a.b().c(|y| {`
+/// against `x = a` / `.b()` / `.c(|y| {`). Not a chain behind operators (`a.b() as T`), whose
+/// layouts are more than those of the chain.
+pub(super) fn format_rhs(fmt: &Formatter, expr: Expr) -> Frag {
+    if !has_attrs(&expr) && is_postfix_expr(&expr) {
+        return match postfix_chain_parts(fmt, expr).layouts {
+            HeadLayouts {
+                hanging: Some(hanging),
+                other: Some(other),
+            } => fmt.same_or_indented_line_saving_lines_preferring(hanging, other),
+            layouts => fmt.same_or_indented_line_saving_lines(layouts.all(fmt)),
+        };
+    }
+    fmt.same_or_indented_line_saving_lines(format_expr(fmt, expr))
 }
 
 /// The operator of a prefix expression, its first token child; not `PrefixExpr::op_token`, its

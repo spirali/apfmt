@@ -88,7 +88,10 @@ fn format_index(fmt: &Formatter, expr: &IndexExpr) -> Frag {
 /// expressions applied to it, innermost first. An index is not a part of a chain, as in rustfmt (the
 /// Style Guide's chain is of field accesses, method calls and `?`): it ends the root, so the root of
 /// `a.b[i].c()` is `a.b[i]`, itself a chain followed by an index (see `postfix_chain_parts`); so does
-/// a call of the chain's result (`a.b()(x).c()`, see `is_chain_call`).
+/// a call of the chain's result (`a.b()(x).c()`, see `is_chain_call`). A root ending with an index
+/// thus stays on the first line while it fits (`edges.outputs()[0]` / `.take()`), unlike `?`, which
+/// stays with its element (`edges` / `.outputs()?` / `.take()`); an index as a suffix of its element
+/// was considered and rejected, see PostfixChain in `docs/formatting-taxonomy.md`.
 fn collect_postfix_chain(expr: Expr, postfix: &mut Vec<Expr>) -> Expr {
     let inner = match &expr {
         Expr::MethodCallExpr(e) => e.receiver(),
