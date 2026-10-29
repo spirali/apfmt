@@ -6,22 +6,20 @@ use crate::formatter::{Builder, Formatter, Frag};
 use crate::layout::head::HeadLayouts;
 use ra_ap_syntax::{NodeOrToken, SyntaxKind, SyntaxNode};
 
-/// `a op b op c` on one line, or broken before every operator with indented continuation lines;
-/// `rest` are the (operator, operand) pairs following `first`. A short first operand takes the
-/// following operand, as in rustfmt: `a + b` / `    + c` (see `vertical_lines`).
+/// `a op b op c` on one line, or broken before every operator with indented continuation lines. A
+/// short first operand takes the next one, as in rustfmt: `a + b` / `    + c`.
 pub(crate) fn infix_chain(fmt: &Formatter, first: Frag, rest: &[(Frag, Frag)]) -> Frag {
     chain(fmt, first, rest, true)
 }
 
-/// `a op b op c` on one line, or broken before every operator with continuation lines at the
-/// indentation of the first line, e.g. or-patterns: `A` / `| B` / `| C`
+/// As `infix_chain`, but continuation lines at the indentation of the first line: `A` / `| B` / `|
+/// C`
 pub(crate) fn unindented_infix_chain(fmt: &Formatter, first: Frag, rest: &[(Frag, Frag)]) -> Frag {
     chain(fmt, first, rest, false)
 }
 
-/// The operands of `node` separated by the operator tokens `op` (`A + B`, `A | B`), formatted with
-/// `format`: the first one and the (operator, operand) pairs following it, for `infix_chain`. A
-/// leading operator (`| A | B`) is dropped.
+/// The operands of `node` separated by the operator tokens `op`, for `infix_chain`; a leading
+/// operator (`| A | B`) is dropped
 pub(crate) fn operator_chain(
     fmt: &Formatter,
     node: &SyntaxNode,
@@ -49,9 +47,7 @@ pub(crate) fn operator_chain(
     (first.expect("an operand"), rest)
 }
 
-/// `a op b op c` filled on lines, as many operands on each line as fit, broken before an operator,
-/// with continuation lines at the indentation of the first line, e.g. an or-pattern of short
-/// alternatives: `A | B | C` / `| D | E`
+/// `a op b op c` filled on lines, broken before an operator, unindented: `A | B | C` / `| D | E`
 pub(crate) fn unindented_infix_fill(fmt: &Formatter, first: Frag, rest: &[(Frag, Frag)]) -> Frag {
     let mut builder = Builder::new(fmt);
     builder.push(first);
@@ -62,13 +58,11 @@ pub(crate) fn unindented_infix_fill(fmt: &Formatter, first: Frag, rest: &[(Frag,
     builder.into_frag()
 }
 
-/// `a op b op c` broken before every operator with indented continuation lines, the broken layout
-/// of `infix_chain`
+/// The broken layout of `infix_chain`
 pub(crate) fn broken_infix_chain(fmt: &Formatter, first: Frag, rest: &[(Frag, Frag)]) -> Frag {
     vertical_lines(fmt, &first, &operator_lines(fmt, rest))
 }
 
-/// The (operator, operand) pairs joined, one per continuation line
 fn operator_lines(fmt: &Formatter, rest: &[(Frag, Frag)]) -> Vec<Frag> {
     rest.iter()
         .map(|(op, operand)| Builder::concat(fmt, [op.clone(), operand.clone()]))
@@ -92,25 +86,21 @@ fn chain(fmt: &Formatter, first: Frag, rest: &[(Frag, Frag)], indent: bool) -> F
     fmt.alt_frag(fmt.flat(flat), vertical)
 }
 
-/// An element of a postfix chain: `.field`, `.method::<T>(args)` or `.await`, with the `?`
-/// following it (an index is not a part of a chain, see `postfix_chain_parts` in `format/chain.rs`).
-/// `head` stays on one line; `tail` (the arguments and what follows them, may be empty) may break.
+/// `.field`, `.method::<T>(args)` or `.await`, with its `?`. `head` stays on one line; `tail` (the
+/// arguments and what follows, may be empty) may break.
 pub(crate) struct ChainElement {
     pub head: Frag,
     pub tail: Frag,
 }
 
-/// The layouts of a postfix chain (see `postfix_chain_layouts`)
 pub(crate) struct ChainLayouts {
     pub layouts: HeadLayouts,
-    /// The root broken over more lines and a single element after its closing delimiter (`f(` /
-    /// `...` / `).into()`), one of `layouts.hanging`: a chain hugged by a call may take it, the
-    /// element attached to the delimiter it follows (`Err(format!(` / `...` / `).into())`)
+    /// The root broken and a single element after its closing delimiter (`f(` / `...` /
+    /// `).into()`), one of `layouts.hanging`, for a chain hugged by a call
     pub joined: Option<Frag>,
 }
 
 impl ChainLayouts {
-    /// Layouts without a `joined` one
     pub fn new(layouts: HeadLayouts) -> Self {
         ChainLayouts {
             layouts,
@@ -118,7 +108,6 @@ impl ChainLayouts {
         }
     }
 
-    /// The layouts, each transformed by `f` (e.g. with the operators around the chain)
     pub fn map(self, f: impl Fn(Frag) -> Frag) -> Self {
         ChainLayouts {
             layouts: self.layouts.map(&f),
@@ -127,28 +116,11 @@ impl ChainLayouts {
     }
 }
 
-/// `root.a.b()?.c()` in the layouts of the Style Guide:
-/// - on one line, if it fits (with two or more elements, within `chain_width`, as rustfmt does);
-/// - broken before every `.`, each element on its own block-indented line; a short root stays with
-///   the elements that follow it while its last line ends at most at the indentation of the next
-///   line (`x.baz?` / `    .qux()`, also `foo(` / `...` / `).baz?`); a broken element costs a
-///   split, a broken root too;
-/// - all on one line except the arguments of the last element, which break (`a.b().c(` / `...` /
-///   `)`), if the line fits as the single-line layout does; the Style Guide prefers the elements on
-///   their own lines, so this layout costs a split, as every broken element in the previous layout
-///   does.
-///
-/// `root` is a chain itself when it ends with an index (`a.b[i].c()`, see `postfix_chain_parts` in
-/// `format/chain.rs`): broken before its own elements (`root.hanging`), the elements follow on lines
-/// at the same indentation, as if it were one chain; `root.other` are its other layouts.
-///
-/// `suffix` (the indexes after the chain, `a.b().c()[i]`, may be empty) follows the last element on
-/// its line, whatever the layout, so an index broken between its brackets is indented from that
-/// line; it does not count in `chain_width`.
-///
-/// Returns the broken layout as `hanging` (indented continuation lines) and the others as `other`;
-/// without elements (`a?`), the root followed by `suffix`. With a single element after a root that
-/// may end with a delimiter, also that layout of `hanging` alone (`ChainLayouts::joined`).
+/// `root.a.b()?.c()` in the layouts of the Style Guide: on one line (within `chain_width`), broken
+/// before every `.` (a short root keeps the elements it can, `x.baz?` / `    .qux()`), or on one
+/// line except the last arguments (costs a split). A `root` ending with an index is a chain itself,
+/// its elements continued at the same indentation. `suffix` (indexes after the chain) follows the
+/// last element and does not count in `chain_width`.
 pub(crate) fn postfix_chain_layouts(
     fmt: &Formatter,
     root: HeadLayouts,
@@ -163,14 +135,12 @@ pub(crate) fn postfix_chain_layouts(
         .iter()
         .map(|e| Builder::concat(fmt, [e.head.clone(), e.tail.clone()]))
         .collect::<Vec<_>>();
-    // An element broken over more lines costs a split: the Style Guide prefers single-line elements
     let mut lines = full
         .iter()
         .map(|e| fmt.keep_together(e.clone()))
         .collect::<Vec<_>>();
     let last_line = lines.pop().unwrap();
     lines.push(then_suffix(last_line));
-    // A broken root chain continued by the elements, see `vertical_chain`
     let continued = root.hanging.map(|root| {
         let mut builder = Builder::new(fmt);
         builder.push(root);
@@ -187,8 +157,7 @@ pub(crate) fn postfix_chain_layouts(
     let vertical = fmt.alt_some(Some(vertical), continued);
     let last = elements.last().unwrap();
 
-    // Within `chain_width` with two or more elements (as rustfmt); on one line also without a line
-    // break inside a token (a multi-line string literal)
+    // Within `chain_width` with two or more elements (as rustfmt), without a multi-line token
     let chain_width = (elements.len() >= 2).then_some(fmt.config().chain_width);
     let rest = &full[..full.len() - 1];
     let line = |last: &Frag| {
@@ -197,13 +166,11 @@ pub(crate) fn postfix_chain_layouts(
     };
     let width = chain_width.unwrap_or(u32::MAX);
     let mut other = fmt.flat_within(line(full.last().unwrap()), width);
-    // Not built if the line up to the last arguments is too wide already
     if !last.tail.is_empty()
         && let Some(line) = fmt.flat_within(line(&last.head), width)
     {
         let mut overflow = Builder::concat(fmt, [line, fmt.multi_line(last.tail.clone())]);
-        // Within `chain_width` up to the first line break, the start of the arguments included, as
-        // rustfmt measures it: `a.b().c(|x| {`
+        // Within `chain_width` up to the first line break, as rustfmt measures it: `a.b().c(|x| {`
         if let Some(width) = chain_width {
             overflow = fmt.first_line_within(overflow, width);
         }
@@ -219,13 +186,9 @@ pub(crate) fn postfix_chain_layouts(
     }
 }
 
-/// The chain broken before every element, see `postfix_chain_layouts`; `lines` are the formatted
-/// elements. A short root takes the elements that follow it while it is short on a single line and
-/// no comment separates them (`x.baz?` / `    .qux()`); then the lines after this head are laid out
-/// by `lines_after_head`. Returns also the layout with the root broken and a single element on its
-/// last line, if there is one (see `ChainLayouts::joined`).
+/// The chain broken before every element. A short root takes the elements following it while it is
+/// short (`x.baz?` / `    .qux()`). Also returns the `ChainLayouts::joined` layout.
 fn vertical_chain(fmt: &Formatter, root: &Frag, lines: &[Frag]) -> (Frag, Option<Frag>) {
-    // A broken root costs a split, as a broken element does (`foo(` / `    a,` / `).bar(...)`)
     let mut head = fmt.keep_together(root.clone());
     let (mut layouts, joined) = lines_after_head(fmt, &head, lines);
     for k in 0..lines.len() {
@@ -241,31 +204,20 @@ fn vertical_chain(fmt: &Formatter, root: &Frag, lines: &[Frag]) -> (Frag, Option
     (layouts, joined)
 }
 
-/// `head` followed by `line` on its last line, which ends at most at the next indentation (see
-/// `Formatter::short_last_line`): `x.baz?` / `    .qux()`, `foo(` / `...` / `).await?`
+/// `head` followed by `line` on its short last line: `x.baz?` / `    .qux()`, `foo(` / `...` /
+/// `).await?`
 fn line_after(fmt: &Formatter, head: Frag, line: &Frag) -> Frag {
     Builder::concat(fmt, [fmt.short_last_line(head), line.clone()])
 }
 
-/// `head` on a single line short enough (no line break in a token either) to end, after what
-/// precedes it on its line, at most at the next indentation, followed by `line`; `None` if it is not
+/// `head` on a single line short enough to end at most at the next indentation, followed by `line`
 fn short_head_then(fmt: &Formatter, head: Frag, line: &Frag) -> Option<Frag> {
     let flat_head = fmt.flat_within(head, fmt.config().tab_spaces)?;
     Some(line_after(fmt, flat_head, line))
 }
 
-/// `head` followed by `lines`, each on its own line: block-indented after a head on a single line;
-/// at the indentation of the head after a head broken over more lines, as in rustfmt (`foo(` /
-/// `    a,` / `)` / `.bar()` / `.baz()`). The Style Guide's `).bar()` / `    .baz()` mixes two
-/// indentations, so a head ending with a delimiter takes only a single line, the last one (`foo(` /
-/// `    a,` / `).await?`).
-///
-/// A head that is short on a single line (within `chain_width`, a small chain by itself) is not broken
-/// only to indent the lines less when one of them overflows anyway (`parse(` / `    text,` / `)` /
-/// `.map_err(...)`): after it, the lines are block-indented, also when it breaks.
-///
-/// Returns also the layout with the head broken and a single line after its closing delimiter, if
-/// there is one.
+/// `head` followed by `lines`: block-indented after a flat head, at its indentation after a broken
+/// one (`foo(` / `    a,` / `)` / `.bar()`, as rustfmt), or a single line after `)` (`).await?`).
 fn lines_after_head(fmt: &Formatter, head: &Frag, lines: &[Frag]) -> (Frag, Option<Frag>) {
     if lines.is_empty() {
         return (head.clone(), None);
@@ -282,9 +234,8 @@ fn lines_after_head(fmt: &Formatter, head: &Frag, lines: &[Frag]) -> (Frag, Opti
     let mut layout = indented.into_frag();
     let broken_head = fmt.multi_line(head.clone());
     if !short {
-        // At the indentation of the head only after a short last line, a closing delimiter (`)`,
-        // `))`); after a continuation line, they would be left of it (`(a` / `    + b)` /
-        // `    .c()`), preferred when both are possible
+        // At the indentation of the head only after a closing delimiter; after a continuation line,
+        // they would be left of it (`(a` / `    + b)` / `    .c()`)
         let mut unindented = Builder::new(fmt);
         unindented.push(fmt.short_last_line(broken_head.clone()));
         unindented.push_lines(lines.iter().cloned(), false);
@@ -301,10 +252,8 @@ fn lines_after_head(fmt: &Formatter, head: &Frag, lines: &[Frag]) -> (Frag, Opti
     (fmt.alt_opt(layout, joined.clone()), joined)
 }
 
-/// `head` followed by `lines`, each on its own block-indented line (an operator chain; a postfix
-/// chain is laid out by `vertical_chain`). A short head takes the lines that follow it while its
-/// last line ends at most at the indentation of the next line, so it is not left alone on its line:
-/// `a + b` / `    + c`, also `foo(` / `...` / `) + c`
+/// `head` followed by `lines`, each block-indented (an operator chain). A short head takes the next
+/// lines while its last line is short: `a + b` / `    + c`, also `foo(` / `...` / `) + c`
 fn vertical_lines(fmt: &Formatter, head: &Frag, lines: &[Frag]) -> Frag {
     let mut head = head.clone();
     let mut layouts: Option<Frag> = None;
@@ -317,10 +266,8 @@ fn vertical_lines(fmt: &Formatter, head: &Frag, lines: &[Frag]) -> Frag {
         if k == lines.len() {
             break;
         }
-        // The head may take the next line only if its last line is short: the first fragment
-        // ending with a delimiter (`foo(` / `...` / `)`), broken only where it does not fit on one
-        // line (otherwise the chain breaks before the operator, Style Guide), whatever the lines
-        // after it gain (`}) && matches!(` / `...` / `) {`); otherwise a head on a single line
+        // The head may take the next line only after a closing delimiter, broken only where it does
+        // not fit on one line, whatever the lines after it gain; otherwise a head on a single line
         head = if k == 0 && head.may_end_with_delimiter() {
             line_after(fmt, fmt.flat_where_fits(head, 0), &lines[k])
         } else if let Some(longer_head) = short_head_then(fmt, head, &lines[k]) {

@@ -16,23 +16,20 @@ impl DocId {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct DocStrId(u32);
 
-/// The cost of one line of a layout: the resolver ranks layouts by the overflow, then by their
-/// cost, the lines times `LINE_COST` plus their `Cost`s
+/// The resolver ranks layouts by the overflow, then by the lines times `LINE_COST` plus their
+/// `Cost`s
 pub(crate) const LINE_COST: i32 = 10;
 
-/// The cost of a split: more than any difference in lines between the layouts of real code, so a
-/// layout with fewer splits is better whatever the lines
+/// More than any difference in lines between the layouts of real code
 pub(crate) const SPLIT_COST: i32 = 1000 * LINE_COST;
 
-/// What a layout costs on top of its lines (`DocNode::Cost`, `DocNode::KeepTogether`), the higher
-/// the worse, in the units of `LINE_COST`: mostly whole splits (`Cost::SPLIT`)
+/// What a layout costs on top of its lines, in the units of `LINE_COST`: mostly whole splits
 #[derive(Debug, Clone, Copy, Ord, PartialOrd, Eq, PartialEq)]
 pub(crate) struct Cost(i32);
 
 impl Cost {
     pub const SPLIT: Cost = Cost::splits(1);
 
-    /// A cost in its units, a line is `LINE_COST`
     #[inline]
     pub const fn new(value: i32) -> Self {
         Cost(value)
@@ -51,9 +48,8 @@ impl From<Cost> for i64 {
     }
 }
 
-/// How much a layout is preferred among layouts that are otherwise equal (the same overflow and cost,
-/// see `DocNode::WeakPreference`): positive is preferred, negative dispreferred; a type of
-/// its own, never mixed with a `Cost`
+/// Preference among layouts with the same overflow and cost: positive is preferred, negative
+/// dispreferred; never mixed with a `Cost`
 #[derive(Debug, Clone, Copy, Ord, PartialOrd, Eq, PartialEq)]
 pub(crate) struct WeakPreference(i32);
 
@@ -61,7 +57,6 @@ impl WeakPreference {
     pub const NEUTRAL: WeakPreference = WeakPreference(0);
     pub const PREFERRED: WeakPreference = WeakPreference(1);
 
-    /// Preferred `n` times as much as `PREFERRED`
     pub fn preferred_by(n: u32) -> Self {
         WeakPreference(i32::try_from(n).unwrap_or(i32::MAX))
     }
@@ -98,64 +93,47 @@ pub(crate) enum DocNode {
     Fallback(DocId, DocId),
     Nest(DocId),
     Align(DocId),
-    /// Only layouts of the inner doc that fit on a single line
     Flat(DocId),
-    /// Only layouts of the inner doc that span more than one line
     MultiLine(DocId),
-    /// The inner doc should stay on one line if possible: its layouts spanning more lines get the
-    /// cost (e.g. a split)
+    /// Layouts spanning more lines get the cost (e.g. a split)
     KeepTogether(DocId, Cost),
-    /// Every layout of the inner doc gets the cost (see `LINE_COST`), compared right after the
-    /// overflow: e.g. a split, a layout the Style Guide accepts only as a fallback, used only when the layouts without
-    /// it are worse
+    /// Every layout gets the cost, compared right after the overflow, e.g. a split for a layout the
+    /// Style Guide accepts only as a fallback
     Cost(DocId, Cost),
-    /// Every layout of the inner doc gets the preference, compared only after the cost (the lines):
-    /// it decides between layouts that are otherwise equally good, e.g. the Style Guide's preference
-    /// that does not justify a longer layout
+    /// Every layout gets the preference, compared only after the cost: decides between otherwise
+    /// equal layouts
     WeakPreference(DocId, WeakPreference),
-    /// Only layouts of the inner doc whose last line ends at most at the indentation of a nested line
-    /// (`indent + indent_width`), e.g. a short chain root that the next element may follow: `x.baz?`
+    /// Only layouts whose last line ends at most at the indentation of a nested line, e.g. `x.baz?`
     ShortLastLine(DocId),
-    /// Only layouts of the inner doc whose last line ends at least the given number of columns before
-    /// the page width: room for text that always follows on that line but is not part of the doc,
-    /// e.g. ` {` after the left-hand side of a match arm (rustfmt reserves the room in the same way)
+    /// Only layouts whose last line ends at least this many columns before the page width: room for
+    /// text that always follows, e.g. ` {` after a match arm pattern
     RoomAfter(DocId, u32),
-    /// Only layouts of the inner doc whose first line spans at most the given number of columns from
-    /// where the doc starts (the lines after its first line break are free), e.g. a width heuristic
-    /// (`fn_call_width`) under `Flat`, or a chain with its last arguments broken within `chain_width`
-    /// up to its first line break, as rustfmt measures it
+    /// Only layouts whose first line spans at most this many columns from the start, e.g. a width
+    /// heuristic (`fn_call_width`) under `Flat`
     FirstLineWithin(DocId, u32),
-    /// The inner doc does not count as overflow when it extends beyond the page width, e.g. a
-    /// comment after code that ends the line: a long comment does not change the layout of the code
-    /// in front of it (as in rustfmt)
+    /// Overflow beyond the page width does not count, e.g. a trailing comment, so it does not
+    /// change the layout of the code in front of it
     IgnoreOverflow(DocId),
-    /// Padded by the renderer to align the trailing comments of a group
     AlignMark(AlignGroup),
 }
 
-/// What the walks of `DocArena` (`min_flat_width`, `has_flat_layout`, `has_multi_line_text`,
-/// `has_line_break`, `natural_first_line_width`) know about an `Alt` node, computed the first time a walk reaches it and kept in
-/// `DocArena::alt_infos`: a doc shared by many alternatives is then walked once, not once per path to
-/// it (exponential in the nesting)
+/// What the walks of `DocArena` know about an `Alt` node, computed once: a shared doc is then
+/// walked once, not once per path to it (exponential in the nesting)
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct AltInfo {
     flags: AltFlags,
-    /// The narrowest single line of a branch (see `DocArena::min_flat_width`), if
-    /// `AltFlags::HAS_SINGLE_LINE`; plain `u32`s keep `AltInfo` at 16 bytes (as `Option<u32>`s, 24)
+    /// If `AltFlags::HAS_SINGLE_LINE`; plain `u32`s keep `AltInfo` at 16 bytes
     min_flat_width: u32,
-    /// The natural widths of the branches (see `DocArena::natural_widths`), if
-    /// `AltFlags::HAS_NATURAL_FLAT` / `AltFlags::HAS_NATURAL_FIRST_LINE`
+    /// If `AltFlags::HAS_NATURAL_FLAT` / `AltFlags::HAS_NATURAL_FIRST_LINE`
     natural_flat: u32,
     natural_first_line: u32,
 }
 
 impl AltInfo {
-    /// The narrowest single line of a branch (see `DocArena::min_flat_width`)
     fn min_flat_width(self) -> Option<u32> {
         (self.flags.contains(AltFlags::HAS_SINGLE_LINE)).then_some(self.min_flat_width)
     }
 
-    /// The natural widths of the branches (see `DocArena::natural_widths`)
     fn natural_widths(self) -> NaturalWidths {
         NaturalWidths {
             flat: (self.flags.contains(AltFlags::HAS_NATURAL_FLAT)).then_some(self.natural_flat),
@@ -166,20 +144,13 @@ impl AltInfo {
 }
 
 bitflags::bitflags! {
-    /// The yes/no facts of an `Alt` node (see `AltInfo`)
     #[derive(Clone, Copy, Debug)]
     struct AltFlags: u8 {
-        /// A branch may have a layout under `Flat` (see `DocArena::has_flat_layout`)
         const HAS_FLAT_LAYOUT = 1;
-        /// A text of a branch contains a line break (see `DocArena::has_multi_line_text`)
         const HAS_MULTI_LINE_TEXT = 1 << 1;
-        /// A branch may have a line break outside `Flat` (see `DocArena::has_line_break`)
         const HAS_LINE_BREAK = 1 << 2;
-        /// A branch has a single line without a line break (`AltInfo::min_flat_width`)
         const HAS_SINGLE_LINE = 1 << 3;
-        /// A branch has a natural single line (`AltInfo::natural_widths`)
         const HAS_NATURAL_FLAT = 1 << 4;
-        /// A branch has a natural first line (`AltInfo::natural_widths`)
         const HAS_NATURAL_FIRST_LINE = 1 << 5;
     }
 }
@@ -187,19 +158,14 @@ bitflags::bitflags! {
 pub(crate) struct DocArena {
     nodes: Vec<DocNode>,
     strings: Vec<Box<str>>,
-    /// The facts of the `Alt` nodes reached by the walks so far
     alt_infos: FxHashMap<DocId, AltInfo>,
 }
 
-/// The narrowest lines of a doc in its layouts that take no dispreferred choice (a `Cost`, a
-/// broken `KeepTogether`) on them, see
-/// `DocArena::natural_first_line_width`
+/// The narrowest lines of a doc in its layouts that take no dispreferred choice on them
 #[derive(Clone, Copy, Debug)]
 struct NaturalWidths {
-    /// The narrowest single line
     flat: Option<u32>,
-    /// The narrowest first line of a layout with a line break, up to it; what follows the line
-    /// break is free
+    /// The narrowest first line of a layout with a line break, up to it
     first_line: Option<u32>,
 }
 
@@ -230,9 +196,8 @@ pub(crate) const COMMA_DOC: DocId = DocId(5);
 pub(crate) const SEMICOLON_DOC: DocId = DocId(6);
 pub(crate) const OPEN_BRACE_DOC: DocId = DocId(7);
 pub(crate) const CLOSE_BRACE_DOC: DocId = DocId(8);
-/// The number of preallocated nodes (`NEWLINE_DOC` ... `CLOSE_BRACE_DOC`), kept by `DocArena::clear`
+/// Kept by `DocArena::clear`
 const PREALLOCATED_NODES: usize = 9;
-/// The number of strings of the preallocated nodes
 const PREALLOCATED_STRINGS: usize = 5;
 
 impl DocArena {
@@ -274,8 +239,7 @@ impl DocArena {
         arena
     }
 
-    /// Removes every node but the preallocated ones, keeping the allocated memory; the `DocId`s
-    /// made before are invalid after it
+    /// Removes every node but the preallocated ones; the `DocId`s made before are invalid after it
     pub fn clear(&mut self) {
         self.nodes.truncate(PREALLOCATED_NODES);
         self.strings.truncate(PREALLOCATED_STRINGS);
@@ -289,7 +253,6 @@ impl DocArena {
         id
     }
 
-    /// A `Text` node of `text`
     pub fn make_text(&mut self, text: impl Into<Box<str>>) -> DocId {
         let id = DocStrId(self.strings.len() as u32);
         self.strings.push(text.into());
@@ -308,11 +271,8 @@ impl DocArena {
         &self.strings[str_id.0 as usize]
     }
 
-    /// The width of the narrowest single line of the doc without any line break (also not in a
-    /// token): the narrowest alternative of every `Alt`, which are chosen independently, so this line
-    /// exists; `None` if there is none (also because of a `FirstLineWithin` it does not fit). Exact
-    /// for whether the doc can be on one line within a width (only `ShortLastLine` and `RoomAfter`,
-    /// which depend on the column, are not checked), not the width of the layout placed: that is the resolver's.
+    /// The narrowest single line without any line break (also not in a token); `None` if there is
+    /// none. Exact (except `ShortLastLine` and `RoomAfter`), not the width of the layout placed.
     pub fn min_flat_width(&mut self, doc: DocId) -> Option<u32> {
         let text_width = |text: &str| (!text.contains('\n')).then(|| text_width(text));
         match self.get_node(doc) {
@@ -320,7 +280,6 @@ impl DocArena {
             DocNode::Text(t) => text_width(self.get_text(*t)),
             DocNode::Empty | DocNode::AlignMark(_) => Some(0),
             DocNode::Newline | DocNode::MultiLine(_) => None,
-            // Without a line break, the indentation does not apply
             &DocNode::Flat(d)
             | &DocNode::Nest(d)
             | &DocNode::Align(d)
@@ -339,9 +298,8 @@ impl DocArena {
         }
     }
 
-    /// Whether the doc may have a layout under `Flat`: false only if a line break is forced in all of
-    /// its alternatives (a multi-line token, e.g. a string literal, is allowed, as the resolver allows
-    /// it), or a `FirstLineWithin` of it cannot fit (see `min_flat_width`)
+    /// False only if a line break is forced in all alternatives (a multi-line token is allowed), or
+    /// a `FirstLineWithin` cannot fit
     pub fn has_flat_layout(&mut self, doc: DocId) -> bool {
         match self.get_node(doc) {
             DocNode::Newline => false,
@@ -356,7 +314,6 @@ impl DocArena {
             | &DocNode::ShortLastLine(d)
             | &DocNode::RoomAfter(d, _)
             | &DocNode::IgnoreOverflow(d) => self.has_flat_layout(d),
-            // Under `Flat`, a single line within the width
             &DocNode::FirstLineWithin(d, width) => {
                 self.min_flat_width(d).is_some_and(|w| w <= width)
             }
@@ -367,8 +324,7 @@ impl DocArena {
         }
     }
 
-    /// Whether a text of the doc, in any of its alternatives, contains a line break (a multi-line
-    /// string literal, or source copied unchanged)
+    /// A multi-line string literal, or source copied unchanged
     pub fn has_multi_line_text(&mut self, doc: DocId) -> bool {
         match self.get_node(doc) {
             DocNode::Token(token) => token.text().contains('\n'),
@@ -392,7 +348,7 @@ impl DocArena {
         }
     }
 
-    /// Whether a layout of the doc may have a line break (outside `Flat`)
+    /// Outside `Flat`
     pub fn has_line_break(&mut self, doc: DocId) -> bool {
         match self.get_node(doc) {
             DocNode::Newline => true,
@@ -418,10 +374,8 @@ impl DocArena {
         }
     }
 
-    /// The width of the narrowest first line of the doc in a layout with a line break that takes no
-    /// dispreferred choice up to it (a `Cost`, or a `KeepTogether` with one broken there), `None` if there is none: how wide the first line of the doc is when nothing is
-    /// squeezed into a narrower one at a cost (`match x` / `{`, braces added around a match). Exact
-    /// in that sense, as the other walks; not the width of the layout the resolver places.
+    /// The narrowest first line of a broken layout that takes no dispreferred choice up to it: how
+    /// wide it is when nothing is squeezed into a narrower one at a cost (`match x` / `{`)
     pub fn natural_first_line_width(&mut self, doc: DocId) -> Option<u32> {
         self.natural_widths(doc).first_line
     }
@@ -506,12 +460,11 @@ impl DocArena {
         }
     }
 
-    /// Whether the `Alt` node `doc` has the fact `flag` (see `alt_info`)
     fn alt_flag(&mut self, doc: DocId, flag: AltFlags) -> bool {
         self.alt_info(doc).flags.contains(flag)
     }
 
-    /// The facts of the `Alt` (or `Fallback`) node `doc`, computed on the first call
+    /// Computed on the first call
     fn alt_info(&mut self, doc: DocId) -> AltInfo {
         if let Some(info) = self.alt_infos.get(&doc) {
             return *info;
@@ -554,7 +507,7 @@ impl DocArena {
         info
     }
 
-    /// The doc graph reachable from `root` in the Graphviz DOT format; shared nodes are written once
+    /// Shared nodes are written once
     pub fn to_dot(&self, root: DocId) -> String {
         let mut out = String::from(
             "digraph doc {\n    ordering=out;\n    node [style=filled, fontname=\"monospace\"];\n",
@@ -637,7 +590,6 @@ impl DocArena {
                 }
                 out.push_str(";\n");
             }
-            // Reversed, so the first child is written first
             stack.extend(children.iter().rev().map(|(child, _)| *child));
         }
         out.push_str("}\n");

@@ -19,16 +19,14 @@ use ra_ap_syntax::ast::{
 use ra_ap_syntax::{AstNode, SyntaxKind, SyntaxNode};
 use std::convert::identity;
 
-/// `<'a, T: Clone, const N: usize>`; kept on one line if possible, the Style Guide prefers breaking
-/// other parts of an item declaration
+/// `<'a, T: Clone, const N: usize>`, kept on one line if possible (Style Guide)
 pub(super) fn format_generic_param_list(fmt: &Formatter, list: GenericParamList) -> Frag {
     let params = list_items_cast(list.syntax(), |p| format_generic_param(fmt, p));
     format_angle_list(fmt, list.syntax(), &params)
 }
 
-/// The list `node` of `items` in `<` and `>` (generic parameters or arguments): on one line, or one
-/// item per line; a part of a type or a head, so kept on one line if possible ("avoid breaking
-/// lines in types where possible", Style Guide)
+/// Generic parameters or arguments: on one line, or one per line; kept on one line if possible
+/// ("avoid breaking lines in types where possible", Style Guide)
 pub(super) fn format_angle_list(fmt: &Formatter, node: &SyntaxNode, items: &[ListItem]) -> Frag {
     let delims = Delimiters::angles_of(node);
     fmt.keep_together(delimited_list(
@@ -39,9 +37,7 @@ pub(super) fn format_angle_list(fmt: &Formatter, node: &SyntaxNode, items: &[Lis
     ))
 }
 
-/// `for<'a> ` in front of a bound, a `where` predicate, a function pointer type or a closure; its
-/// parameters are broken only as a last resort: a broken list costs a second split, so the bound or
-/// the type after it (`Fn(` / `...` / `)`) breaks first
+/// `for<'a> `, broken only as a last resort: the bound or type after it breaks first
 pub(super) fn format_for_binder(fmt: &Formatter, binder: ForBinder) -> Frag {
     let mut builder = Builder::new(fmt);
     builder.push_token(binder.for_token().unwrap(), Word);
@@ -95,8 +91,7 @@ fn format_const_param(fmt: &Formatter, param: ConstParam) -> Frag {
     builder.into_frag()
 }
 
-/// `: A + B` of a node with bounds, if it has them, or only `:` if the list is empty (`T:`);
-/// `place` places the bounds after `:` (`identity`: right after it)
+/// `: A + B`, or only `:` if the list is empty (`T:`); `place` places the bounds after `:`
 fn push_bounds(
     fmt: &Formatter,
     builder: &mut Builder,
@@ -112,31 +107,26 @@ fn push_bounds(
     }
 }
 
-/// `A + B + 'a`: on one line, or broken before every `+`; a type, so kept on
-/// one line if possible
+/// `A + B + 'a`: on one line, or broken before every `+`; kept on one line if possible
 pub(super) fn format_type_bound_list(fmt: &Formatter, list: TypeBoundList) -> Frag {
     let (first, rest) = type_bound_operands(fmt, &list);
     fmt.keep_together(infix_chain(fmt, first, &rest))
 }
 
-/// `A + B + 'a` as `format_type_bound_list`, but broken with every `+` at the indentation of the
-/// first bound, for bounds that already start an indented line (supertraits: `trait A:` / `    B`
-/// / `    + C`, Style Guide)
+/// As `format_type_bound_list`, but `+` at the indentation of the first bound (supertraits: `trait
+/// A:` / `    B` / `    + C`)
 pub(super) fn format_unindented_type_bound_list(fmt: &Formatter, list: TypeBoundList) -> Frag {
     let (first, rest) = type_bound_operands(fmt, &list);
     fmt.keep_together(unindented_infix_chain(fmt, first, &rest))
 }
 
-/// The first bound of `list` and the (`+`, bound) pairs following it
 fn type_bound_operands(fmt: &Formatter, list: &TypeBoundList) -> (Frag, Vec<(Frag, Frag)>) {
     operator_chain(fmt, list.syntax(), SyntaxKind::PLUS, |node| {
         format_type_bound(fmt, TypeBound::cast(node).unwrap())
     })
 }
 
-/// `'a`, `use<'a, T>` or a trait bound (see `push_trait_bound`), in the parentheses of the source
-/// if it has them: `(FnOnce() -> R) + Send`, where they are required (without them, `+ Send` would
-/// be part of the return type)
+/// `'a`, `use<'a, T>` or a trait bound, in its source parentheses: `(FnOnce() -> R) + Send`
 fn format_type_bound(fmt: &Formatter, bound: TypeBound) -> Frag {
     let mut builder = Builder::new(fmt);
     if let Some(lifetime) = bound.lifetime() {
@@ -154,8 +144,7 @@ fn format_type_bound(fmt: &Formatter, bound: TypeBound) -> Frag {
     }
 }
 
-/// A trait with its binder and modifiers: `Trait`, `?Sized`, `for<'a> Fn(&'a T)`, `~const Trait`,
-/// `[const] Trait`, `async Fn()`
+/// `Trait`, `?Sized`, `for<'a> Fn(&'a T)`, `~const Trait`, `[const] Trait`, `async Fn()`
 fn push_trait_bound(fmt: &Formatter, builder: &mut Builder, bound: &TypeBound) {
     if let Some(binder) = bound.for_binder() {
         builder.push(format_for_binder(fmt, binder));
@@ -190,8 +179,8 @@ fn format_use_bound_generic_args(fmt: &Formatter, args: UseBoundGenericArgs) -> 
     format_angle_list(fmt, args.syntax(), &items)
 }
 
-/// `where` / `    T: Clone,` / `    'a: 'b,` on its own lines; with `terminated`, the item ends right
-/// after it with `;` (`    T: Clone;`), otherwise its body follows on the next line
+/// `where` / `    T: Clone,` on its own lines; with `terminated`, the item ends with `;` right
+/// after
 pub(super) fn format_where_clause(fmt: &Formatter, clause: WhereClause, terminated: bool) -> Frag {
     let predicates = list_items_cast(clause.syntax(), |p| format_where_pred(fmt, p));
     let trailing = if terminated {
@@ -213,8 +202,7 @@ fn format_where_pred(fmt: &Formatter, pred: WherePred) -> Frag {
         (None, Some(ty)) => builder.push(format_type(fmt, ty)),
         (None, None) => panic!("{pred:?}"),
     }
-    // Bounds that do not fit move to the next line, indented (as rustfmt does): `F:` /
-    // `    Fn(&'a u8) -> u8,`
+    // Bounds that do not fit move to the next line (as rustfmt): `F:` / `    Fn(&'a u8) -> u8,`
     push_bounds(fmt, &mut builder, &pred, |bounds| {
         fmt.same_or_indented_line(bounds)
     });

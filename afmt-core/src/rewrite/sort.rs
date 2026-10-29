@@ -34,8 +34,7 @@ fn compare_text(a: &str, b: &str) -> Ordering {
     a.chars().map(key).cmp(b.chars().map(key))
 }
 
-/// Compares two names by version sorting: `x8` < `x16`, `_` before any other character, uppercase
-/// before lowercase, and on a tie, the name with more leading zeros (at the first difference) first
+/// `x8` < `x16`, `_` first, uppercase before lowercase; on a tie, more leading zeros first
 pub(crate) fn version_cmp(a: &str, b: &str) -> Ordering {
     let mut leading_zeros = Ordering::Equal;
     let mut a_chunks = chunks(a);

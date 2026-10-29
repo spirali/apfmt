@@ -15,7 +15,7 @@ use ra_ap_syntax::ast::{HasName, Path, Use, UseTree, UseTreeList};
 use ra_ap_syntax::{AstNode, SourceFile, SyntaxKind, SyntaxNode, SyntaxToken, TextRange, TextSize};
 use std::cmp::Ordering;
 
-/// The edits that sort and normalize the imports of the file, one per group of imports that changes
+/// One edit per group of imports that changes
 pub(super) fn import_edits(file: &SourceFile, source: &str) -> Vec<(TextRange, String)> {
     let mut edits = Vec::new();
     for node in file.syntax().descendants() {
@@ -34,15 +34,13 @@ pub(super) fn import_edits(file: &SourceFile, source: &str) -> Vec<(TextRange, S
     edits
 }
 
-/// A tree that imports nothing, `a::{}` or `a::{b::{}}`, without comments; it is removed (Style Guide:
-/// "Normalisation")
+/// `a::{}` or `a::{b::{}}`, without comments; removed (Style Guide: "Normalisation")
 fn is_empty_tree(tree: &UseTree) -> bool {
     tree.use_tree_list().is_some_and(|list| {
         !has_comments(list.syntax()) && list.use_trees().all(|t| is_empty_tree(&t))
     })
 }
 
-/// `self` or `self as name`
 fn is_self(tree: &UseTree) -> bool {
     tree.use_tree_list().is_none()
         && tree.path().is_some_and(|path| {
@@ -54,9 +52,8 @@ fn is_self(tree: &UseTree) -> bool {
         })
 }
 
-/// The only item of `list` when the braces are dropped, `a::{b}` -> `a::b` (Style Guide:
-/// "Normalisation"), unless the list has comments. `a::{self}` keeps them: it imports only the module
-/// `a`, `a` would also import a function or a macro `a`.
+/// The only item when the braces are dropped, `a::{b}` -> `a::b`, unless commented. `a::{self}`
+/// keeps them: `a` would also import a function or a macro `a`.
 fn unwrapped_item(list: &UseTreeList) -> Option<UseTree> {
     if has_comments(list.syntax()) {
         return None;
@@ -68,7 +65,7 @@ fn unwrapped_item(list: &UseTreeList) -> Option<UseTree> {
     }
 }
 
-/// A name compared by version sorting; without the raw prefix: `r#type` sorts as `type`
+/// Without the raw prefix: `r#type` sorts as `type`
 #[derive(PartialEq, Eq)]
 struct VersionName(String);
 
@@ -90,9 +87,8 @@ impl PartialOrd for VersionName {
     }
 }
 
-/// A segment of a use tree for sorting; the variants are in their order (Style Guide: "Ordering list
-/// import": `self` and `super` first, globs and lists last; `crate` and the leading `::`, an empty name,
-/// follow `super` as in rustfmt)
+/// The variants are in their order (Style Guide): `self` and `super` first, globs and lists last;
+/// `crate` and the leading `::` follow `super` as in rustfmt
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
 enum Segment {
     SelfKw,
@@ -103,16 +99,14 @@ enum Segment {
     List(Vec<UseKey>),
 }
 
-/// A use tree in its normalized form for sorting: its segments (`a::b::{c, d}` is `a`, `b`, `{c, d}`
-/// with the list sorted) and the alias of the last one. A shorter tree goes first when it is a prefix
-/// of the other one, the alias decides last: `a`, `a as b`, `a::b`.
+/// The segments (`a::b::{c, d}` is `a`, `b`, `{c, d}`) and the alias of the last one; a prefix
+/// sorts first, the alias decides last: `a`, `a as b`, `a::b`
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
 struct UseKey {
     segments: Vec<Segment>,
     alias: Option<VersionName>,
 }
 
-/// A use tree (or a `use` item) sorted and normalized: its sort key and its text
 struct Normalized {
     key: UseKey,
     text: String,
@@ -136,14 +130,12 @@ fn push_path_segments(path: &Path, segments: &mut Vec<Segment>) {
     });
 }
 
-/// `source[outer]` with its part `inner` replaced by `replacement`
 fn splice(source: &str, outer: TextRange, inner: TextRange, replacement: &str) -> String {
     let before = &source[TextRange::new(outer.start(), inner.start())];
     let after = &source[TextRange::new(inner.end(), outer.end())];
     format!("{before}{replacement}{after}")
 }
 
-/// The tree with its list sorted and normalized (`a::{b}` is `a::b`), with its sort key
 fn normalize(source: &str, tree: &UseTree) -> Normalized {
     let range = tree.syntax().text_range();
     let mut segments = Vec::new();
@@ -187,22 +179,18 @@ fn normalize(source: &str, tree: &UseTree) -> Normalized {
     }
 }
 
-/// An item of a list import with the source around it: its leading trivia from `start`, and its
-/// separator with the post comments up to `end`
+/// Its leading trivia from `start`, and its separator with the post comments up to `end`
 struct ListEntry {
     tree: Normalized,
     start: TextSize,
     range: TextRange,
     end: TextSize,
     has_comma: bool,
-    /// The start of the line comment ending the post comments, which has to end the line
     line_comment: Option<TextSize>,
 }
 
-/// `{a, b}` with the items sorted and the empty ones removed (if the list has no comments), and the sort
-/// keys of the items. Each item moves with its leading comments (everything after the previous item's
-/// post comments) and its post comments; the comments ending the line of `{` and the comments in front
-/// of `}` stay.
+/// `{a, b}` sorted, without empty items, and the sort keys of the items. Each item moves with its
+/// leading and post comments; comments after `{` and in front of `}` stay.
 fn sorted_list(source: &str, list: &UseTreeList) -> (Vec<UseKey>, String) {
     let open = list.l_curly_token().unwrap();
     let close = list.r_curly_token().unwrap();
@@ -210,7 +198,6 @@ fn sorted_list(source: &str, list: &UseTreeList) -> (Vec<UseKey>, String) {
     let mut entries = Vec::new();
     let mut before = comments_ending_line_end(&open);
     let opener = TextRange::new(open.text_range().end(), before.text_range().end());
-    // Whether the text so far ends with a line comment, which has to end the line
     let mut line_comment = is_line_comment(&before);
     for item in list_items_cast(list.syntax(), |t: UseTree| t) {
         let tree = item.frag;
@@ -264,7 +251,6 @@ fn sorted_list(source: &str, list: &UseTreeList) -> (Vec<UseKey>, String) {
     (keys, out)
 }
 
-/// Appends `text` to `out`, on a new line if `out` ends with a line comment
 fn push_after(out: &mut String, text: &str, line_comment: bool) {
     let indent = text.len() - text.trim_start().len();
     if line_comment && !text[..indent].contains('\n') {
@@ -273,15 +259,13 @@ fn push_after(out: &mut String, text: &str, line_comment: bool) {
     out.push_str(text);
 }
 
-/// The `use` item, if `node` is one that can be sorted with others (attributes, e.g. `#[macro_use]`,
-/// prevent it: Style Guide)
+/// Attributes, e.g. `#[macro_use]`, prevent sorting (Style Guide)
 fn sortable_use(node: &SyntaxNode) -> Option<Use> {
     Use::cast(node.clone()).filter(|item| !has_attrs(item))
 }
 
-/// Whether the next `use` item follows `prev` in the same group of imports: on the next line, or on the
-/// same line without comments in between. A blank line or a line with only comments starts a new group
-/// (as in rustfmt).
+/// On the next line, or on the same line without comments; a blank or comment line starts a new
+/// group (as in rustfmt)
 fn is_same_group(prev: &Use) -> bool {
     let semicolon = prev.syntax().last_token().unwrap();
     let trivia = || trivia_from(semicolon.next_token());
@@ -292,7 +276,7 @@ fn is_same_group(prev: &Use) -> bool {
     }
 }
 
-/// The groups of imports among the children of `node`; a `use` item with attributes is a group alone
+/// A `use` item with attributes is a group alone
 fn use_groups(node: &SyntaxNode) -> Vec<Vec<Use>> {
     let mut groups: Vec<Vec<Use>> = Vec::new();
     let mut children = node.children().peekable();
@@ -314,8 +298,7 @@ fn use_groups(node: &SyntaxNode) -> Vec<Vec<Use>> {
     groups
 }
 
-/// The source range of `item` from its first code token (rust-analyzer attaches the comments in front
-/// of it to it) to the comments ending the line of its `;`, which move with it
+/// From its first code token to the comments ending the line of its `;`, which move with it
 fn use_range(item: &Use) -> TextRange {
     let start = first_code_token(item.syntax()).text_range().start();
     let end = comments_ending_line_end(&semicolon(item))
@@ -328,8 +311,7 @@ fn semicolon(item: &Use) -> SyntaxToken {
     item.syntax().last_token().unwrap()
 }
 
-/// A `use` item that imports nothing (`use a::{};`) is removed, unless it has attributes, or comments in
-/// it or after it on its line (comments in front of it stay)
+/// `use a::{};` is removed, unless it has attributes or comments in it or after it on its line
 fn is_removed(item: &Use) -> bool {
     let semicolon = semicolon(item);
     let start = first_code_token(item.syntax()).text_range().start();
@@ -342,8 +324,8 @@ fn is_removed(item: &Use) -> bool {
             .any(|e| is_comment_kind(e.kind()) && e.text_range().start() >= start)
 }
 
-/// The source range of the group (see `use_range`) and its sorted, normalized text: the items on their
-/// own lines. If all of them are removed and the group is alone on its line, the line goes too.
+/// The range and sorted text of the group; if all items are removed and the group is alone on its
+/// line, the line goes too
 fn group_text(source: &str, group: &[Use]) -> (TextRange, String) {
     let mut range = TextRange::new(
         use_range(&group[0]).start(),

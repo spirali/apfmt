@@ -23,13 +23,11 @@ use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use trivia::{multiline_comment_lines, normalize_comment_sigil_spacing, trim_comment_line};
 
-/// The cost of `Formatter::overflow_fallback`: more splits than any layout of real code has,
-/// and small enough that adding many of them does not saturate
+/// More splits than any layout of real code has, small enough not to saturate when added up
 const OVERFLOW_FALLBACK: Cost = Cost::splits(10_000);
 
 /// Source text that afmt cannot format yet, copied unchanged (see `Formatter::unsupported`)
 pub(crate) struct Unsupported {
-    /// The copied source text
     pub range: TextRange,
     /// What is not supported, e.g. `MACRO_EXPR`
     pub what: String,
@@ -40,7 +38,7 @@ pub(crate) struct Formatter<'a> {
     config: &'a Config,
     unsupported: RefCell<Vec<Unsupported>>,
     align_group_id_counter: Cell<AlignGroup>,
-    /// The source ranges of the nodes recorded by `mark_placed` (debug builds only)
+    /// Debug builds only
     placed: RefCell<FxHashSet<TextRange>>,
     /// The placeholders of the nodes parsed again that are being formatted (see `format_reparsed`)
     placeholders: RefCell<Placeholders>,
@@ -58,14 +56,14 @@ impl<'a> Formatter<'a> {
         }
     }
 
-    /// Records in debug builds that `node` is placed in the output, for checks with `was_placed`
+    /// Debug builds only, for checks with `was_placed`
     pub fn mark_placed(&self, node: &SyntaxNode) {
         if cfg!(debug_assertions) {
             self.placed.borrow_mut().insert(node.text_range());
         }
     }
 
-    /// Whether `node` was recorded by `mark_placed`; always true in release builds
+    /// Always true in release builds
     pub fn was_placed(&self, node: &SyntaxNode) -> bool {
         !cfg!(debug_assertions) || self.placed.borrow().contains(&node.text_range())
     }
@@ -92,15 +90,12 @@ impl<'a> Formatter<'a> {
     }
 
     #[inline]
-    /// A `Text` node of `text`
     fn text_node(&self, text: impl Into<Box<str>>) -> DocId {
         self.doc_arena.borrow_mut().make_text(text)
     }
 
-    /// The node parsed again by `reparse` (given the placeholders in effect, e.g. `|placeholders|
-    /// parse_token_tree(tree, edition, placeholders)`) formatted by `format`; while it runs, its
-    /// placeholders are written as the text they stand for (`$x`, see `token_text`), and they are
-    /// dropped after, since the docs have the text. `None` if `reparse` does not parse the node.
+    /// The node parsed again by `reparse` formatted by `format`; meanwhile its placeholders are
+    /// written as the text they stand for (`$x`). `None` if `reparse` does not parse the node.
     pub fn format_reparsed<N>(
         &self,
         reparse: impl FnOnce(&Placeholders) -> Option<Reparsed<N>>,
@@ -120,7 +115,6 @@ impl<'a> Formatter<'a> {
         Some(frag)
     }
 
-    /// The text a token is written as: its own, or the text of a placeholder (see `format_reparsed`)
     fn token_text<'t>(&self, token: &'t SyntaxToken) -> Cow<'t, str> {
         match self.placeholders.borrow().get(token) {
             Some(text) => Cow::Owned(text.clone()),
@@ -128,13 +122,12 @@ impl<'a> Formatter<'a> {
         }
     }
 
-    /// Whether the token is the placeholder of a repetition of `macro_rules!`, `$( ... ) sep? op` (see
-    /// `parse_transcriber`), which may end with its own separator or expand to nothing
+    /// The placeholder of a repetition of `macro_rules!`, `$( ... ) sep? op`, which may end with
+    /// its own separator or expand to nothing
     pub fn is_repetition_placeholder(&self, token: &SyntaxToken) -> bool {
         (self.placeholders.borrow().get(token)).is_some_and(|text| text.starts_with("$("))
     }
 
-    /// The doc of a token: the token, or the text it is written as (see `format_reparsed`)
     fn token_node(&self, token: SyntaxToken) -> DocId {
         let placeholders = self.placeholders.borrow();
         match placeholders.get(&token) {
@@ -147,14 +140,13 @@ impl<'a> Formatter<'a> {
         Frag::new_simple(self.token_node(token.clone()), edge, Some(token))
     }
 
-    /// A token with different edges on its sides, e.g. the negative `!` of `impl !Send`: a space in
-    /// front of it (`Word`), none after it (`Tight`)
+    /// E.g. the negative `!` of `impl !Send`: a space in front of it, none after it
     pub fn token_with_edges(&self, token: SyntaxToken, start: Edge, end: Edge) -> Frag {
         Frag::new(self.token_node(token.clone()), start, end, Some(token))
     }
 
-    /// A postfix operator, `?` or a `..` without an end: no space in front of it, spaced like a word
-    /// after it (`x? == y`, `x? as u8`, `2.. =>`, not `2..=>`), but tight to `.`, `?`, `(`, `[`
+    /// `?` or a `..` without an end: tight in front, spaced like a word after it (`x? as u8`, `2..
+    /// =>`)
     pub fn postfix_token(&self, token: SyntaxToken) -> Frag {
         self.token_with_edges(token, Edge::Tight, Edge::Word)
     }
@@ -164,9 +156,8 @@ impl<'a> Formatter<'a> {
         Frag::new_simple(self.text_node(text), edge, None)
     }
 
-    /// The source text from `first` to `last` (inclusive), its lines after the first shifted by the
-    /// change of indentation of the line it starts on (`reindented_lines`); the text unchanged (see
-    /// `verbatim_range`) when they cannot be
+    /// The source text from `first` to `last`, its lines after the first shifted by the change of
+    /// indentation of its first line; unchanged when they cannot be
     pub fn reindented_range(
         &self,
         first: &SyntaxToken,
@@ -180,7 +171,6 @@ impl<'a> Formatter<'a> {
         Frag::new(self.lines_doc(lines), start, end, Some(last.clone()))
     }
 
-    /// The lines one below another, each at the indentation of the doc; a blank line is empty
     fn lines_doc<S: AsRef<str> + Into<Box<str>>>(
         &self,
         lines: impl IntoIterator<Item = S>,
@@ -196,8 +186,7 @@ impl<'a> Formatter<'a> {
         doc_id
     }
 
-    /// The source text from `first` to `last` (inclusive) unchanged, comments included, with the
-    /// edges of its first and last token; its last token is the cursor
+    /// The source text from `first` to `last` unchanged, comments included
     pub fn verbatim_range(
         &self,
         first: &SyntaxToken,
@@ -211,8 +200,7 @@ impl<'a> Formatter<'a> {
         Frag::new(self.text_node(text), start, end, Some(last.clone()))
     }
 
-    /// The source text from `first` to `last` reindented (see `reindented_range`), recorded as text that
-    /// cannot be formatted yet because of `what` (see `take_unsupported`)
+    /// The source reindented, recorded as unsupported because of `what` (see `take_unsupported`)
     pub fn unsupported(&self, first: &SyntaxToken, last: &SyntaxToken, what: String) -> Frag {
         let range = TextRange::new(first.text_range().start(), last.text_range().end());
         self.unsupported
@@ -221,17 +209,15 @@ impl<'a> Formatter<'a> {
         self.reindented_range(first, last, Word, Word)
     }
 
-    /// The text recorded by `unsupported`, in the order it was copied
     pub fn take_unsupported(&self) -> Vec<Unsupported> {
         self.unsupported.take()
     }
 
-    /// Just the token, without a cursor: the caller places the trivia (comments) that follow it
+    /// The caller places the trivia that follow the token
     pub fn token_without_cursor(&self, token: SyntaxToken, edge: Edge) -> Frag {
         Frag::new_simple(self.token_node(token), edge, None)
     }
 
-    /// Keyword that is always followed by a space, e.g. `let (a, b)`
     pub fn keyword(&self, token: SyntaxToken) -> Frag {
         Frag::new(self.token_node(token.clone()), Word, Keyword, Some(token))
     }
@@ -253,8 +239,7 @@ impl<'a> Formatter<'a> {
         })
     }
 
-    /// Puts `sep` (a line break, or a space or a line break) in front of every branch; the fragment
-    /// then starts with `start` (`LineStart` or `Nothing`), so no space is computed in front of it
+    /// Puts `sep` in front of every branch; the fragment then starts with `start`
     fn prefix_break(&self, sep: DocId, start: Edge, frag: Frag) -> Frag {
         self.map_branches(frag, |b| Branch {
             start,
@@ -263,8 +248,7 @@ impl<'a> Formatter<'a> {
         })
     }
 
-    /// The following lines of the fragment are indented to the column where it starts (visual
-    /// indentation), e.g. closure parameters: `|a: A,` / ` b: B|`
+    /// Visual indentation: the following lines are aligned to the start, e.g. `|a: A,` / ` b: B|`
     pub fn align(&self, frag: Frag) -> Frag {
         self.map_branches(frag, |b| Branch {
             doc_id: self.make_node(DocNode::Align(b.doc_id)),
@@ -272,27 +256,22 @@ impl<'a> Formatter<'a> {
         })
     }
 
-    /// The fragment starts on a new line with the current indentation
     pub fn on_next_line(&self, frag: Frag) -> Frag {
         self.prefix_break(NEWLINE_DOC, LineStart, frag)
     }
 
-    /// The fragment continues the current line after a space, or starts a new line
     pub fn on_same_or_next_line(&self, frag: Frag) -> Frag {
         self.prefix_break(NEWLINE_OR_SPACE_DOC, Nothing, frag)
     }
 
-    /// The fragment starts on a new line, indented one level deeper. The newline is inside
-    /// the nest, otherwise the resolver measures the first nested line (and aligns multi-line
-    /// comments) with the outer indent.
+    /// The newline is inside the nest, otherwise the resolver measures the first nested line with
+    /// the outer indent
     pub fn indented_line(&self, frag: Frag) -> Frag {
         self.nest(self.on_next_line(frag))
     }
 
-    /// The body of a block or a broken list after its opening delimiter, indented on the next lines.
-    /// With `line_comments` (the body starts with comments ending the delimiter's line, see
-    /// `Builder::push_comments_ending_line`), they stay on the delimiter's line after a space if it
-    /// fits, otherwise they are the body's first line.
+    /// The body after an opening delimiter, indented on the next lines. With `line_comments`, the
+    /// comments ending the delimiter's line stay there if they fit.
     pub fn body_after_opener(&self, line_comments: bool, body: Frag) -> Frag {
         self.nest(if line_comments {
             self.on_same_or_next_line(body)
@@ -301,35 +280,25 @@ impl<'a> Formatter<'a> {
         })
     }
 
-    /// The fragment continues the current line, or starts an indented next line, e.g. the right-hand
-    /// side of `=`. In the order of preference (Style Guide `let`: "try splitting after the `=`, if the
-    /// declaration fits on two lines"): on a single line on the current line, on a single line on the
-    /// next line, broken on the current line (a split), broken on the next line (two splits).
+    /// In the order of preference (Style Guide `let`): single line on the current line, single line
+    /// on the next line, broken on the current line, broken on the next line.
     pub fn same_or_indented_line(&self, frag: Frag) -> Frag {
         let (same, next) = self.same_and_indented_line(frag);
         self.alt_frag(same, next)
     }
 
-    /// As `same_or_indented_line`, but broken on the next line costs a line and a half more than
-    /// broken on the current line instead of a split: it wins when it saves at least two lines, e.g.
-    /// the right-hand side of `let` and of an assignment (rustfmt's `prefer_next_line` counts the
-    /// lines of the right-hand side: one less in total is enough for it, which would move `x = cmd` /
-    /// `.args([` to `x =` / `cmd.args([` and `]).output()?` here; see
-    /// `same_or_indented_line_saving_lines_preferring` for the layouts where one line is enough)
+    /// As `same_or_indented_line`, but broken on the next line wins only when it saves at least two
+    /// lines (rustfmt needs one: `x = cmd` / `.args([` → `x =` / `cmd.args([`)
     pub fn same_or_indented_line_saving_lines(&self, frag: Frag) -> Frag {
         let next = Cost::new(Self::SAVING_LINES_NEXT_COST);
         let (same, next) = self.same_and_indented_line_with(frag, next);
         self.alt_frag(same, next)
     }
 
-    /// The cost of a fragment broken on the next line in `same_or_indented_line_saving_lines`
     const SAVING_LINES_NEXT_COST: i32 = SPLIT_COST + LINE_COST * 3 / 2;
 
-    /// As `same_or_indented_line_saving_lines` for a fragment whose layouts are `other` and
-    /// `preferred`: `preferred` broken on the next line costs a line less, so it wins when it saves
-    /// one line. E.g. a chain on a single line except the arguments of its last element, on the next
-    /// line, against the chain broken before its elements on the current line, as rustfmt
-    /// (`x =` / `a.b().c(|y| {` against `x = a` / `.b()` / `.c(|y| {`)
+    /// As `same_or_indented_line_saving_lines`, but `preferred` on the next line wins when it saves
+    /// one line, as in rustfmt (`x =` / `a.b().c(|y| {` against `x = a` / `.b()` / `.c(|y| {`)
     pub fn same_or_indented_line_saving_lines_preferring(
         &self,
         other: Frag,
@@ -343,35 +312,29 @@ impl<'a> Formatter<'a> {
         self.alt_frag(same, self.indented_line(self.alt_frag(other, preferred)))
     }
 
-    /// The two layouts of `same_or_indented_line`: on the current line, and on the next line
     pub fn same_and_indented_line(&self, frag: Frag) -> (Frag, Frag) {
         self.same_and_indented_line_with(frag, Cost::splits(2))
     }
 
-    /// The layouts of `same_and_indented_line`, broken on the next line costing `next`
     fn same_and_indented_line_with(&self, frag: Frag, next: Cost) -> (Frag, Frag) {
         let same = self.keep_together_with(frag.clone(), Cost::SPLIT);
         let next = self.keep_together_with(frag, next);
         (same, self.indented_line(next))
     }
 
-    /// The fragment continues the current line, broken there if needed, and starts an indented next
-    /// line only when every layout on the current line overflows (`overflow_fallback`), e.g. the value
-    /// of a struct literal field (as rustfmt does): `name:` / `    long::path::Value`
+    /// On the next line only when every layout on the current line overflows, e.g. a struct literal
+    /// field value (as rustfmt): `name:` / `    long::path::Value`
     pub fn same_or_indented_line_on_overflow(&self, frag: Frag) -> Frag {
         let next = self.indented_line(self.keep_together(frag.clone()));
         self.alt_frag(frag, self.overflow_fallback(next))
     }
 
-    /// The fragment is used only when every layout without it overflows `max_width`: it costs more
-    /// splits than any layout of real code has (the resolver compares the overflow first)
+    /// Used only when every layout without it overflows `max_width`
     pub fn overflow_fallback(&self, frag: Frag) -> Frag {
         self.cost(frag, OVERFLOW_FALLBACK)
     }
 
-    /// The fragment is always followed by a space, e.g. an attribute in front of a parameter:
-    /// `#[cfg(x)] &self`, a visibility in front of a type (`pub(crate) *const u8`); a layout ending
-    /// with a line comment still ends the line
+    /// E.g. `#[cfg(x)] &self`; a layout ending with a line comment still ends the line
     pub fn followed_by_space(&self, frag: Frag) -> Frag {
         self.map_branches(frag, |b| match b.end {
             Edge::Break => b,
@@ -379,7 +342,6 @@ impl<'a> Formatter<'a> {
         })
     }
 
-    /// Restricts the fragment to layouts that span more than one line
     pub fn multi_line(&self, frag: Frag) -> Frag {
         self.map_branches(frag, |b| Branch {
             doc_id: self.make_node(DocNode::MultiLine(b.doc_id)),
@@ -387,27 +349,24 @@ impl<'a> Formatter<'a> {
         })
     }
 
-    /// `first` followed by `second`, which breaks whenever `first` does: either `first` is on a single
-    /// line, or both span more lines, e.g. broken generics of a function followed by its parameters
-    /// one per line. `second` must have a layout spanning more lines.
+    /// `second` breaks whenever `first` does, e.g. broken generics followed by parameters one per
+    /// line. `second` must have a layout spanning more lines.
     pub fn concat_breaking_together(&self, first: Frag, second: Frag) -> Frag {
         let flat = Builder::concat(self, [self.flat(first.clone()), second.clone()]);
         let broken = Builder::concat(self, [self.multi_line(first), self.multi_line(second)]);
         self.alt_frag(flat, broken)
     }
 
-    /// `first` followed by `second`, which spans more lines only when `first` does: both on a single
-    /// line, or `first` broken, e.g. the parameters of a function before its return type
-    /// (`fn f(` / `    a: A,` / `) -> Result<` / `...`). `first` must have a layout spanning more lines.
+    /// `second` spans more lines only when `first` does, e.g. parameters before the return type.
+    /// `first` must have a layout spanning more lines.
     pub fn concat_breaking_in_order(&self, first: Frag, second: Frag) -> Frag {
         let flat = Builder::concat(self, [self.flat(first.clone()), self.flat(second.clone())]);
         let broken = Builder::concat(self, [self.multi_line(first), second]);
         self.alt_frag(flat, broken)
     }
 
-    /// `first` followed by `second` on the next line when `first` is on a single line, or right after
-    /// the last line of `first` when it spans more lines, e.g. the `where` clause of a function after
-    /// its signature (`fn f(a: A)` / `where`, or `fn f(` / `    a: A,` / `) where`)
+    /// `second` on the next line when `first` is flat, otherwise after its last line, e.g. `where`
+    /// (`fn f(a: A)` / `where`, or `fn f(` / `    a: A,` / `) where`)
     pub fn concat_on_next_line_unless_broken(&self, first: Frag, second: Frag) -> Frag {
         let flat = Builder::concat(
             self,
@@ -417,9 +376,7 @@ impl<'a> Formatter<'a> {
         self.alt_frag(flat, broken)
     }
 
-    /// The fragment on a single line, or spanning more lines and then ending its last line, so that
-    /// what follows starts on the next line, e.g. `{` after the broken header of an item (`impl<` /
-    /// `    T: A,` / `> Trait for Type` / `{`); the fragment unchanged if not `ends_line`
+    /// When broken, what follows starts on the next line, e.g. `{` after a broken item header
     pub fn ends_line_if_broken(&self, frag: Frag, ends_line: bool) -> Frag {
         if !ends_line {
             return frag;
@@ -430,13 +387,11 @@ impl<'a> Formatter<'a> {
         self.alt_frag(self.flat(frag), broken.into_frag())
     }
 
-    /// The fragment should stay on one line if possible: a layout spanning more lines is used only when
-    /// all single-line layouts overflow, e.g. a type
+    /// A layout spanning more lines is used only when all single-line layouts overflow
     pub fn keep_together(&self, frag: Frag) -> Frag {
         self.keep_together_with(frag, Cost::SPLIT)
     }
 
-    /// `keep_together` with the layouts spanning more lines getting `cost`
     fn keep_together_with(&self, frag: Frag, cost: Cost) -> Frag {
         self.map_branches(frag, |b| Branch {
             doc_id: self.make_node(DocNode::KeepTogether(b.doc_id, cost)),
@@ -444,14 +399,11 @@ impl<'a> Formatter<'a> {
         })
     }
 
-    /// The fragment costs a split, so it is used only when the layouts without it are worse: a layout
-    /// the Style Guide accepts only as a fallback, e.g. `{` on its own line after an `if` head
+    /// Costs a split: a layout the Style Guide accepts only as a fallback, e.g. `{` on its own line
     pub fn dispreferred(&self, frag: Frag) -> Frag {
         self.cost(frag, Cost::SPLIT)
     }
 
-    /// Every layout of the fragment gets the cost, compared right after the overflow (see
-    /// `DocNode::Cost`)
     pub fn cost(&self, frag: Frag, cost: Cost) -> Frag {
         self.map_branches(frag, |b| Branch {
             doc_id: self.make_node(DocNode::Cost(b.doc_id, cost)),
@@ -459,9 +411,7 @@ impl<'a> Formatter<'a> {
         })
     }
 
-    /// The fragment gets the preference, compared only after the cost (the lines): it decides between
-    /// layouts that are otherwise equal, e.g. a call whose single argument overflows rather than a
-    /// broken one in as many lines
+    /// Compared only after the cost: decides between layouts that are otherwise equal
     pub fn weak_preference(&self, frag: Frag, preference: WeakPreference) -> Frag {
         self.map_branches(frag, |b| Branch {
             doc_id: self.make_node(DocNode::WeakPreference(b.doc_id, preference)),
@@ -469,9 +419,8 @@ impl<'a> Formatter<'a> {
         })
     }
 
-    /// Restricts the fragment to layouts whose last line ends at most at the indentation of a nested
-    /// line, so a following fragment on that line still starts left of the nested lines below it,
-    /// e.g. a chain root followed by the first element: `x.baz?` / `    .qux()`
+    /// The last line ends at most at the nested indentation, so what follows starts left of the
+    /// nested lines below, e.g. `x.baz?` / `    .qux()`
     pub fn short_last_line(&self, frag: Frag) -> Frag {
         self.map_branches(frag, |b| Branch {
             doc_id: self.make_node(DocNode::ShortLastLine(b.doc_id)),
@@ -479,12 +428,8 @@ impl<'a> Formatter<'a> {
         })
     }
 
-    /// The layouts of the fragment spanning more lines whose last line is only closing delimiters at
-    /// the indentation where the fragment starts (`foo(` / `    a,` / `)`): they end with a closing
-    /// delimiter (see `Frag::may_end_with_delimiter`) and their last line ends at most at the
-    /// indentation of a nested line (see `short_last_line`), so a line with more on it (`) + b`,
-    /// `).c()`) or a continuation line (`    )`) is ruled out, and so is a run of more delimiters than
-    /// `tab_spaces`. `None` if no layout can end with a closing delimiter on a line of its own.
+    /// Layouts whose last line is only closing delimiters at the starting indentation (`foo(` / `
+    /// a,` / `)`). `None` if no layout can end that way.
     pub fn closing_last_line(&self, frag: Frag) -> Option<Frag> {
         let mut arena = self.doc_arena.borrow_mut();
         let branches: Branches = frag
@@ -504,8 +449,6 @@ impl<'a> Formatter<'a> {
         Some(self.short_last_line(self.multi_line(frag)))
     }
 
-    /// Restricts the fragment to layouts whose first line spans at most `width` columns from where it
-    /// starts (see `DocNode::FirstLineWithin`)
     pub fn first_line_within(&self, frag: Frag, width: u32) -> Frag {
         self.map_branches(frag, |b| Branch {
             doc_id: self.make_node(DocNode::FirstLineWithin(b.doc_id, width)),
@@ -513,12 +456,10 @@ impl<'a> Formatter<'a> {
         })
     }
 
-    /// The doc does not count as overflow beyond the page width (see `DocNode::IgnoreOverflow`)
     pub(super) fn ignore_overflow(&self, doc_id: DocId) -> DocId {
         self.make_node(DocNode::IgnoreOverflow(doc_id))
     }
 
-    /// Restricts the fragment to layouts on a single line
     pub fn flat(&self, frag: Frag) -> Frag {
         self.map_branches(frag, |b| Branch {
             doc_id: self.make_node(DocNode::Flat(b.doc_id)),
@@ -526,15 +467,12 @@ impl<'a> Formatter<'a> {
         })
     }
 
-    /// Single-line layout of `frag`, if it has one (see `has_flat_layout`)
     pub fn flat_if_possible(&self, frag: Frag) -> Option<Frag> {
         self.has_flat_layout(&frag).then(|| self.flat(frag))
     }
 
-    /// The fragment on a single line where it fits without overflow with `room` columns left after it
-    /// (`DocNode::RoomAfter`), for text that always follows on the line; in any of its layouts only
-    /// where it does not (`DocNode::Fallback`), whatever what follows could gain by breaking it. A
-    /// branch without a single-line layout (see `has_flat_layout`) is kept as it is.
+    /// On a single line where it fits with `room` columns left after it, otherwise in any layout,
+    /// whatever what follows could gain (`DocNode::Fallback`)
     pub fn flat_where_fits(&self, frag: Frag, room: u32) -> Frag {
         self.map_branches(frag, |b| {
             if !self.doc_arena.borrow_mut().has_flat_layout(b.doc_id) {
@@ -549,23 +487,18 @@ impl<'a> Formatter<'a> {
         })
     }
 
-    /// Whether a branch of the fragment satisfies `query`, a walk of `DocArena`
     fn any_branch(&self, frag: &Frag, query: impl Fn(&mut DocArena, DocId) -> bool) -> bool {
         let mut arena = self.doc_arena.borrow_mut();
         frag.branches.iter().any(|b| query(&mut arena, b.doc_id))
     }
 
-    /// Whether a branch of the fragment may have a layout under `Flat`: false only if a line break
-    /// is forced in all of them, or a width limit in it cannot be met (see
-    /// `DocArena::has_flat_layout`)
+    /// False only if every branch forces a line break or cannot meet a width limit
     pub fn has_flat_layout(&self, frag: &Frag) -> bool {
         self.any_branch(frag, DocArena::has_flat_layout)
     }
 
-    /// The width of the narrowest single line of the fragment without any line break (see
-    /// `DocArena::min_flat_width`; of its branches, the widest), `None` if no branch has one: whether
-    /// it can be on one line within a width, for a decision on the layouts to build; the resolver
-    /// measures the layout it places
+    /// The narrowest single line (of the branches, the widest); `None` if a branch has none. For
+    /// deciding which layouts to build, not a prediction of the resolver.
     pub fn min_flat_width(&self, frag: &Frag) -> Option<u32> {
         let mut arena = self.doc_arena.borrow_mut();
         frag.branches
@@ -574,9 +507,8 @@ impl<'a> Formatter<'a> {
             .max()
     }
 
-    /// The narrowest first line of the fragment in a layout with a line break that takes no
-    /// dispreferred choice up to it (see `DocArena::natural_first_line_width`; of its branches, the
-    /// widest), `None` if no branch has one
+    /// The narrowest first line of a broken layout without a dispreferred choice up to it (of the
+    /// branches, the widest)
     pub fn natural_first_line_width(&self, frag: &Frag) -> Option<u32> {
         let mut arena = self.doc_arena.borrow_mut();
         frag.branches
@@ -585,21 +517,17 @@ impl<'a> Formatter<'a> {
             .max()
     }
 
-    /// Whether a text of the fragment contains a line break, e.g. a multi-line string literal: a
-    /// layout with it on a single line still spans more lines
+    /// E.g. a multi-line string literal: a single-line layout still spans more lines
     pub fn has_multi_line_text(&self, frag: &Frag) -> bool {
         self.any_branch(frag, DocArena::has_multi_line_text)
     }
 
-    /// Whether a layout of the fragment may span more lines (see `DocArena::has_line_break`)
     pub fn has_line_break(&self, frag: &Frag) -> bool {
         self.any_branch(frag, DocArena::has_line_break)
     }
 
-    /// Single-line layout of `frag` at most `max_width` wide (the resolver measures it, see
-    /// `DocNode::FirstLineWithin`), without a line break even inside a token (a multi-line string
-    /// literal, which `flat` allows; `u32::MAX` for no other limit); `None` if even its narrowest
-    /// single line is wider (see `min_flat_width`), so it is not built only to be ruled out
+    /// Single-line layout at most `max_width` wide, without a line break even inside a token;
+    /// `None` if its narrowest single line is wider, so it is not built only to be ruled out
     pub fn flat_within(&self, frag: Frag, max_width: u32) -> Option<Frag> {
         let fits = |arena: &mut DocArena, doc_id| {
             arena.min_flat_width(doc_id).is_some_and(|w| w <= max_width)
@@ -608,7 +536,6 @@ impl<'a> Formatter<'a> {
             .then(|| self.flat(self.first_line_within(frag, max_width)))
     }
 
-    /// The alternative of two docs
     fn alt_doc(&self, doc1: DocId, doc2: DocId) -> DocId {
         if doc1 == doc2 {
             return doc1;
@@ -623,7 +550,6 @@ impl<'a> Formatter<'a> {
         }
     }
 
-    /// The alternative of the fragments that are present
     pub fn alt_some(&self, frag1: Option<Frag>, frag2: Option<Frag>) -> Option<Frag> {
         match (frag1, frag2) {
             (Some(frag1), frag2) => Some(self.alt_opt(frag1, frag2)),
@@ -632,8 +558,8 @@ impl<'a> Formatter<'a> {
     }
 
     pub fn alt_frag(&self, frag1: Frag, frag2: Frag) -> Frag {
-        // The alternatives cover the same source, so they end at the same cursor; the trivia after it
-        // (comments, empty lines) cannot depend on the chosen branch
+        // The alternatives cover the same source, so the trivia after their cursor cannot depend on
+        // them
         debug_assert_eq!(frag1.cursor, frag2.cursor);
         let mut branches = frag1.branches;
         branches.extend(frag2.branches);
@@ -649,7 +575,6 @@ impl<'a> Formatter<'a> {
         frag
     }
 
-    /// Merges branches with the same edges into a single branch
     fn group_branches(&self, branches: Branches) -> Branches {
         if branches.len() <= 1 {
             return branches;
@@ -668,7 +593,7 @@ impl<'a> Formatter<'a> {
         out
     }
 
-    /// Doc of the whole fragment; the edges are dropped
+    /// The edges are dropped
     fn frag_to_doc(&self, frag: &Frag) -> DocId {
         frag.branches
             .iter()
@@ -682,14 +607,13 @@ impl<'a> Formatter<'a> {
         self.doc_arena.borrow().dump(root);
     }
 
-    /// The doc graph of the fragment in the Graphviz DOT format
     pub fn doc_graph_to_dot(&self, frag: &Frag) -> String {
         let root = self.frag_to_doc(frag);
         self.doc_arena.borrow().to_dot(root)
     }
 
-    /// Appends the best layout of the fragment, which ends at the start of a line, to `out`, then
-    /// clears the arena: every fragment built before is invalid after it
+    /// Appends the best layout to `out`, then clears the arena: every fragment built before is
+    /// invalid
     pub fn render_into(&self, frag: Frag, out: &mut String) {
         let root = self.frag_to_doc(&frag);
         Resolver::new(&self.doc_arena.borrow(), self.config, root).render_into(out);
@@ -703,12 +627,10 @@ impl<'a> Formatter<'a> {
     fn comment_doc(&self, token: &SyntaxToken) -> DocId {
         let doc = is_doc_comment(token.text());
         if let Some(lines) = multiline_comment_lines(token) {
-            // The lines are aligned to the column of the comment start
             let lines = lines.into_iter().map(|line| trim_comment_line(line, doc));
             return self.make_node(DocNode::Align(self.lines_doc(lines)));
         }
         let source = token.text();
-        // Allocated only when the text changes
         let trimmed: Cow<str> = if source.contains('\n') {
             let lines: Vec<_> = source
                 .split('\n')

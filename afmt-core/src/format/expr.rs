@@ -38,10 +38,8 @@ fn format_path_expr(fmt: &Formatter, path_expr: PathExpr) -> Frag {
     format_path(fmt, path_expr.path().unwrap())
 }
 
-/// `callee(args)`. "Prefer not to break a line in the callee expression" (Style Guide): a broken
-/// callee costs a split, so the arguments break first (`Some((self.filler)(` / `...` / `))`, not
-/// `Some((self` / `.filler)(...))`); a callee that cannot be on one line keeps the arguments on its
-/// last line (`})(input)`), as rustfmt does
+/// `callee(args)`: a broken callee costs a split, so the arguments break first (Style Guide:
+/// "Prefer not to break a line in the callee expression")
 fn format_call_expr(fmt: &Formatter, call: CallExpr) -> Frag {
     let mut builder = Builder::new(fmt);
     builder.push(fmt.keep_together(format_expr(fmt, call.expr().unwrap())));
@@ -53,8 +51,7 @@ fn format_literal(fmt: &Formatter, literal: Literal) -> Frag {
     fmt.token(literal.token(), Word)
 }
 
-/// Splits a chain of the same binary operator, e.g. `a && b && c`, into the first operand
-/// (the return value) and the (operator, operand) pairs that follow it
+/// Splits `a && b && c` into the first operand (returned) and the (operator, operand) pairs
 fn collect_bin_chain(expr: BinExpr, rest: &mut Vec<(SyntaxToken, Expr)>) -> Expr {
     let lhs = expr.lhs().unwrap();
     let first = match &lhs {
@@ -75,7 +72,6 @@ fn format_bin_expr(fmt: &Formatter, expr: BinExpr) -> Frag {
     infix_chain(fmt, first, &rest)
 }
 
-/// The operands of a chain of binary operators formatted, for `infix_chain`
 fn bin_chain_operands(fmt: &Formatter, expr: BinExpr) -> (Frag, Vec<(Frag, Frag)>) {
     let mut rest = Vec::new();
     let first = format_expr(fmt, collect_bin_chain(expr, &mut rest));
@@ -86,9 +82,8 @@ fn bin_chain_operands(fmt: &Formatter, expr: BinExpr) -> (Frag, Vec<(Frag, Frag)
     (first, rest)
 }
 
-/// `lhs = rhs`, `lhs += rhs`, ...: broken after the operator, like `let`, and the left side,
-/// a place or a destructuring target, broken only when nothing else helps, like the pattern of
-/// `let`
+/// `lhs = rhs`, `lhs += rhs`, ...: broken after the operator, the left side only when nothing else
+/// helps, like `let`
 fn format_assignment(fmt: &Formatter, expr: BinExpr) -> Frag {
     let mut builder = Builder::new(fmt);
     builder.push(fmt.keep_together(format_expr(fmt, expr.lhs().unwrap())));
@@ -97,12 +92,8 @@ fn format_assignment(fmt: &Formatter, expr: BinExpr) -> Frag {
     builder.into_frag()
 }
 
-/// The right side of `let` or of an assignment, after `=`: on the line of `=`, or on the next line
-/// when that saves at least two lines (see `Formatter::same_or_indented_line_saving_lines`). A chain
-/// on a single line except the arguments of its last element moves there already when it saves one
-/// line against the chain broken before its elements, as in rustfmt (`x =` / `a.b().c(|y| {`
-/// against `x = a` / `.b()` / `.c(|y| {`). Not a chain behind operators (`a.b() as T`), whose
-/// layouts are more than those of the chain.
+/// The right side of `let` or an assignment: on the next line when that saves at least two lines;
+/// a chain broken only in its last arguments already when it saves one, as in rustfmt
 pub(super) fn format_rhs(fmt: &Formatter, expr: Expr) -> Frag {
     if !has_attrs(&expr) && is_postfix_expr(&expr) {
         return match postfix_chain_parts(fmt, expr).layouts {
@@ -116,8 +107,7 @@ pub(super) fn format_rhs(fmt: &Formatter, expr: Expr) -> Frag {
     fmt.same_or_indented_line_saving_lines(format_expr(fmt, expr))
 }
 
-/// The operator of a prefix expression, its first token child; not `PrefixExpr::op_token`, its
-/// first child, which is an attribute in `#[cfg(x)] -1`
+/// Its first token child; not `PrefixExpr::op_token`, which is an attribute in `#[cfg(x)] -1`
 pub(super) fn prefix_op_token(expr: &PrefixExpr) -> SyntaxToken {
     expr.syntax()
         .children_with_tokens()
@@ -143,7 +133,6 @@ pub(super) fn push_ref_operator(builder: &mut Builder, expr: &RefExpr) {
     }
 }
 
-/// The `as` and the type of `expr as Type`
 pub(super) fn cast_type_parts(fmt: &Formatter, expr: &CastExpr) -> (Frag, Frag) {
     let as_token = fmt.token(expr.as_token().unwrap(), Operator);
     (as_token, format_type(fmt, expr.ty().unwrap()))
@@ -162,18 +151,14 @@ fn format_ref_expr(fmt: &Formatter, expr: RefExpr) -> Frag {
     builder.into_frag()
 }
 
-/// `expr as A as B` (Style Guide "Casts"): like a binary operator, on one line or broken before every
-/// `as` with block-indented continuation lines (see `infix_chain`); a series of casts may instead
-/// break only before the first `as`, with all the types on the next line (`very_long_expression()`
-/// / `    as *const str as *const [u8]`). The types may also follow a broken operand on its last
-/// line, as in rustfmt (`(a` / `    + b) as u64`): `as` binds tighter than any binary operator.
+/// `expr as A as B`: like a binary operator, or broken only before the first `as`; the types may
+/// also follow a broken operand on its last line (`(a` / `    + b) as u64`), as in rustfmt
 fn format_cast_expr(fmt: &Formatter, expr: CastExpr) -> Frag {
     let mut casts = vec![expr];
     while let Some(Expr::CastExpr(inner)) = casts.last().unwrap().expr() {
         casts.push(inner);
     }
     let first = format_expr(fmt, casts.last().unwrap().expr().unwrap());
-    // The innermost cast first
     let rest = casts
         .iter()
         .rev()
@@ -256,29 +241,19 @@ fn format_continue_expr(fmt: &Formatter, expr: ContinueExpr) -> Frag {
     format_jump(fmt, expr.continue_token().unwrap(), label, None)
 }
 
-/// `let pat = expr` in a condition, a clause of a let chain (`a` / `&& let pat =` / `    expr`), with
-/// the layouts of the head of `if let` (see `let_head_layouts`)
+/// `let pat = expr` in a condition, with the layouts of the head of `if let`
 fn format_let_expr(fmt: &Formatter, expr: LetExpr) -> Frag {
     let_head_layouts(fmt, &expr).all(fmt)
 }
 
-/// Whether a multi-line layout of the expression ends with an indented continuation line, a broken
-/// `a && b`; in the head of a control-flow expression, `{` then has to go on its own line (see
-/// `format_head_followed_by`; a chain, `a.b()` / `    .c()`, also behind operators, has its own
-/// layouts, see `operator_chain_parts`)
+/// A broken `a && b`, ending with an indented continuation line: `{` then goes on its own line
+/// (chains have their own layouts)
 fn is_hanging_expr(expr: &Expr) -> bool {
     matches!(expr, Expr::BinExpr(_))
 }
 
-/// `keyword head {`: the head of a control-flow expression (`if cond`, `while cond`, `match expr`,
-/// `for pat in expr`) followed by its block, see `format_head_followed_by`. A head broken over more
-/// lines costs a split, as `{` on its own line does: the Style Guide breaks a control line only when
-/// it does not fit, so `let x =` / `    if a.b() {` is preferred to `let x = if a` / `    .b()` /
-/// `{`, and `if f(a, b)` / `{` to `if f(` / `    a,` / `    b,` / `) {` (as rustfmt). After comments
-/// that end the line of the keyword (see `comments_break_line_after`), the head is block indented on
-/// the next line and, the control line being broken, `{` is on its own line (Style Guide): `if` /
-/// `    // c` / `    cond` / `{`; rustfmt keeps the head at the indentation of the keyword (`if` /
-/// `// c` / `cond {`).
+/// `keyword head {` of a control-flow expression. A broken head costs a split, as `{` on its own
+/// line does (Style Guide: break a control line only when it does not fit).
 pub(super) fn format_head_with_block(
     fmt: &Formatter,
     keyword: SyntaxToken,
@@ -297,10 +272,8 @@ pub(super) fn format_head_with_block(
     builder.into_frag()
 }
 
-/// `head` after comments that end the line of the builder's cursor (see
-/// `comments_break_line_after`), then `block` (`{ ... }`, `else { ... }`) on its own line: a
-/// continuation after such comments goes on an indented line (see `Builder::push`), so the head
-/// hangs and the control line is broken (Style Guide): `if` / `    // c` / `    cond` / `{`
+/// `head` after comments ending the line of the cursor, then `block` on its own line: the head
+/// hangs (Style Guide): `if` / `    // c` / `    cond` / `{`
 pub(super) fn push_head_after_comments(
     fmt: &Formatter,
     builder: &mut Builder,
@@ -311,13 +284,8 @@ pub(super) fn push_head_after_comments(
     builder.push(fmt.on_next_line(block));
 }
 
-/// `head` followed by `block` (`{ ... }`, `else { ... }`). The block follows a head without a hanging indent on its
-/// last line if it fits; otherwise the control line is broken and `{` goes on its own line (Style
-/// Guide). Below a head broken with a hanging indent, it is on its own line, so `{` is not mistaken
-/// for a part of the head, except after a last line of only closing delimiters at the indentation of
-/// the head's first line (`if e == Err(Store(` / `    a,` / `)) {`, `match f(` / `...` / `).g(` /
-/// `...` / `) {`), as the Style Guide puts it for control-flow expressions and `let`-`else` (for
-/// `match`, it does not say; as rustfmt).
+/// `head` followed by `block`; after a broken head with a hanging indent, `{` goes on its own line,
+/// except after a last line of only closing delimiters (`if f(` / `    a,` / `) {`)
 pub(super) fn format_head_followed_by(fmt: &Formatter, head: &HeadLayouts, block: Frag) -> Frag {
     let next_line = |head: Frag| {
         let mut builder = Builder::new(fmt);
@@ -328,9 +296,8 @@ pub(super) fn format_head_followed_by(fmt: &Formatter, head: &HeadLayouts, block
     let closing = (head.hanging.clone()).and_then(|hanging| fmt.closing_last_line(hanging));
     let same_line = (fmt.alt_some(head.other.clone(), closing))
         .map(|head| Builder::concat(fmt, [head, block.clone()]));
-    // `{` on its own line breaks the control line, so only when it does not fit otherwise: it costs
-    // a split, which outweighs any number of lines (e.g. moving a comment from `{`'s line into the
-    // block). Not after `closing`: those layouts are among `next_line(hanging)` below, preferred.
+    // `{` on its own line costs a split. Not after `closing`: those layouts are in
+    // `next_line(hanging)`.
     let broken = (head.other.clone()).map(|other| fmt.dispreferred(next_line(other)));
     let mut layouts = fmt.alt_some(same_line, broken);
     if let Some(hanging) = &head.hanging {
@@ -339,18 +306,15 @@ pub(super) fn format_head_followed_by(fmt: &Formatter, head: &HeadLayouts, block
     layouts.unwrap()
 }
 
-/// The statement list of a plain block: no label or modifier in front of `{` (`unsafe {` is an
-/// expression)
+/// No label or modifier in front of `{` (`unsafe {` is an expression)
 pub(super) fn plain_stmt_list(block: &BlockExpr) -> Option<StmtList> {
     let stmt_list = block.stmt_list()?;
     (block.syntax().first_token() == stmt_list.l_curly_token()).then_some(stmt_list)
 }
 
-/// A plain block, or the innermost of nested plain blocks each holding just the next one,
-/// `{ { expr } }`: the outer braces are removed (as in rustfmt), the innermost ones are kept or
-/// removed as those of a single block
+/// Nested plain blocks each holding just the next one, `{ { expr } }`: the outer braces are removed
+/// (as in rustfmt)
 pub(super) struct NestedPlainBlocks {
-    /// The innermost block
     pub inner: BlockExpr,
     /// The `}` of the outermost block
     close: SyntaxToken,
@@ -358,7 +322,7 @@ pub(super) struct NestedPlainBlocks {
 }
 
 impl NestedPlainBlocks {
-    /// `block` and the plain blocks nested in it (`block` must be a plain one, see `plain_stmt_list`)
+    /// `block` must be a plain one
     pub fn of(block: BlockExpr) -> Self {
         let close = block.stmt_list().unwrap().r_curly_token().unwrap();
         let mut inner = block;
@@ -376,7 +340,6 @@ impl NestedPlainBlocks {
         }
     }
 
-    /// A layout of the innermost block (or of its expression in braces), the braces around it skipped
     pub fn skip_outer_braces(&self, fmt: &Formatter, frag: Frag) -> Frag {
         if self.nested {
             Builder::skip_to_token_after(fmt, frag, self.close.clone())
@@ -385,16 +348,13 @@ impl NestedPlainBlocks {
         }
     }
 
-    /// The expression of the innermost block without braces, all the braces skipped
     pub fn skip_braces(&self, fmt: &Formatter, frag: Frag) -> Frag {
         Builder::skip_to_token_after(fmt, frag, self.close.clone())
     }
 }
 
-/// The expression of a block that can be written as `{ expr }`: no statements, no comments and no
-/// attributes (`{` / `    #[cfg(x)]` / `    expr` / `}`); not a `try` block, which is copied (see `format_block_expr_with_tail`).
-/// Not a macro call with braces, which is a statement there (`is_brace_macro_expr`): its block is
-/// broken (as in rustfmt) and keeps its braces as a closure or match arm body.
+/// The expression of a block that can be `{ expr }`: no statements, comments or attributes; not a
+/// `try` block, nor a macro call with braces, which is a statement there
 pub(super) fn single_line_block_expr(block: &BlockExpr) -> Option<Expr> {
     let stmt_list = block.stmt_list()?;
     let has_comment = stmt_list
@@ -413,14 +373,12 @@ pub(super) fn single_line_block_expr(block: &BlockExpr) -> Option<Expr> {
     tail.filter(|expr| !is_brace_macro_expr(expr.syntax()))
 }
 
-/// `{ inner }`, where `inner` is the expression from `single_line_block_expr`; the caller restricts it
-/// to a single line
+/// The caller restricts it to a single line
 pub(super) fn format_braced_block(fmt: &Formatter, block: &BlockExpr, inner: Frag) -> Frag {
     Delimiters::braces_of(block.stmt_list().unwrap().syntax()).enclose(fmt, inner)
 }
 
-/// The expressions of the blocks of `if a { b } else { c }` that can be put on a single line:
-/// a single `else` and blocks containing just an expression. Only a syntactic check, nothing is formatted.
+/// A single `else` and blocks containing just an expression; a syntactic check only
 fn single_line_if_exprs(expr: &IfExpr) -> Option<(Expr, Expr)> {
     let Some(ElseBranch::Block(else_block)) = expr.else_branch() else {
         return None;
@@ -431,9 +389,7 @@ fn single_line_if_exprs(expr: &IfExpr) -> Option<(Expr, Expr)> {
     ))
 }
 
-/// `if a { b } else { c }` on a single line; `then_expr` and `else_expr` are the formatted
-/// expressions from `single_line_if_exprs`. It is allowed only in an expression context
-/// (not for a standalone statement).
+/// `if a { b } else { c }` on a single line; only in an expression context
 fn format_if_single_line(
     fmt: &Formatter,
     expr: &IfExpr,
@@ -473,7 +429,7 @@ pub(super) fn format_if_expr(fmt: &Formatter, expr: IfExpr, allow_single_line: b
         format_block_expr_with_tail(fmt, expr.then_branch().unwrap(), then_tail),
     ));
     if let Some(else_branch) = expr.else_branch() {
-        // `else` is not a continuation of the block: own-line comments in front of it keep the indentation of `}`
+        // Own-line comments in front of `else` keep the indentation of `}`
         builder.flush_trivia();
         builder.push_keyword(expr.else_token().unwrap());
         builder.push(match else_branch {
@@ -484,7 +440,6 @@ pub(super) fn format_if_expr(fmt: &Formatter, expr: IfExpr, allow_single_line: b
     let frag = builder.into_frag();
     fmt.alt_opt(
         frag,
-        // A single line excludes the layouts of the condition with a hanging indent
         block_exprs.and_then(|(then_expr, else_expr)| {
             let condition = head.other.clone()?;
             format_if_single_line(fmt, &expr, condition, then_expr, else_expr)
@@ -492,9 +447,8 @@ pub(super) fn format_if_expr(fmt: &Formatter, expr: IfExpr, allow_single_line: b
     )
 }
 
-/// `block` broken, or on a single line if it holds just an expression (see `single_line_block_expr`):
-/// `unsafe { x }`; a block in expression position (Style Guide "Blocks", see `format_expr_at` for
-/// statement position)
+/// Broken, or `unsafe { x }` on a single line; a block in expression position (Style Guide
+/// "Blocks")
 pub(super) fn format_block_or_inline(fmt: &Formatter, block: BlockExpr) -> Frag {
     debug_assert_attrs_placed(fmt, &block);
     let Some(tail) = single_line_block_expr(&block) else {
@@ -505,8 +459,7 @@ pub(super) fn format_block_or_inline(fmt: &Formatter, block: BlockExpr) -> Frag 
     fmt.alt_frag(inline, broken)
 }
 
-/// `block` on a single line and broken, `tail` being its formatted expression (see
-/// `single_line_block_expr`)
+/// `tail` is its formatted expression (see `single_line_block_expr`)
 pub(super) fn inline_and_broken_block(
     fmt: &Formatter,
     block: BlockExpr,
@@ -519,9 +472,7 @@ pub(super) fn inline_and_broken_block(
     (fmt.flat(inline.into_frag()), broken)
 }
 
-/// `{` / `    inner` / `}` with braces that are not in the source, e.g. around a closure body or a match
-/// arm body that does not fit on the line; `inner` is the formatted expression `node`, the tail of the
-/// block (`return x;`, see `format_block_tail`)
+/// `{` / `    inner` / `}` with braces that are not in the source, e.g. around a closure body
 pub(super) fn format_added_braces(fmt: &Formatter, node: &SyntaxNode, inner: Frag) -> Frag {
     let mut braced = Builder::new(fmt);
     braced.push_generated(OPEN_BRACE_DOC, BraceOpen);
@@ -533,9 +484,8 @@ pub(super) fn format_added_braces(fmt: &Formatter, node: &SyntaxNode, inner: Fra
     braced.into_frag()
 }
 
-/// `Path { a, b: c, ..base }` (Style Guide "Struct literals"): on a single line if the fields fit
-/// within `struct_lit_width`, otherwise one field per line with a trailing comma; `..base` is last and
-/// has no comma
+/// `Path { a, b: c, ..base }`: on a single line within `struct_lit_width`, otherwise one field per
+/// line; `..base` has no comma
 fn format_record_expr(fmt: &Formatter, expr: RecordExpr) -> Frag {
     let mut builder = Builder::new(fmt);
     builder.push(format_path(fmt, expr.path().unwrap()));
@@ -555,7 +505,7 @@ fn format_record_expr(fmt: &Formatter, expr: RecordExpr) -> Frag {
         }
         None => TrailingSeparator::IfVertical,
     };
-    // Blank lines between the fields are kept, as in a struct declaration (rustfmt too)
+    // Blank lines between the fields are kept, as in a struct declaration (as rustfmt)
     let layout = ListLayout::tall(FlatLimit::Within(fmt.config().struct_lit_width))
         .trailing_separator(trailing)
         .keep_blank_lines();
@@ -564,8 +514,7 @@ fn format_record_expr(fmt: &Formatter, expr: RecordExpr) -> Frag {
     builder.into_frag()
 }
 
-/// `name: value`, the value on the next line only if it overflows on the line of the name (RhsBreak, as
-/// rustfmt), or `name` (the shorthand)
+/// `name: value`, the value on the next line only if it overflows (RhsBreak, as rustfmt), or `name`
 fn format_record_expr_field(fmt: &Formatter, field: &RecordExprField) -> Frag {
     let value = format_expr(fmt, field.expr().unwrap());
     let Some(colon) = field.colon_token() else {
@@ -578,14 +527,8 @@ fn format_record_expr_field(fmt: &Formatter, field: &RecordExprField) -> Frag {
     builder.into_frag()
 }
 
-/// `let pat = expr` of `if let`, `while let` or a let chain clause: with the expression on the line
-/// of `=`, or broken after `=` with the expression on an indented line, which hangs. The expression
-/// broken over more lines costs a split in both, so it moves to the next line when it fits on one
-/// line there or saves a line: the Style Guide prefers breaking a control line after the `=` of a
-/// `let` that does not fit, unlike a `let` statement, whose multi-line expression stays on the line
-/// of `=` (see `Formatter::same_or_indented_line_saving_lines`). A broken pattern costs a split (see
-/// `pat_layouts`); after it, `{` follows only an expression spanning more lines (see
-/// `pattern_head`), as `else {` of a `let`-`else` (see `format_let_else`).
+/// `let pat = expr` of `if let`, `while let` or a let chain; the expression moves after `=` when it
+/// fits there or saves a line (Style Guide), unlike a `let` statement.
 fn let_head_layouts(fmt: &Formatter, expr: &LetExpr) -> HeadLayouts {
     let pat = pat_layouts(fmt, expr.pat().unwrap());
     let all_pat = pat.clone().all(fmt);
@@ -608,9 +551,7 @@ fn let_head_layouts(fmt: &Formatter, expr: &LetExpr) -> HeadLayouts {
     HeadLayouts { hanging, other }
 }
 
-/// Whether the expression is a let chain (`a && let Some(b) = c`) that the Style Guide breaks before
-/// every `&&`: all except two clauses, a literal or a name (optionally after unary operators) and a
-/// `let` clause, which may stay on one line
+/// A let chain that the Style Guide breaks before every `&&`: not just a simple operand and a `let`
 fn is_broken_let_chain(expr: &Expr) -> bool {
     let Expr::BinExpr(expr) = expr else {
         return false;
@@ -628,7 +569,6 @@ fn is_broken_let_chain(expr: &Expr) -> bool {
 }
 
 pub(super) fn format_head_expr(fmt: &Formatter, expr: Expr) -> HeadLayouts {
-    // With attributes: copied unchanged with them, see `format_expr`
     if has_attrs(&expr) {
         return HeadLayouts::other(format_expr(fmt, expr));
     }
@@ -656,8 +596,7 @@ pub(super) fn format_head_expr(fmt: &Formatter, expr: Expr) -> HeadLayouts {
     let frag = format_expr(fmt, expr);
     if hanging {
         HeadLayouts {
-            // Broken only when the head does not fit on its line (a broken head costs a split, see
-            // `format_head_with_block`): `if a && b` / `{` comes first
+            // Broken only when the head does not fit: `if a && b` / `{` comes first
             hanging: Some(fmt.multi_line(frag.clone())),
             other: Some(fmt.flat(frag)),
         }
@@ -666,8 +605,7 @@ pub(super) fn format_head_expr(fmt: &Formatter, expr: Expr) -> HeadLayouts {
     }
 }
 
-/// An expression; with outer attributes, it is copied unchanged (attributes are formatted only in
-/// front of a statement or the tail expression of a block, see `format_expr_at`)
+/// With outer attributes, it is copied unchanged (see `format_expr_at`)
 pub(super) fn format_expr(fmt: &Formatter, expr: Expr) -> Frag {
     if has_attrs(&expr) {
         return format_unsupported_with_attrs(fmt, expr.syntax(), "an attribute on an expression");
@@ -675,26 +613,15 @@ pub(super) fn format_expr(fmt: &Formatter, expr: Expr) -> Frag {
     format_expr_without_attrs(fmt, expr)
 }
 
-/// Where an expression stands, which decides how its attributes and a block or an `if` are
-/// formatted, see `format_expr_at`
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum ExprPosition {
-    /// An expression statement
     Statement,
-    /// The tail expression of a block
     Tail,
-    /// The body of a match arm
     ArmBody,
 }
 
-/// An expression at `position`. The attributes of a statement or a tail are on their own lines as
-/// on a `let` statement (`#[cfg(x)]` / `if a {`, see `format_skippable_with_attrs`) and a block
-/// after them is broken (as rustfmt does); elsewhere they are copied unchanged with the expression
-/// (see `format_expr`). A standalone `if` (a statement, an arm body) is never on a single line, nor
-/// is a statement block other than `unsafe { ... }` (Style Guide "Blocks": a single-line block is
-/// "either used in expression position (not statement position) or is an unsafe block in statement
-/// position"). The tail expression of a block is its value, so it is in expression position, as in
-/// rustfmt.
+/// The attributes of a statement or a tail are on their own lines; elsewhere copied unchanged. A
+/// standalone `if` or a statement block (but `unsafe`) is never on a single line (Style Guide).
 pub(super) fn format_expr_at(fmt: &Formatter, expr: Expr, position: ExprPosition) -> Frag {
     use ExprPosition::{ArmBody, Statement, Tail};
     let has_attrs = has_attrs(&expr);
@@ -718,8 +645,7 @@ pub(super) fn format_expr_at(fmt: &Formatter, expr: Expr, position: ExprPosition
     }
 }
 
-/// An expression without its outer attributes, which the caller places (see
-/// `debug_assert_attrs_placed`)
+/// The caller places the outer attributes
 pub(super) fn format_expr_without_attrs(fmt: &Formatter, expr: Expr) -> Frag {
     debug_assert_attrs_placed(fmt, &expr);
     match expr {

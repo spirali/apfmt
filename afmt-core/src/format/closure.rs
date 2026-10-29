@@ -15,10 +15,8 @@ use crate::syntax_utils::has_attrs;
 use ra_ap_syntax::AstNode;
 use ra_ap_syntax::ast::{ClosureExpr, Expr};
 
-/// The body of a closure that may be written without braces: the only expression of a plain block
-/// `{ expr }` (no statements, comments, label or modifiers) of a closure without a return type, or a
-/// body that is not a plain block. Of nested plain blocks, `{ { g(); x } }`, the innermost one is the
-/// body when it is not `{ expr }`.
+/// The body without braces: the expression of `{ expr }` (no statements, comments, label or return
+/// type), or a body that is not a plain block; of nested blocks, the innermost
 fn unbraced_closure_body(expr: &ClosureExpr) -> Option<Expr> {
     let body = expr.body()?;
     let Expr::BlockExpr(block) = &body else {
@@ -34,10 +32,8 @@ fn unbraced_closure_body(expr: &ClosureExpr) -> Option<Expr> {
     single_line_block_expr(&inner).or_else(|| (inner != *block).then_some(Expr::BlockExpr(inner)))
 }
 
-/// Whether a closure body without braces may span more lines: a block-like expression (`|x| unsafe {`
-/// / `...` / `}`, `|x| match x {`, `|| Foo {`); other expressions get braces then (Style Guide: "Add
-/// the `{}` when ... the body expression is a control-flow expression that spans multiple lines";
-/// `match` is not one of the Style Guide's control-flow expressions, loops are)
+/// A body without braces that may span more lines: `|x| unsafe {`, `|x| match x {`, `|| Foo {`;
+/// others get braces (Style Guide)
 fn is_block_like_expr(expr: &Expr) -> bool {
     matches!(
         expr,
@@ -49,17 +45,15 @@ pub(super) fn format_closure_expr(fmt: &Formatter, expr: ClosureExpr) -> Frag {
     closure_layouts(fmt, expr).all
 }
 
-/// The layouts of a closure: all of them, and those that may overflow as the last argument of a call,
-/// with the parameters on one line (the Style Guide combines "a multi-line closure with an explicit
-/// block"; rustfmt does not combine a closure with broken parameters either)
+/// All layouts, and those that may overflow as the last call argument, with flat parameters (as
+/// the Style Guide and rustfmt)
 pub(super) struct ClosureLayouts {
     pub all: Frag,
     pub overflow: Option<Frag>,
 }
 
-/// `move |a, b| body` or `for<'a> |a: &'a T| body` (Style Guide "Closures"), see `closure_body_layouts`. Parameters that do not fit
-/// on one line are aligned after `|` (see `closure_header_layouts`); a body in braces then keeps them,
-/// as in rustfmt.
+/// `move |a, b| body`: parameters that do not fit are aligned after `|`; a body in braces keeps
+/// them
 pub(super) fn closure_layouts(fmt: &Formatter, expr: ClosureExpr) -> ClosureLayouts {
     debug_assert_attrs_placed(fmt, &expr);
     let mut prefix = Builder::new(fmt);
@@ -67,9 +61,7 @@ pub(super) fn closure_layouts(fmt: &Formatter, expr: ClosureExpr) -> ClosureLayo
         prefix.push(format_for_binder(fmt, binder));
     }
     push_modifiers(&mut prefix, expr.syntax());
-    // The return type on a single line, its generic arguments broken only when nothing else fits:
-    // rather the closure on a line of its own, or the return type on its own line after broken
-    // parameters (as rustfmt, which never breaks it)
+    // The return type is broken only when nothing else fits (rustfmt never breaks it)
     let ret_type = expr.ret_type().map(|ret_type| {
         let ret_type = format_ret_type(fmt, ret_type);
         match fmt.flat_if_possible(ret_type.clone()) {
@@ -87,7 +79,6 @@ pub(super) fn closure_layouts(fmt: &Formatter, expr: ClosureExpr) -> ClosureLayo
         builder.into_frag()
     };
     let flat = flat_header.map(|header| closure(header, body));
-    // Broken parameters cost a split: only when they do not fit otherwise
     let broken = broken_header
         .zip(braced_body)
         .map(|(header, body)| closure(fmt.dispreferred(header), body));
@@ -98,17 +89,15 @@ pub(super) fn closure_layouts(fmt: &Formatter, expr: ClosureExpr) -> ClosureLayo
     }
 }
 
-/// The layouts of a closure body: all of them, and, with `keep_braces`, those keeping the braces of
-/// the source (after broken parameters, as in rustfmt). Without braces if possible, i.e. on one
-/// line, or block-like (see `is_block_like_expr`); otherwise in braces, which are added if the
-/// source has none: `|a| {` / `    body` / `}`.
+/// With `keep_braces`, also those keeping the source braces. Without braces if flat or block-like,
+/// otherwise in braces: `|a| {` / `    body` / `}`.
 fn closure_body_layouts(
     fmt: &Formatter,
     expr: &ClosureExpr,
     keep_braces: bool,
 ) -> (Frag, Option<Frag>) {
     let body = expr.body().unwrap();
-    // A body with attributes (`|x| #[allow(a)] {`) is copied unchanged with them, see `format_expr`
+    // Copied unchanged with its attributes, see `format_expr`
     if has_attrs(&body) {
         let body = format_expr(fmt, body);
         return (body.clone(), Some(body));
@@ -135,11 +124,9 @@ fn closure_body_layouts(
         fmt.flat(inner_frag.clone())
     };
     match body {
-        // The braces of the source are removed, or only the outer ones of nested blocks
         Expr::BlockExpr(block) => {
             let blocks = NestedPlainBlocks::of(block);
             let unbraced = blocks.skip_braces(fmt, unbraced);
-            // The innermost block is the body, `{ { g(); x } }`: its braces are kept
             if blocks.inner.syntax() == &inner_node {
                 return (unbraced.clone(), Some(unbraced));
             }
@@ -156,8 +143,8 @@ fn closure_body_layouts(
             (all, Some(fmt.alt_frag(inline, braced)))
         }
         _ => {
-            // Braces added around a block-like body, which needs none, cost a split, as in a match
-            // arm (see `arm_body_layouts`): `|x| Foo {` / `...` / `}` rather than `|x| {` / `Foo {`
+            // Braces around a block-like body cost a split, as in a match arm: `|x| Foo {` rather
+            // than `|x| {` / `Foo {`
             let braced = format_added_braces(fmt, &inner_node, inner_frag);
             let braced = if block_like {
                 fmt.dispreferred(braced)

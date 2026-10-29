@@ -45,16 +45,14 @@ struct WorkspacePackage {
     edition: Option<String>,
 }
 
-/// The nearest `Cargo.toml` in `dir` or its ancestors: the manifest of the package of the sources in
-/// `dir`, as cargo finds it
+/// The nearest `Cargo.toml` in `dir` or its ancestors, as cargo finds it
 pub fn find_cargo_manifest(dir: &Path) -> Option<PathBuf> {
     canonical_path(dir)
         .ancestors()
         .find_map(|dir| file_in_dir(dir, &[CARGO_MANIFEST_NAME]))
 }
 
-/// The edition of the package of the manifest at `path`; `None` for a virtual workspace (a manifest
-/// without `[package]`)
+/// `None` for a virtual workspace (a manifest without `[package]`)
 pub(crate) fn cargo_edition(path: &Path) -> crate::Result<Option<Edition>> {
     let manifest = read_manifest(path)?;
     let Some(package) = &manifest.package else {

@@ -68,11 +68,10 @@ pub enum Selection<'a> {
     /// The packages with these names (`-p`)
     Named(&'a [String]),
     /// As `cargo fmt` without options: all packages in the workspace root, otherwise the package of
-    /// `manifest` (`--manifest-path`, or the nearest `Cargo.toml` of the current directory)
+    /// `manifest`
     Current { manifest: Option<PathBuf> },
 }
 
-/// The packages of `metadata` selected by `selection`
 pub fn select_packages<'a>(
     metadata: &'a Metadata,
     selection: &Selection,

@@ -28,10 +28,8 @@ pub(super) fn format_attr(fmt: &Formatter, attr: Attr) -> Frag {
     builder.into_frag()
 }
 
-/// `node` preceded by its outer attributes; `format` formats the rest of
-/// it. Each attribute is on its own line (`#[derive(Debug)]` / `struct S;`); with `inline`, a single
-/// attribute may stay on the line of the node, on a single line (`#[cfg(x)] a: u32`), as rustfmt
-/// does for tuple fields and parameters.
+/// `node` preceded by its outer attributes, each on its own line; with `inline`, a single one may
+/// stay on the line of the node (`#[cfg(x)] a: u32`), as rustfmt does for fields and parameters
 pub(super) fn format_with_attrs(
     fmt: &Formatter,
     node: &impl HasAttrs,
@@ -45,9 +43,8 @@ pub(super) fn format_with_attrs(
     attach_attrs(fmt, attrs, inline, format())
 }
 
-/// Checks in debug builds that the attributes of `node` are placed (by `format_attr`) before the
-/// rest of it is formatted: code formatting an expression that may have attributes goes through
-/// `format_expr` or `format_expr_at`, which place them or copy them with the expression
+/// Debug check that the attributes are placed before the rest is formatted (an expression goes
+/// through `format_expr` or `format_expr_at`)
 pub(super) fn debug_assert_attrs_placed(fmt: &Formatter, node: &impl HasAttrs) {
     debug_assert!(
         node.attrs().all(|attr| fmt.was_placed(attr.syntax())),
@@ -56,13 +53,11 @@ pub(super) fn debug_assert_attrs_placed(fmt: &Formatter, node: &impl HasAttrs) {
     );
 }
 
-/// Whether the attribute is `#[rustfmt::skip]`
 fn is_rustfmt_skip(attr: &Attr) -> bool {
     matches!(attr.meta(), Some(Meta::PathMeta(meta)) if meta.path().is_some_and(|p| p.syntax().text() == "rustfmt::skip"))
 }
 
-/// `format_with_attrs` with each attribute on its own line, for a node that `#[rustfmt::skip]`
-/// keeps as it is in the source, from its first attribute on (an item, a statement)
+/// For a node that `#[rustfmt::skip]` keeps as in the source (an item, a statement)
 pub(super) fn format_skippable_with_attrs(
     fmt: &Formatter,
     node: &impl HasAttrs,
@@ -79,7 +74,6 @@ pub(super) fn format_skippable_with_attrs(
     format_with_attrs(fmt, node, false, format)
 }
 
-/// `rest` preceded by the formatted attributes `attrs`, see `format_with_attrs`
 pub(super) fn attach_attrs(
     fmt: &Formatter,
     attrs: impl IntoIterator<Item = Frag>,
@@ -92,7 +86,7 @@ pub(super) fn attach_attrs(
         own_lines.push_on_new_line(frag);
     }
     let own_lines = own_lines.into_frag();
-    // a single attribute on one line in front of the node, unless a comment follows it
+    // A single attribute on one line in front of the node, unless a comment follows it
     let inline_attr = match attrs.as_slice() {
         [attr] if inline && !attr.comment_follows() => fmt.flat_if_possible(attr.clone()),
         _ => None,
@@ -126,13 +120,8 @@ fn format_key_value_meta(fmt: &Formatter, meta: KeyValueMeta) -> Frag {
     builder.into_frag()
 }
 
-/// The comma-separated `items` of an attribute between the parentheses of `node`: on a single line
-/// if they fit within `attr_fn_like_width` (a single item that cannot break, `error("...")`, within
-/// `max_width`, see `FlatLimit::of_arguments`), otherwise one per line, laid out as call arguments, or
-/// filled on lines with `fill`. The last item may hug the list as `hug` allows (`cfg(all(` / `...` /
-/// `))`, see `cfg_list_hug` and `token_list_hug`); as in rustfmt, its own items are measured, not
-/// the item, so the outer list is on a single line whenever the inner one is. Filled derives are on
-/// a single line whenever it fits within `max_width`, as in rustfmt.
+/// The items of an attribute: on a single line within `attr_fn_like_width`, otherwise one per line
+/// or filled with `fill`; the last item may hug the list (`cfg(all(` / `...` / `))`), as in rustfmt
 fn format_meta_list(
     fmt: &Formatter,
     node: &SyntaxNode,
@@ -147,13 +136,13 @@ fn format_meta_list(
     } else {
         FlatLimit::of_arguments(fmt, &items, hug, fmt.config().attr_fn_like_width)
     };
-    // A string spanning lines is not on the line of `(`, as in a call (see `format_expr_list`)
+    // A string spanning lines is not on the line of `(`, as in a call
     let multi_line = items.iter().any(|item| fmt.has_multi_line_text(&item.frag));
     let layout = ListLayout::tall(limit).fill_if(fill).broken_if(multi_line);
     delimited_list(fmt, &delims, &items, layout)
 }
 
-/// Whether the node in a meta list is a list itself: `all(a, b)`, `derive(A)`
+/// E.g. `all(a, b)`, `derive(A)`
 fn is_nested_meta_list(node: &SyntaxNode) -> bool {
     matches!(
         node.kind(),
@@ -164,7 +153,7 @@ fn is_nested_meta_list(node: &SyntaxNode) -> bool {
     )
 }
 
-/// How the last predicate of the `cfg` list `node` may hug it: a single one that is a list itself
+/// A single predicate that is a list itself
 fn cfg_list_hug(node: &SyntaxNode) -> Hug {
     let predicates = node
         .children()
@@ -256,10 +245,8 @@ fn format_token_tree_meta(fmt: &Formatter, meta: TokenTreeMeta) -> Frag {
     builder.into_frag()
 }
 
-/// A token tree as a list of meta items, `(a, b = "x", c(d))`, as `format_meta_list` does; a token tree
-/// that is not such a list, or that contains comments, is kept as it is in the source. With
-/// `fill_paths`, a broken list of paths is filled on lines: the derives of `derive(...)`, an explicit
-/// exception to the Style Guide, as in rustfmt.
+/// A token tree as a list of meta items, `(a, b = "x", c(d))`; otherwise, or with comments, kept as
+/// in the source. With `fill_paths`, broken derives are filled (as rustfmt).
 fn format_token_list(fmt: &Formatter, tree: TokenTree, fill_paths: bool) -> Frag {
     let Some(segments) = meta_segments(&tree) else {
         return Delimiters::of_token_tree(&tree).format_reindented(fmt);
@@ -276,8 +263,7 @@ fn format_token_list(fmt: &Formatter, tree: TokenTree, fill_paths: bool) -> Frag
     format_meta_list(fmt, tree.syntax(), items, hug, fill)
 }
 
-/// How the last meta item of a token tree may hug it: a single `a(...)`, a path followed by a token
-/// tree
+/// A single `a(...)`
 fn token_list_hug(segments: &[MetaSegment]) -> Hug {
     match segments {
         [(segment, _)]
@@ -291,11 +277,10 @@ fn token_list_hug(segments: &[MetaSegment]) -> Hug {
     }
 }
 
-/// The tokens of a meta item in a token tree, without trivia, and the comma following it
+/// Without trivia, with the comma following it
 type MetaSegment = (Vec<SyntaxElement>, Option<SyntaxToken>);
 
-/// The comma-separated meta items of a parenthesized token tree, if all of them are meta items (see
-/// `is_meta_segment`) and the tree contains no comments
+/// If all of them are meta items and the tree contains no comments
 fn meta_segments(tree: &TokenTree) -> Option<Vec<MetaSegment>> {
     if tree.l_paren_token().is_none() || has_comments(tree.syntax()) {
         return None;
@@ -303,7 +288,6 @@ fn meta_segments(tree: &TokenTree) -> Option<Vec<MetaSegment>> {
     let mut segments: Vec<MetaSegment> = Vec::new();
     let mut current = Vec::new();
     let children = tree.syntax().children_with_tokens().collect::<Vec<_>>();
-    // Without the delimiters
     for element in &children[1..children.len() - 1] {
         match element.kind() {
             kind if !is_code_kind(kind) => {}
@@ -356,7 +340,6 @@ fn is_meta_segment(segment: &[SyntaxElement]) -> bool {
     }
 }
 
-/// Whether the meta item is a path: `Debug`, `serde::Serialize`
 fn is_path_segment(segment: &[SyntaxElement]) -> bool {
     segment
         .iter()
@@ -392,8 +375,6 @@ mod tests {
     use ra_ap_syntax::ast::TokenTree;
     use ra_ap_syntax::{AstNode, Edition, SourceFile, SyntaxKind};
 
-    /// The hug of the last item of the first `cfg` composite (`all(...)`, ...) or token tree list
-    /// in the attribute `attr`
     fn hug(attr: &str) -> Hug {
         let source = format!("{attr} fn f() {{}}");
         let parse = SourceFile::parse(&source, Edition::Edition2024);

@@ -8,13 +8,11 @@ pub(super) fn format_name(fmt: &Formatter, name: Name) -> Frag {
     fmt.token(name.ident_token().unwrap(), Word)
 }
 
-/// `'a`
 pub(super) fn format_lifetime(fmt: &Formatter, lifetime: Lifetime) -> Frag {
     fmt.token(lifetime.lifetime_ident_token().unwrap(), Word)
 }
 
-/// Pushes the modifier keywords among the tokens of `node` in the source order: `unsafe`, `async`,
-/// `move`, `const`, `gen` and `static` of a block (`async move {`) or a closure (`move |x|`)
+/// `unsafe`, `async`, `move`, `const`, `gen` and `static` of a block or a closure, in source order
 pub(super) fn push_modifiers(builder: &mut Builder, node: &SyntaxNode) {
     for token in node.children_with_tokens().filter_map(|c| c.into_token()) {
         match token.kind() {
@@ -44,7 +42,6 @@ pub(super) fn format_repeat(
     Delimiters::brackets_of(node).enclose(fmt, inner.into_frag())
 }
 
-/// Pushes the label of a block or a loop: `'a: `
 pub(super) fn push_label(fmt: &Formatter, builder: &mut Builder, label: Option<Label>) {
     if let Some(label) = label {
         builder.push(format_lifetime(fmt, label.lifetime().unwrap()));

@@ -68,7 +68,6 @@ enum Outcome {
     Failed,
 }
 
-/// A file of a module tree, read while following the tree
 struct SourceFile {
     path: PathBuf,
     /// The edition of its target
@@ -96,8 +95,7 @@ fn source_dir(path: &Path) -> &Path {
     path.parent().unwrap_or(Path::new("."))
 }
 
-/// The config, or the error reading it, for each directory and edition of `files`: the files of a
-/// directory share their config file, so it is looked up and read once
+/// Files of a directory share their config file, so it is read once per directory and edition
 fn configs_by_dir<'a>(
     files: &'a [SourceFile],
     options: &FormatOptions,
@@ -106,8 +104,7 @@ fn configs_by_dir<'a>(
     for file in files {
         let dir = source_dir(&file.path);
         configs.entry((dir, file.edition)).or_insert_with(|| {
-            // The edition of the target, as `cargo fmt` passes it to rustfmt; with it given,
-            // `Cargo.toml` is not read, so there are no warnings
+            // The edition of the target, as `cargo fmt` passes it; `Cargo.toml` is then not read
             options
                 .config_for_source(dir, Some(file.edition))
                 .map(|(config, _)| config)
@@ -117,7 +114,7 @@ fn configs_by_dir<'a>(
     configs
 }
 
-/// Formats `file` with `config`; with `check`, the file is not written
+/// With `check`, the file is not written
 fn format_file(
     file: &SourceFile,
     config: &Result<Config, String>,
@@ -153,8 +150,8 @@ fn format_file(
     }
 }
 
-/// `f` of each of `items` on `threads` threads, which take the items in the order of the indices
-/// `order`; the results are in the order of `items`
+/// `f` of each item on `threads` threads, taken in the order `order`; results in the order of
+/// `items`
 fn parallel_map<T: Sync, R: Send>(
     items: &[T],
     order: &[usize],
@@ -183,8 +180,7 @@ fn exit_with_error(message: &str) -> ! {
     std::process::exit(1);
 }
 
-/// The files of the selected packages, in the order of their paths; the module trees of the targets
-/// are read on `threads` threads
+/// In the order of their paths; the module trees are read on `threads` threads
 fn files_to_format(cli: &Cli, threads: usize) -> Vec<SourceFile> {
     let metadata =
         metadata(cli.manifest_path.as_deref()).unwrap_or_else(|error| exit_with_error(&error));

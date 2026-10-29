@@ -4,8 +4,7 @@ use super::line_if_alone;
 use crate::syntax_utils::is_stray_semicolon;
 use ra_ap_syntax::{AstNode, SourceFile, TextRange};
 
-/// The edits that remove the stray `;` of the blocks of the file, which are not part of a statement;
-/// a `;` alone on its line is removed with its line, which would otherwise become a blank line
+/// The edits that remove the stray `;` of blocks; a `;` alone on its line is removed with its line
 pub(super) fn empty_stmt_edits(file: &SourceFile, source: &str) -> Vec<(TextRange, String)> {
     file.syntax()
         .descendants_with_tokens()

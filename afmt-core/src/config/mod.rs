@@ -8,8 +8,8 @@ use ra_ap_syntax::Edition;
 /// The line endings of the output (rustfmt's `newline_style`)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NewlineStyle {
-    /// Those of the first line of the source (rustfmt documents it so, but compares with the source
-    /// after rustc has turned its `\r\n` into `\n`, so it always writes `\n`)
+    /// Those of the first line of the source (as rustfmt documents it; rustfmt itself always writes
+    /// `\n`)
     Auto,
     /// `\r\n` on Windows, `\n` elsewhere
     Native,
@@ -20,7 +20,6 @@ pub enum NewlineStyle {
 }
 
 impl NewlineStyle {
-    /// Whether the output of `source` ends its lines with `\r\n`
     pub fn uses_crlf(self, source: &str) -> bool {
         match self {
             NewlineStyle::Auto => source
@@ -42,8 +41,8 @@ pub struct Config {
     pub chain_width: u32,
     /// Maximal width of the elements of an array literal put on a single line
     pub array_width: u32,
-    /// Maximal width of the fields of a struct literal or a struct pattern put on a single line:
-    /// `S { a, b }`
+    /// Maximal width of the fields of a struct literal or pattern put on a single line: `S { a, b
+    /// }`
     pub struct_lit_width: u32,
     /// Maximal width of the arguments of a function-like attribute put on a single line:
     /// `#[derive(A, B)]`
@@ -54,37 +53,29 @@ pub struct Config {
     pub single_line_if_else_max_width: u32,
     /// Maximal width of `let pat = init else { expr };` put on a single line; 0 always breaks it
     pub single_line_let_else_max_width: u32,
-    /// Maximal width of an argument for which the arguments of a broken call are filled on lines
-    /// (`a, b, c,` / `d, e,`) instead of one per line; every argument has to be simple (a literal, a name).
-    /// 0 disables it.
+    /// Maximal width of a simple argument for which a broken call is filled on lines (`a, b, c,` /
+    /// `d, e,`) instead of one per line; 0 disables it
     pub short_array_element_width_threshold: u32,
     /// `;` after a `return`, `break` or `continue` ending a broken block (`break;`), or none (`break`)
     pub trailing_semicolon: bool,
     /// `,` after a match arm whose body is a block (`A => {` / `...` / `},`); the Style Guide puts none
     pub match_block_trailing_comma: bool,
-    /// Formats the transcribers of `macro_rules!` that parse as items, statements or an expression
-    /// (rustfmt's `format_macro_bodies`); otherwise they are copied
+    /// Formats the transcribers of `macro_rules!` that parse (rustfmt's `format_macro_bodies`)
     pub format_macro_bodies: bool,
     /// The gap after which the widest list items do not align their trailing comments; 0 disables it
     pub trailing_comment_align_threshold: u32,
-    /// The cost of a line that overflows `max_width`, in columns of overflow: a layout with one more
-    /// overflowing line is preferred only when it overflows this many columns less
+    /// The cost of an overflowing line, in columns of overflow
     pub overflow_line_penalty: u32,
-    /// Puts a single space after the opening sigil of a comment and before the closing one:
-    /// `//a` -> `// a`, `/*a*/` -> `/* a */` (see `normalize_comment_sigil_spacing`); off by default,
-    /// as rustfmt leaves the text of comments alone
+    /// `//a` -> `// a`, `/*a*/` -> `/* a */`; off by default, as rustfmt leaves comments alone
     pub normalize_comment_sigil_spacing: bool,
-    /// The line endings of the output
     pub newline_style: NewlineStyle,
-    /// The edition of the syntax
     pub edition: Edition,
-    /// The source is not formatted at all (rustfmt's `disable_all_formatting`); the caller outputs
-    /// it unchanged
+    /// rustfmt's `disable_all_formatting`; the caller outputs the source unchanged
     pub disable_all_formatting: bool,
     pub dump_parse_tree: bool,
     pub dump_doc_tree: bool,
     pub check_result: bool,
-    /// Copies the syntax that afmt cannot format yet unchanged into the output and reports it in
+    /// Copies the syntax afmt cannot format yet unchanged and reports it in
     /// `Formatted::unsupported`; otherwise formatting fails with `Error::Unsupported`
     pub allow_unsupported: bool,
 }

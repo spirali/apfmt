@@ -17,9 +17,8 @@ use ra_ap_syntax::ast::{
 };
 use ra_ap_syntax::{AstNode, SyntaxKind, SyntaxNode};
 
-/// `name!(args)`, `name![args]` or `name! { tokens }` (Style Guide "Macro uses"): arguments that parse
-/// as expressions are laid out as call arguments (`()`) or as an array (`[]`); other arguments and
-/// `{}` are kept as they are in the source
+/// `name!(args)`, `name![args]` or `name! { tokens }`: arguments that parse as expressions are laid
+/// out as call arguments or an array; others are kept as in the source
 pub(super) fn format_macro_call(fmt: &Formatter, call: &MacroCall) -> Frag {
     let mut builder = Builder::new(fmt);
     builder.push(format_path(fmt, call.path().unwrap()));
@@ -31,7 +30,6 @@ pub(super) fn format_macro_call(fmt: &Formatter, call: &MacroCall) -> Frag {
     builder.into_frag()
 }
 
-/// The arguments of a macro call, see `format_macro_call`
 fn format_token_tree(fmt: &Formatter, call: &MacroCall) -> Frag {
     let tree = &call.token_tree().unwrap();
     let close = tree.syntax().last_token().unwrap();
@@ -65,11 +63,8 @@ fn format_token_tree(fmt: &Formatter, call: &MacroCall) -> Frag {
     }
 }
 
-/// `macro_rules! name { rules }`: each rule `matcher => transcriber;` on its own line, block indented,
-/// with a `;` after the last one too (as rustfmt; the Style Guide has no rules for macro definitions);
-/// the matchers are copied from the source, reindented, the transcribers formatted (see
-/// `format_transcriber`). A definition in `()` or `[]`, or whose token tree is not a list of rules, is
-/// copied as a whole.
+/// `macro_rules! name { rules }`: each rule on its own line with `;` (as rustfmt), the matchers
+/// copied, the transcribers formatted. Otherwise copied as a whole.
 pub(super) fn format_macro_rules(fmt: &Formatter, item: &MacroRules) -> Frag {
     let tree = item.token_tree().unwrap();
     let Some(rules) = macro_rules_rules(&tree) else {
@@ -84,7 +79,6 @@ pub(super) fn format_macro_rules(fmt: &Formatter, item: &MacroRules) -> Frag {
     builder.into_frag()
 }
 
-/// `matcher => transcriber;`, see `format_macro_rules`
 fn format_macro_rule(fmt: &Formatter, rule: &MacroRule) -> Frag {
     let (eq, gt) = &rule.arrow;
     let mut builder = Builder::new(fmt);
@@ -95,10 +89,8 @@ fn format_macro_rule(fmt: &Formatter, rule: &MacroRule) -> Frag {
     builder.into_frag()
 }
 
-/// The transcriber of a rule in braces: its items, or its statements and tail expression, broken
-/// (as rustfmt), or a single block hugged (`format_hugged_block`); formatted when it parses as such
-/// with the metavariables replaced (see `parse_transcriber`) and `format_macro_bodies` is on,
-/// otherwise copied, reindented
+/// Broken items, or statements, or a single hugged block; formatted when it parses with
+/// placeholders and `format_macro_bodies` is on, otherwise copied
 fn format_transcriber(fmt: &Formatter, rule: &MacroRule) -> Frag {
     let tree = &rule.transcriber;
     let edition = fmt.config().edition;
@@ -116,7 +108,6 @@ fn format_transcriber(fmt: &Formatter, rule: &MacroRule) -> Frag {
     }
 }
 
-/// A transcriber parsed again (see `parse_transcriber`): an `ItemList` or a `BlockExpr`
 fn format_transcriber_body(fmt: &Formatter, node: SyntaxNode) -> Frag {
     if let Some(list) = ItemList::cast(node.clone()) {
         return format_item_list(fmt, list);
@@ -128,8 +119,7 @@ fn format_transcriber_body(fmt: &Formatter, node: SyntaxNode) -> Frag {
     }
 }
 
-/// The block that is all of `body` (see `single_line_block_expr`), `{{ ... }}`, without a label or
-/// modifiers (see `plain_stmt_list`), with the statement list of `body`, whose braces hug it
+/// The block that is all of `body`, `{{ ... }}`, with the statement list of `body`
 fn hugged_block(body: &BlockExpr) -> Option<(StmtList, BlockExpr)> {
     let Expr::BlockExpr(block) = single_line_block_expr(body)? else {
         return None;
@@ -138,8 +128,7 @@ fn hugged_block(body: &BlockExpr) -> Option<(StmtList, BlockExpr)> {
     Some((body.stmt_list()?, block))
 }
 
-/// `{{ ... }}`: the braces of `list` tight around `block`, formatted as a block expression (as
-/// rustfmt does with the transcribers of `macro_rules!`)
+/// `{{ ... }}`: the braces tight around `block` (as rustfmt does in `macro_rules!`)
 fn format_hugged_block(fmt: &Formatter, list: StmtList, block: BlockExpr) -> Frag {
     let mut builder = Builder::new(fmt);
     builder.push(fmt.token_with_edges(list.l_curly_token().unwrap(), BraceOpen, Open));
@@ -148,8 +137,8 @@ fn format_hugged_block(fmt: &Formatter, list: StmtList, block: BlockExpr) -> Fra
     builder.into_frag()
 }
 
-/// The format-string macros of the standard library (and those of the `log` crate, as in rustfmt)
-/// with the number of arguments in front of the format string
+/// Those of the standard library and `log` (as in rustfmt), with the number of arguments in front
+/// of the format string
 const FORMAT_STRING_MACROS: &[(&str, usize)] = &[
     ("print", 0),
     ("println", 0),
@@ -176,10 +165,8 @@ const FORMAT_STRING_MACROS: &[(&str, usize)] = &[
     ("debug_assert_ne", 2),
 ];
 
-/// The numbers of arguments on the lines of a broken format-string macro call whose other arguments
-/// are simple (Style Guide "Format string macros"; simple as in rustfmt, see `is_simple_expr`): those
-/// in front of the format string, the format string, and those after it, each group on one line;
-/// `None` for another macro, or with comments among the arguments
+/// The numbers of arguments on the lines of a broken format-string macro call (Style Guide): before
+/// the format string, the string, and after it; `None` if not applicable or with comments
 fn format_string_lines(call: &MacroCall, args: &ArgList) -> Option<Vec<usize>> {
     let name = call.path()?.as_single_name_ref()?;
     let &(_, before) = FORMAT_STRING_MACROS
@@ -196,14 +183,11 @@ fn format_string_lines(call: &MacroCall, args: &ArgList) -> Option<Vec<usize>> {
     Some(lines.into_iter().filter(|&n| n > 0).collect())
 }
 
-/// Whether the list `node` ends with a comma before its closing delimiter: `(a, b,)`
 fn has_trailing_comma(node: &SyntaxNode) -> bool {
     prev_code_token(&node.last_token().unwrap()).is_some_and(|t| t.kind() == SyntaxKind::COMMA)
 }
 
-/// The trailing comma of the arguments `node` of a macro call kept as it is in the source, on a
-/// single line too: the pattern of the macro may reject one (`$($x:expr),*`) or require it
-/// (`$($x:expr,)*`), as rustfmt keeps it
+/// Kept as in the source, on a single line too: the macro may reject or require it (as rustfmt)
 fn source_trailing_comma(node: &SyntaxNode) -> TrailingSeparator {
     if has_trailing_comma(node) {
         TrailingSeparator::Required
@@ -212,9 +196,8 @@ fn source_trailing_comma(node: &SyntaxNode) -> TrailingSeparator {
     }
 }
 
-/// The arguments of `name![...]` laid out as an array; `vec!` accepts a trailing comma or none, so
-/// it gets one when broken, as an array does, another macro keeps the comma of the source (see
-/// `source_trailing_comma`)
+/// Laid out as an array; `vec!` gets a trailing comma when broken, another macro keeps the source
+/// one
 fn format_bracket_args(fmt: &Formatter, call: &MacroCall, array: ArrayExpr) -> Frag {
     let is_vec =
         (call.path().and_then(|p| p.segment())).is_some_and(|s| s.syntax().text() == "vec");
@@ -231,9 +214,8 @@ fn format_bracket_args(fmt: &Formatter, call: &MacroCall, array: ArrayExpr) -> F
     )
 }
 
-/// The number of arguments of a list-like macro call (see `is_list_macro`), from the commas of its
-/// token tree outside nested delimiters, without a trailing one; a comma between closure parameters
-/// or generic arguments counts too, so it may be more; `None` for another expression
+/// From the commas outside nested delimiters, so it may be more (closure parameters, generics);
+/// `None` for another expression
 pub(super) fn macro_argument_count(expr: &Expr) -> Option<usize> {
     if !is_list_macro(expr) {
         return None;
@@ -244,8 +226,7 @@ pub(super) fn macro_argument_count(expr: &Expr) -> Option<usize> {
     let tree = expr.macro_call()?.token_tree()?;
     let mut count = 0;
     let mut in_argument = false;
-    // The nested delimiters and what they contain are child token trees; the tokens of this one are
-    // its delimiters, the commas and the tokens of the arguments
+    // Nested delimiters are child token trees
     for child in tree.syntax().children_with_tokens() {
         match child.kind() {
             SyntaxKind::COMMA => {
@@ -263,7 +244,6 @@ pub(super) fn macro_argument_count(expr: &Expr) -> Option<usize> {
     Some(count + usize::from(in_argument))
 }
 
-/// The opening delimiter of the arguments of a macro call, `None` for another expression
 fn macro_delimiter(expr: &Expr) -> Option<SyntaxKind> {
     let Expr::MacroExpr(expr) = expr else {
         return None;
@@ -272,8 +252,7 @@ fn macro_delimiter(expr: &Expr) -> Option<SyntaxKind> {
     Some(tree.syntax().first_token()?.kind())
 }
 
-/// Whether the expression is a macro call whose arguments are laid out as a list (see
-/// `format_macro_call`), so it may overflow as the last argument of a call
+/// Laid out as a list, so it may overflow as the last argument of a call
 pub(super) fn is_list_macro(expr: &Expr) -> bool {
     matches!(
         macro_delimiter(expr),
@@ -281,14 +260,12 @@ pub(super) fn is_list_macro(expr: &Expr) -> bool {
     )
 }
 
-/// Whether the expression is a macro call with braces, `m! { ... }`, whose body is copied (re-indented,
-/// see `format_macro_call`); like a block, it may overflow as the only argument of a call
+/// `m! { ... }`, copied; like a block, it may overflow as the only argument of a call
 pub(super) fn is_brace_macro(expr: &Expr) -> bool {
     macro_delimiter(expr) == Some(SyntaxKind::L_CURLY)
 }
 
-/// Whether the expression is a macro call whose arguments are laid out as an array, `vec![a, b]`
-/// (see `format_macro_call`)
+/// `vec![a, b]`
 pub(super) fn is_array_macro(expr: &Expr) -> bool {
     macro_delimiter(expr) == Some(SyntaxKind::L_BRACK)
 }

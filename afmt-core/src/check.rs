@@ -14,7 +14,6 @@ enum Step {
     Enter(SyntaxKind),
     Leave(SyntaxKind),
     Token(SyntaxKind, String),
-    /// A `use` item in its canonical form, see `canonical_use`
     Use(String),
 }
 
@@ -32,8 +31,7 @@ pub(crate) fn check_result(
         .zip(&output_steps)
         .find(|((a, _), (b, _))| a != b);
     if let Some(((a, a_offset), (b, b_offset))) = mismatch {
-        // A macro argument is compared parsed only if formatting keeps whether its punctuation is
-        // joined (see `changes_punct_spacing`), so on one side only if the spacing has changed
+        // A macro argument is compared parsed only if formatting keeps its punctuation spacing
         let tree = Step::Enter(SyntaxKind::TOKEN_TREE);
         let hint = if (*a == tree) != (*b == tree) {
             " (macro tokens parsed on one side only: their punctuation spacing has changed)"
@@ -65,9 +63,8 @@ pub(crate) fn check_result(
     Ok(())
 }
 
-/// Whether `node` is the block of a closure body or of a match arm body that holds just an
-/// expression (or a jump statement), `|x| { x }`, `A => { x }`, or such a block in another one, `A => { { x } }`: the
-/// formatter removes its braces or adds them, so it is compared as if it had none
+/// A block of a closure or match arm body holding just an expression (`|x| { x }`, also nested):
+/// the formatter removes or adds its braces, so it is compared as if it had none
 fn is_optional_block(node: &SyntaxNode) -> bool {
     if node.kind() != SyntaxKind::BLOCK_EXPR {
         return false;
@@ -86,8 +83,7 @@ fn is_optional_block(node: &SyntaxNode) -> bool {
     else {
         return false;
     };
-    // No label or modifier in front of `{`, and only an expression in it, not a statement `m! {}`;
-    // or only `return x;`, compared as the expression `return x` (see `is_trailing_jump_stmt`)
+    // A plain block with only an expression, not `m! {}`, or only `return x;`
     node.first_token() == stmt_list.first_token()
         && stmt_list.children().count() == 1
         && stmt_list.children().all(|c| {
@@ -95,7 +91,7 @@ fn is_optional_block(node: &SyntaxNode) -> bool {
         })
 }
 
-/// The preorder walk of the tree without trivia and without trailing commas, with source offsets
+/// Preorder, without trivia and trailing commas, with source offsets
 fn steps(file: &SourceFile, edition: Edition) -> Vec<(Step, TextSize)> {
     let mut out = Vec::new();
     let placeholders = Placeholders::default();
@@ -110,8 +106,7 @@ fn steps(file: &SourceFile, edition: Edition) -> Vec<(Step, TextSize)> {
     out
 }
 
-/// The steps of the walk of `root` (see `steps`), with offsets mapped to the source by `source_offset`;
-/// the `placeholders` of a parsed transcriber of `macro_rules!` are compared as their source text
+/// Offsets mapped by `source_offset`; placeholders are compared as their source text
 fn push_steps(
     root: &SyntaxNode,
     edition: Edition,
@@ -119,13 +114,12 @@ fn push_steps(
     placeholders: &Placeholders,
     out: &mut Vec<(Step, TextSize)>,
 ) {
-    // The blocks of `is_optional_block` and their statement lists, walked as if not there
     let mut transparent: Vec<SyntaxNode> = Vec::new();
     let mut walk = root.preorder_with_tokens();
     while let Some(event) = walk.next() {
         match event {
-            // The arguments of a macro call that parse as expressions are formatted as such (see
-            // `format_macro_call`), so they are compared parsed; `macro_rules!` rule by rule
+            // Macro arguments that parse as expressions are compared parsed; `macro_rules!` rule by
+            // rule
             WalkEvent::Enter(NodeOrToken::Node(node)) if node.kind() == SyntaxKind::TOKEN_TREE => {
                 let tree = ast::TokenTree::cast(node.clone()).unwrap();
                 if let Some(parsed) = parse_macro_arguments(&tree, edition, placeholders) {
@@ -160,7 +154,6 @@ fn push_steps(
             WalkEvent::Enter(NodeOrToken::Token(token))
                 if token.parent().is_some_and(|p| transparent.contains(&p)) => {}
             WalkEvent::Enter(NodeOrToken::Node(node)) if node.kind() == SyntaxKind::USE => {
-                // Imports are sorted and normalized, so they are compared in a canonical form
                 let canonical = canonical_use(&Use::cast(node.clone()).unwrap());
                 out.push((
                     Step::Use(canonical),
@@ -196,8 +189,7 @@ fn push_steps(
     }
 }
 
-/// The step of a compared token (see `is_compared_token`); a placeholder is compared as the text it
-/// stands for
+/// A placeholder is compared as the text it stands for
 fn token_step(
     token: &SyntaxToken,
     source_offset: &dyn Fn(TextSize) -> TextSize,
@@ -212,7 +204,6 @@ fn token_step(
     (step, source_offset(token.text_range().start()))
 }
 
-/// The steps of `parsed`, the token tree `node` parsed again, with offsets mapped to `node`
 fn push_reparsed_steps(
     node: &SyntaxNode,
     parsed: Reparsed<SyntaxNode>,
@@ -226,8 +217,7 @@ fn push_reparsed_steps(
     push_steps(&parsed.node, edition, &offset, &placeholders, out);
 }
 
-/// The token tree of a macro call parsed as the formatter parses it (see `format_token_tree`): the
-/// arguments of a call for `(...)`, an array for `[...]`
+/// `(...)` as call arguments, `[...]` as an array, as the formatter parses it
 fn parse_macro_arguments(
     tree: &ast::TokenTree,
     edition: Edition,
@@ -246,7 +236,6 @@ fn parse_macro_arguments(
     }
 }
 
-/// The rules of the token tree of `macro_rules!` (see `macro_rules_rules`)
 fn macro_rules_tree_rules(tree: &ast::TokenTree) -> Option<Vec<MacroRule>> {
     if tree.syntax().parent()?.kind() != SyntaxKind::MACRO_RULES {
         return None;
@@ -254,9 +243,8 @@ fn macro_rules_tree_rules(tree: &ast::TokenTree) -> Option<Vec<MacroRule>> {
     macro_rules_rules(tree)
 }
 
-/// The steps of the token tree of `macro_rules!` as the formatter formats it (see
-/// `format_macro_rules`): rule by rule, without the `;` after them, which the formatter writes
-/// after each rule; a transcriber that parses is compared parsed (see `parse_transcriber`)
+/// Rule by rule, without the `;` the formatter writes after each; a transcriber that parses is
+/// compared parsed
 struct MacroRulesSteps<'a> {
     tree: &'a ast::TokenTree,
     rules: &'a [MacroRule],
@@ -311,8 +299,8 @@ impl MacroRulesSteps<'_> {
     }
 }
 
-/// Consecutive `use` items may be reordered, and an empty one (`use a::{};`) removed, so each run of
-/// them is compared as a sorted list without the empty ones
+/// Each run of `use` items is compared sorted without empty ones, since they may be reordered or
+/// removed
 fn sort_use_runs(steps: &mut Vec<(Step, TextSize)>) {
     steps.retain(|(step, _)| !matches!(step, Step::Use(text) if text.is_empty()));
     let is_use = |step: &(Step, TextSize)| matches!(step.0, Step::Use(_));
@@ -327,8 +315,7 @@ fn sort_use_runs(steps: &mut Vec<(Step, TextSize)>) {
     }
 }
 
-/// The source text of `node`, only the compared tokens (`is_compared_token`): `#[cfg(any(a, b,))]` is
-/// `#[cfg(any(a,b))]`
+/// Only the compared tokens: `#[cfg(any(a, b,))]` is `#[cfg(any(a,b))]`
 fn code_text(node: &SyntaxNode) -> String {
     node.descendants_with_tokens()
         .filter_map(NodeOrToken::into_token)
@@ -337,8 +324,7 @@ fn code_text(node: &SyntaxNode) -> String {
         .collect()
 }
 
-/// `#[attr] pub use tree` with the tree in its canonical form (see `canonical_use_tree`); empty if the
-/// item imports nothing and has no attributes (an item with attributes is never removed)
+/// With the tree in canonical form; empty if it imports nothing and has no attributes
 fn canonical_use(item: &Use) -> String {
     let attrs: Vec<String> = item.attrs().map(|a| code_text(a.syntax())).collect();
     let tree = item.use_tree().as_ref().and_then(canonical_use_tree);
@@ -353,8 +339,8 @@ fn canonical_use(item: &Use) -> String {
     )
 }
 
-/// The tree in a normal form: lists sorted, empty trees removed and `a::{b}` written as `a::b` (except
-/// `a::{self}`); `None` if the tree imports nothing
+/// Lists sorted, empty trees removed, `a::{b}` as `a::b` (except `a::{self}`); `None` if it imports
+/// nothing
 fn canonical_use_tree(tree: &UseTree) -> Option<String> {
     let mut text = tree
         .path()
@@ -385,7 +371,6 @@ fn canonical_use_tree(tree: &UseTree) -> Option<String> {
     Some(text)
 }
 
-/// The statement `return;`, `break;` or `continue;` ending a block (see `trailing_jump_stmt`)
 fn is_trailing_jump_stmt(node: &SyntaxNode) -> bool {
     node.parent()
         .and_then(ast::StmtList::cast)
@@ -393,8 +378,8 @@ fn is_trailing_jump_stmt(node: &SyntaxNode) -> bool {
         .is_some_and(|stmt| stmt.syntax() == node)
 }
 
-/// A token that is compared: not trivia, and not a token the formatter adds or removes (a trailing
-/// comma, the leading `|` of an or-pattern, a stray `;`)
+/// Not trivia, nor a token the formatter adds or removes (a trailing comma, a leading `|`, a stray
+/// `;`)
 fn is_compared_token(token: &SyntaxToken) -> bool {
     is_code_kind(token.kind())
         && !is_trailing_comma(token)
@@ -402,7 +387,6 @@ fn is_compared_token(token: &SyntaxToken) -> bool {
         && !is_stray_semicolon(token)
 }
 
-/// The `|` in front of the first pattern of an or-pattern, `| A | B`, which the formatter drops
 fn is_leading_pipe(token: &SyntaxToken) -> bool {
     token.kind() == SyntaxKind::PIPE
         && token.parent().is_some_and(|p| {
@@ -416,8 +400,7 @@ fn is_trailing_comma(token: &SyntaxToken) -> bool {
             .siblings_with_tokens(Direction::Next)
             .skip(1)
             .find(|e| is_code_kind(e.kind()))
-            // The closing delimiter of the list (`)`, `]`, `}`, `>`, the `|` of closure parameters), or
-            // nothing: a comma ending its node, the last item of a `where` clause
+            // The closing delimiter of the list, or nothing (the last item of a `where` clause)
             .is_none_or(|e| {
                 e.as_token().is_some_and(|t| {
                     token.parent().and_then(|p| p.last_token()).as_ref() == Some(t)

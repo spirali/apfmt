@@ -77,8 +77,7 @@ fn parse_source_code(config: &Config, code: &str) -> Result<SourceFile> {
     Ok(parse.tree())
 }
 
-/// The parsed source and the tree to format: the source after the rewrites (`rewrite/`, e.g. the imports
-/// sorted), parsed again if they changed it
+/// The parsed source and the tree to format: the source after the rewrites, parsed again if changed
 fn prepare_source_code(config: &Config, code: &str) -> Result<(SourceFile, SourceFile)> {
     let file = parse_source_code(config, code)?;
     let prepared = match rewrite_source(&file, code) {
@@ -93,7 +92,6 @@ fn prepare_source_code(config: &Config, code: &str) -> Result<(SourceFile, Sourc
     Ok((file, prepared))
 }
 
-/// The doc graph built for the source code in the Graphviz DOT format, instead of the formatted code
 pub fn doc_graph_to_dot(config: &Config, code: &str) -> Result<String> {
     let (_, file) = prepare_source_code(config, code)?;
     let fmt = Formatter::new(config);
@@ -102,16 +100,14 @@ pub fn doc_graph_to_dot(config: &Config, code: &str) -> Result<String> {
     Ok(fmt.doc_graph_to_dot(&Builder::concat(&fmt, chunks)))
 }
 
-/// The formatted code
 pub struct Formatted {
     pub code: String,
-    /// The source text copied unchanged into `code` because afmt cannot format it yet (only with
-    /// `Config::allow_unsupported`, which makes it an error otherwise)
+    /// The source copied unchanged because afmt cannot format it yet (with
+    /// `Config::allow_unsupported`)
     pub unsupported: Vec<UnsupportedSyntax>,
 }
 
-/// Where the text copied by `Formatter::unsupported` is in `source`, in the source order; a node in
-/// more layouts is listed once
+/// In source order; a node in more layouts is listed once
 fn locate_unsupported(
     source: &SourceFile,
     mut unsupported: Vec<Unsupported>,
@@ -140,8 +136,8 @@ fn locate_unsupported(
         .collect()
 }
 
-/// Formats `code`. Its `\r\n` line endings are read as `\n`, as rustc reads them (also inside
-/// comments and literals); the output has those of `newline_style`.
+/// `\r\n` is read as `\n`, as rustc does (also in comments and literals); the output has the line
+/// endings of `newline_style`
 pub fn format_source_code(config: &Config, code: &str) -> Result<Formatted> {
     let source = code;
     let code = &*code.replace("\r\n", "\n");
@@ -199,7 +195,6 @@ mod tests {
         );
     }
 
-    /// `code` formatted with `newline_style`
     fn with_newlines(style: NewlineStyle, code: &str) -> String {
         let config = Config {
             newline_style: style,

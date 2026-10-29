@@ -14,18 +14,16 @@ use crate::utils::canonical_path;
 /// The files of a module tree, and the problems found while following it
 #[derive(Debug, Default)]
 pub struct ModuleFiles {
-    /// The crate root first, then the files in the order they were found, each once: its canonical
-    /// path (`canonical_path`) and its text
+    /// The crate root first, then the files in the order found, each once, with its canonical path
     pub files: Vec<(PathBuf, String)>,
     /// A module whose file does not exist (e.g. for another platform), a file that cannot be read
     pub warnings: Vec<String>,
 }
 
-/// A file of the tree to read
 struct ModuleFile {
     path: PathBuf,
-    /// A crate root, a `mod.rs` or a file given by `#[path]`: its submodules are in its directory,
-    /// otherwise (`foo.rs`) in the directory named after it (`foo/`)
+    /// A crate root, a `mod.rs` or a `#[path]` file has its submodules in its directory, `foo.rs`
+    /// in `foo/`
     mod_rs: bool,
 }
 
@@ -79,9 +77,8 @@ pub fn module_files(root: &Path, edition: Edition) -> ModuleFiles {
     result
 }
 
-/// Whether `source` may declare a module in another file, `mod name;`: the tokens `mod`, a name and `;`
-/// in a row (trivia between them). Every such declaration has them, so no module file is missed; the
-/// tokens in a macro call or an inline module only cost a parse.
+/// Whether `source` may declare `mod name;`: the tokens `mod`, a name and `;` in a row; a false
+/// positive only costs a parse
 fn may_declare_module_file(source: &str, edition: Edition) -> bool {
     if !may_contain_mod_name_semicolon(source) {
         return false;
@@ -95,9 +92,8 @@ fn may_declare_module_file(source: &str, edition: Edition) -> bool {
         .any(|tokens| tokens == [SyntaxKind::MOD_KW, SyntaxKind::IDENT, SyntaxKind::SEMICOLON])
 }
 
-/// Whether the text may have `mod`, a name and `;` in a row, a scan of the bytes much cheaper than
-/// lexing; `false` only when it has none. Between the words only ASCII whitespace is skipped: a
-/// comment (`/`) or a non-ASCII byte (Unicode whitespace, a non-ASCII name) counts as a match.
+/// A byte scan cheaper than lexing, `false` only without `mod name;`; a comment or a non-ASCII byte
+/// between the words counts as a match
 fn may_contain_mod_name_semicolon(source: &str) -> bool {
     let bytes = source.as_bytes();
     let is_ascii_word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
@@ -138,10 +134,8 @@ fn may_contain_mod_name_semicolon(source: &str) -> bool {
     false
 }
 
-/// Where the modules declared in a file, or in an inline module of it, live
 struct Parent<'a> {
     file: &'a Path,
-    /// The directory of the file
     file_dir: &'a Path,
     /// The directory of the submodules of the current module
     module_dir: &'a Path,
@@ -231,7 +225,6 @@ mod tests {
     use super::*;
     use crate::test_utils::TempDir;
 
-    /// The files of the tree of `root`, relative to `dir`
     fn files(dir: &Path, root: &str) -> (Vec<String>, Vec<String>) {
         let tree = module_files(&dir.join(root), Edition::CURRENT);
         let dir = canonical_path(dir);

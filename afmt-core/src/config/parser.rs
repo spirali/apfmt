@@ -8,9 +8,8 @@ use toml::{Table, Value};
 use crate::Error::GenericError;
 use crate::config::{Config, NewlineStyle};
 
-/// Applies the config file at `path` to `cfg`. The format is told by the name: in a rustfmt config
-/// file (a name ending with `rustfmt.toml`), the options that afmt does not have are ignored; in an
-/// afmt one, they are an error.
+/// Applies the config file at `path` to `cfg`. In a rustfmt file (a name ending with
+/// `rustfmt.toml`), unknown options are ignored; in an afmt one, they are an error.
 pub(crate) fn read_config(path: &Path, cfg: &mut Config) -> crate::Result<()> {
     let toml = TomlConfig::load(path)?;
     if !is_rustfmt_config(path) {
@@ -26,7 +25,6 @@ fn is_rustfmt_config(path: &Path) -> bool {
         .is_some_and(|name| name.ends_with("rustfmt.toml"))
 }
 
-/// The options of a config file
 #[derive(Default, Deserialize)]
 #[serde(default)]
 struct TomlConfig {
@@ -77,7 +75,6 @@ impl TomlConfig {
     }
 
     fn parse(toml: &str) -> crate::Result<TomlConfig> {
-        // The caller names the file
         let cfg: TomlConfig =
             toml::from_str(toml).map_err(|e| GenericError(e.to_string().trim_end().to_string()))?;
         if cfg.max_width == Some(0) {
@@ -88,7 +85,6 @@ impl TomlConfig {
         Ok(cfg)
     }
 
-    /// Fails when the file has options that afmt does not have
     fn check_unknown(&self) -> crate::Result<()> {
         if self.unknown.is_empty() {
             return Ok(());
@@ -195,7 +191,6 @@ impl TryFrom<Value> for EditionSetting {
     }
 }
 
-/// `newline_style` in a config file
 #[derive(Clone, Copy, Deserialize)]
 #[serde(try_from = "String")]
 struct NewlineStyleSetting(NewlineStyle);

@@ -8,22 +8,19 @@ pub enum Error {
     Unsupported(Vec<UnsupportedSyntax>),
 }
 
-/// Source text that afmt cannot format yet; with `Config::allow_unsupported`, it is copied unchanged
-/// into the output
+/// With `Config::allow_unsupported`, it is copied unchanged into the output
 #[derive(Debug, Clone)]
 pub struct UnsupportedSyntax {
-    /// The line and column (1-based, the column in characters) where the copied text starts, in the
-    /// source after the import rewrites (which may move the lines below the imports)
+    /// 1-based, the column in characters, in the source after the import rewrites
     pub line: usize,
     pub column: usize,
     /// What is not supported: a syntax kind (`MACRO_EXPR`) or a description (a `try` block)
     pub what: String,
-    /// The first line of the copied text
     pub snippet: String,
 }
 
 impl UnsupportedSyntax {
-    /// The message about it, `line:column: not supported yet: what{note}: snippet`
+    /// `line:column: not supported yet: what{note}: snippet`
     pub fn message(&self, note: &str) -> String {
         format!(
             "{}:{}: not supported yet: {}{note}: {}",
@@ -32,8 +29,7 @@ impl UnsupportedSyntax {
     }
 }
 
-/// The error as text: a syntax error per line, the unsupported syntax as `line:column: what: snippet`
-/// per line
+/// A syntax error per line, the unsupported syntax as `line:column: what: snippet` per line
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

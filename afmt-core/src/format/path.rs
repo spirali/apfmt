@@ -27,14 +27,14 @@ pub(super) fn format_path(fmt: &Formatter, path: Path) -> Frag {
     builder.into_frag()
 }
 
-/// `name`, `name<args>`, `name::<args>`, `Fn(args) -> ret` or `<T as Trait>`; with a leading `::` in `::std`
+/// `name`, `name<args>`, `name::<args>`, `Fn(args) -> ret` or `<T as Trait>`, possibly after `::`
 fn format_path_segment(fmt: &Formatter, segment: PathSegment) -> Frag {
     if segment.return_type_syntax().is_some() {
         return format_unsupported(fmt, segment.syntax(), "return type notation");
     }
     let mut builder = Builder::new(fmt);
     if let Some(token) = segment.coloncolon_token() {
-        // a word on the outside, spaced as the name it stands in front of: `impl ::std::X`, `&::a`
+        // Spaced as the name it stands in front of: `impl ::std::X`, `&::a`
         builder.push(fmt.token_with_edges(token, Word, Tight));
     }
     if let Some(name_ref) = segment.name_ref() {
@@ -55,7 +55,6 @@ fn format_path_segment(fmt: &Formatter, segment: PathSegment) -> Frag {
     builder.into_frag()
 }
 
-/// An identifier or one of `self`, `super`, `crate`, `Self`
 pub(super) fn format_name_ref(fmt: &Formatter, name_ref: NameRef) -> Frag {
     fmt.token(name_ref.syntax().first_token().unwrap(), Word)
 }
@@ -78,9 +77,8 @@ fn format_type_anchor(fmt: &Formatter, anchor: TypeAnchor) -> Frag {
     Delimiters::angles_of(anchor.syntax()).enclose(fmt, inner.into_frag())
 }
 
-/// Whether a single generic argument may overflow its `<>`, i.e. start on the line of `<` and end on
-/// the line of `>`: `From<&(` / `...` / `)>`. A tuple type, also after `&` or `*`, as in rustfmt
-/// (`can_be_overflowed_type`); not a path, slice or array type.
+/// A single generic argument that may overflow its `<>`: a tuple type, also after `&` or `*`, as in
+/// rustfmt (`From<&(` / `...` / `)>`)
 fn is_combinable_type(ty: &Type) -> bool {
     match ty {
         Type::TupleType(_) => true,
@@ -90,10 +88,8 @@ fn is_combinable_type(ty: &Type) -> bool {
     }
 }
 
-/// How the last of the generic arguments `args` may hug their `<>`: a single combinable type (see
-/// `is_combinable_type`), when that takes fewer lines than the broken list; a type that fits on its
-/// own line is broken at the outermost scope instead (`Option<` / `(A, B),` / `>`, "prefer breaking
-/// at outermost scope", Style Guide)
+/// A single combinable type when that takes fewer lines; otherwise broken at the outermost scope
+/// (Style Guide): `Option<` / `(A, B),` / `>`
 fn last_type_arg_hug(args: &GenericArgList) -> Hug {
     let mut args = args.generic_args();
     match (args.next(), args.next()) {
@@ -106,7 +102,6 @@ fn last_type_arg_hug(args: &GenericArgList) -> Hug {
     }
 }
 
-/// `<A, B>`, or the turbofish `::<A, B>`; a single tuple type may hug it (see `last_type_arg_hug`)
 pub(super) fn format_generic_arg_list(fmt: &Formatter, args: GenericArgList) -> Frag {
     let mut builder = Builder::new(fmt);
     if let Some(token) = args.coloncolon_token() {
@@ -168,7 +163,6 @@ mod tests {
     use ra_ap_syntax::ast::GenericArgList;
     use ra_ap_syntax::{AstNode, Edition, SourceFile};
 
-    /// The hug of the last argument of the first generic argument list in the type `ty`
     fn hug(ty: &str) -> Hug {
         let source = format!("type T = {ty};");
         let parse = SourceFile::parse(&source, Edition::Edition2024);

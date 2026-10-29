@@ -6,8 +6,8 @@ use crate::doc::{AlignGroup, DocId, EMPTY_DOC, EMPTYLINE_DOC, NEWLINE_DOC, NEWLI
 use crate::formatter::Edge::{BraceClose, BraceOpen, Break, Close, LineStart, Nothing};
 use ra_ap_syntax::SyntaxToken;
 
-/// Start edges of fragments that continue the construct on their left: everything except closing
-/// delimiters and the `{` of a block. Own-line comments in front of them are indented together with them.
+/// Everything except closing delimiters and the `{` of a block; own-line comments in front of them
+/// are indented with them
 fn is_continuation(edge: Edge) -> bool {
     !matches!(edge, Close | BraceClose | BraceOpen)
 }
@@ -42,7 +42,6 @@ impl<'a> Builder<'a> {
         self.align_group = group;
     }
 
-    /// The fragments one after another, see `push`
     pub fn concat(fmt: &'a Formatter, frags: impl IntoIterator<Item = Frag>) -> Frag {
         let mut builder = Builder::new(fmt);
         for frag in frags {
@@ -60,9 +59,8 @@ impl<'a> Builder<'a> {
         self.frag.is_empty()
     }
 
-    /// The fragment built so far, leaving the builder empty, if it ends at the start of a line with
-    /// no trivia pending (every branch ends with a line break, no cursor); what follows cannot
-    /// change its layout
+    /// The fragment built so far, if every branch ends with a line break and no trivia is pending:
+    /// what follows cannot change its layout
     pub fn split_off_finished_lines(&mut self) -> Option<Frag> {
         let finished = !self.frag.is_empty()
             && self.frag.cursor.is_none()
@@ -70,7 +68,7 @@ impl<'a> Builder<'a> {
         finished.then(|| std::mem::take(&mut self.frag))
     }
 
-    /// Appends line-breaking `doc_id` to the branches whose end edge satisfies `pred`; they then end with nothing
+    /// They then end with nothing
     pub(super) fn push_line_break_if(&mut self, doc_id: DocId, pred: impl Fn(Edge) -> bool) {
         let fmt = self.fmt;
         let frag = std::mem::take(&mut self.frag);
@@ -95,13 +93,11 @@ impl<'a> Builder<'a> {
         self.push_line_break_if(NEWLINE_DOC, |_| true);
     }
 
-    /// Ends the line and leaves a blank line after it
     pub fn push_blank_line(&mut self) {
         self.push_line_break_if(EMPTYLINE_DOC, |_| true);
     }
 
-    /// Pushes `frag` on a new line; the first item of the builder stays where it is.
-    /// Blank lines from the source in front of it are kept.
+    /// The first item of the builder stays where it is; blank lines from the source are kept
     pub fn push_on_new_line(&mut self, frag: Frag) {
         if !self.is_empty() {
             self.flush_trivia_and_end_line();
@@ -109,7 +105,6 @@ impl<'a> Builder<'a> {
         self.push(frag);
     }
 
-    /// A space or a line break, whichever gives the better layout
     pub fn push_soft_line_break(&mut self) {
         self.push_line_break_if(NEWLINE_OR_SPACE_DOC, |_| true);
     }
@@ -138,10 +133,8 @@ impl<'a> Builder<'a> {
         self.join(frag);
     }
 
-    /// Pushes each of `lines` on its own line, all of them indented one level deeper with `indent`,
-    /// e.g. the continuation lines of a broken chain (`.b()`, `&& b`). Comments on the line of the left
-    /// side stay there; own-line comments in between keep their own lines, at the indentation of
-    /// the lines.
+    /// Each of `lines` on its own line, indented with `indent`, e.g. `.b()`, `&& b`; own-line
+    /// comments in between keep their own lines
     pub fn push_lines(&mut self, lines: impl IntoIterator<Item = Frag>, indent: bool) {
         let mut lines = lines.into_iter().peekable();
         if lines.peek().is_none() {
@@ -150,26 +143,23 @@ impl<'a> Builder<'a> {
         let fmt = self.fmt;
         self.push_trivia(None, TriviaStop::OwnLine);
         let mut nested = Builder::with_cursor(fmt, self.frag.cursor.take());
-        // The newline in front of the first line belongs to `nested`, so it is indented with it
+        // The newline belongs to `nested`, so it is indented with it
         nested.push_newline();
         for line in lines {
             nested.push_on_new_line(line);
         }
         let nested = nested.into_frag();
-        // A line comment on the left side is ended by the newline of `nested`
         self.push_line_break_if(EMPTY_DOC, |end| end == Break);
         self.join(if indent { fmt.nest(nested) } else { nested });
     }
 
-    /// Takes the source up to `token` (inclusive) without output, e.g. the `}` of braces removed around a
-    /// closure body; the source in between must not contain comments
+    /// E.g. the `}` of braces removed around a closure body; the source in between must not contain
+    /// comments
     pub fn skip_to_token(&mut self, token: SyntaxToken) {
         self.push_comments();
         self.frag.cursor = Some(token);
     }
 
-    /// `frag` followed by the source up to `token` (inclusive) taken without output, see
-    /// `skip_to_token`
     pub fn skip_to_token_after(fmt: &'a Formatter, frag: Frag, token: SyntaxToken) -> Frag {
         let mut builder = Builder::new(fmt);
         builder.push(frag);
@@ -177,10 +167,8 @@ impl<'a> Builder<'a> {
         builder.into_frag()
     }
 
-    /// Pushes `doc`, text that is not in the source, e.g. braces added around a closure body
-    /// (`OPEN_BRACE_DOC`, ...: generated text is preallocated). The cursor stays, so the trivia after
-    /// it is placed after the text, and the source that follows is still taken after it (e.g. a
-    /// separator).
+    /// Text that is not in the source (preallocated, e.g. `OPEN_BRACE_DOC`); the cursor stays, so
+    /// the trivia and source after it are taken after the text
     pub fn push_generated(&mut self, doc: DocId, edge: Edge) {
         let cursor = self.frag.cursor.take();
         let frag = Frag::new_simple(doc, edge, None);
@@ -195,8 +183,7 @@ impl<'a> Builder<'a> {
     fn push_continuation(&mut self, frag: Frag) {
         // Comments on the same line as the left side stay there
         self.push_trivia(None, TriviaStop::OwnLine);
-        // After an own-line comment, or a line comment ending the left side, the continuation goes on
-        // an indented line, unless it starts its own line anyway
+        // After an own-line comment or a line comment, the continuation goes on an indented line
         let own_line_comment = self
             .frag
             .cursor
@@ -213,12 +200,10 @@ impl<'a> Builder<'a> {
         let mut nested = Builder::with_cursor(fmt, self.frag.cursor.take());
         nested.flush_trivia();
         nested.push(frag);
-        // A line comment on the left side is ended by the nested newline
         self.push_line_break_if(EMPTY_DOC, |end| end == Break);
         self.join(fmt.indented_line(nested.into_frag()));
     }
 
-    /// Concatenates `frag` without processing the trivia in between
     fn join(&mut self, frag: Frag) {
         let fmt = self.fmt;
         let left = &self.frag.branches;

@@ -47,9 +47,7 @@ pub struct FormatOptions {
 }
 
 impl FormatOptions {
-    /// The config for a source in `dir`: its config file and `edition`, or the edition of its
-    /// package (`afmt_core::config_for_source`), with these options, and the warnings about it
-    /// (an unreadable `Cargo.toml`)
+    /// The config for a source in `dir` with these options, and the warnings about it
     pub fn config_for_source(
         &self,
         dir: &Path,
@@ -68,10 +66,8 @@ impl FormatOptions {
     }
 }
 
-/// `code` formatted with `config`, ending with a line break unless it is empty (`\r\n` or `\n`, see
-/// `NewlineStyle`), and the warnings
-/// about the syntax copied unchanged (with `Unsupported::Warn`) in the source named `file`; with
-/// `disable_all_formatting`, `code` unchanged
+/// `code` formatted, ending with a line break unless empty, and the warnings about unsupported
+/// syntax; with `disable_all_formatting`, `code` unchanged
 pub fn format_code(
     config: &Config,
     code: &str,
@@ -98,8 +94,7 @@ pub fn format_code(
     Ok((out, warnings))
 }
 
-/// The syntax that afmt cannot format yet, one message per item:
-/// `file:line:column: not supported yet: what{note}: snippet` (`UnsupportedSyntax::message`)
+/// One message per item: `file:line:column: not supported yet: what{note}: snippet`
 pub fn unsupported_messages(
     file: &str,
     unsupported: &[UnsupportedSyntax],
@@ -111,7 +106,6 @@ pub fn unsupported_messages(
         .collect()
 }
 
-/// The messages about an error of formatting the source named `file`
 pub fn error_messages(file: &str, error: afmt_core::Error) -> Vec<String> {
     match error {
         afmt_core::Error::Unsupported(unsupported) => unsupported_messages(file, &unsupported, ""),

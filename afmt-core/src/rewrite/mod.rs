@@ -7,7 +7,7 @@ mod sort;
 
 use ra_ap_syntax::{SourceFile, TextRange, TextSize};
 
-/// The source after the rewrites, or `None` if none of them changes it
+/// `None` if none of them changes it
 pub(crate) fn rewrite_source(file: &SourceFile, source: &str) -> Option<String> {
     let mut edits = imports::import_edits(file, source);
     // A stray `;` between imports is dropped by the edit of their group (`use a; ; use b;`)
@@ -20,7 +20,7 @@ pub(crate) fn rewrite_source(file: &SourceFile, source: &str) -> Option<String> 
     apply_edits(source, edits)
 }
 
-/// The source with each range replaced by its text (the ranges do not overlap); `None` without edits
+/// The ranges do not overlap; `None` without edits
 fn apply_edits(source: &str, mut edits: Vec<(TextRange, String)>) -> Option<String> {
     if edits.is_empty() {
         return None;
@@ -37,9 +37,7 @@ fn apply_edits(source: &str, mut edits: Vec<(TextRange, String)>) -> Option<Stri
     Some(out)
 }
 
-/// The whole line of `range` with its line break when only spaces and tabs surround `range` on it, so
-/// removing it leaves no blank line; otherwise `range` itself (code before or after it on its line
-/// stays on that line)
+/// The whole line of `range` with its line break when nothing else is on it, otherwise `range`
 pub(super) fn line_if_alone(source: &str, range: TextRange) -> TextRange {
     let blank = [' ', '\t'];
     let before = &source[..usize::from(range.start())];

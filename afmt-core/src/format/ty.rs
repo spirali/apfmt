@@ -17,9 +17,7 @@ use ra_ap_syntax::ast::{
     TypeBoundList,
 };
 
-/// `-> T`; broken only as a last resort, after the parameters in front of it (`fn f(` / `...` /
-/// `) -> Result<A, B>`, `FnMut(` / `...` / `) -> ControlFlow<A, B>`, as the Style Guide breaks a
-/// signature): a broken return type costs a second split
+/// `-> T`, broken only as a last resort, after the parameters (`) -> Result<A, B>`)
 pub(super) fn format_ret_type(fmt: &Formatter, ret_type: RetType) -> Frag {
     let mut builder = Builder::new(fmt);
     builder.push_token(ret_type.thin_arrow_token().unwrap(), Operator);
@@ -31,7 +29,7 @@ fn format_ref_type(fmt: &Formatter, ty: RefType) -> Frag {
     let mut builder = Builder::new(fmt);
     builder.push_token(ty.amp_token().unwrap(), Tight);
     if let Some(lifetime) = ty.lifetime() {
-        // always followed by a space, as a keyword: `&'a [T]`, `&'a (A, B)`
+        // Followed by a space, as a keyword: `&'a [T]`
         builder.push_keyword(lifetime.lifetime_ident_token().unwrap());
     }
     if let Some(token) = ty.mut_token() {
@@ -50,7 +48,7 @@ fn format_ptr_type(fmt: &Formatter, ty: PtrType) -> Frag {
     builder.into_frag()
 }
 
-/// `(A, B)`, `(A,)` or `()`; a type, so kept on one line if possible
+/// `(A, B)`, `(A,)` or `()`, kept on one line if possible
 fn format_tuple_type(fmt: &Formatter, ty: TupleType) -> Frag {
     let fields = list_items_cast(ty.syntax(), |t| format_type(fmt, t));
     let layout = ListLayout::tall(FlatLimit::MaxWidth)

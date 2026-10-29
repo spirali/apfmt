@@ -17,10 +17,8 @@ pub(crate) fn config_in_dir(dir: &Path, afmt: bool, rustfmt: bool) -> Option<Pat
     r
 }
 
-/// The config file for a source in `dir`: the nearest one in `dir` or its ancestors, otherwise the one
-/// in the home directory, otherwise the one in the user's configuration directory (`afmt/`, then
-/// `rustfmt/`, in `$XDG_CONFIG_HOME` or `~/.config` on Linux). In one directory, an afmt config
-/// file is preferred to a rustfmt one.
+/// The nearest config file in `dir` or its ancestors, otherwise in the home directory, otherwise in
+/// the user's configuration directory; in one directory, afmt's is preferred to rustfmt's
 pub(crate) fn find_config(dir: &Path, include_rustfmt: bool) -> Option<PathBuf> {
     canonical_path(dir)
         .ancestors()
@@ -40,7 +38,7 @@ pub(crate) fn find_config(dir: &Path, include_rustfmt: bool) -> Option<PathBuf> 
         })
 }
 
-/// The user's configuration directory, as the `dirs` crate used by rustfmt defines it
+/// As the `dirs` crate used by rustfmt defines it
 fn user_config_dir() -> Option<PathBuf> {
     let env_dir = |name: &str| {
         std::env::var_os(name)

@@ -12,8 +12,7 @@ pub enum ColorWhen {
     Never,
 }
 
-/// Sets when the output is coloured: `when` (`--color`), else `CARGO_TERM_COLOR` as in cargo, else
-/// `ColorWhen::Auto`
+/// `when` (`--color`), else `CARGO_TERM_COLOR` as in cargo, else `ColorWhen::Auto`
 pub fn set_color(when: Option<ColorWhen>) {
     let from_env = || {
         let value = std::env::var("CARGO_TERM_COLOR").ok()?;

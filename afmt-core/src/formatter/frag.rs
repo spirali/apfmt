@@ -20,19 +20,17 @@ pub enum Edge {
     Operator,   // + == => : ->
     Comment,    // start of a comment
     Break,
-    /// Start of a fragment that begins with a mandatory line break (`Formatter::on_next_line`): no
-    /// space in front of it, and a line comment in front of it needs no line break of its own
+    /// After a mandatory line break: no space in front, and a line comment needs no line break of
+    /// its own
     LineStart,
 }
 
 impl Edge {
-    /// The edge after a closing delimiter: `)`, `]`, `}`
     pub fn is_closing(self) -> bool {
         matches!(self, Edge::Close | Edge::BraceClose)
     }
 }
 
-/// One alternative of a fragment together with its edges
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Branch {
     pub(super) doc_id: DocId,
@@ -45,9 +43,8 @@ pub(super) type Branches = SmallVec<[Branch; 1]>;
 #[derive(Clone, Debug)]
 pub struct Frag {
     pub(super) branches: Branches, // never empty
-    /// The last source token of the fragment; the trivia after it (comments, blank lines) is not
-    /// placed yet. `None` when the fragment does not cover the source after its tokens
-    /// (see `Formatter::token_without_cursor`).
+    /// The last source token; the trivia after it is not placed yet. `None` when the fragment does
+    /// not cover the source after its tokens.
     pub(super) cursor: Option<SyntaxToken>,
 }
 
@@ -67,20 +64,17 @@ impl Frag {
         Frag::new(EMPTY_DOC, Nothing, Nothing, None)
     }
 
-    /// The fragment with `cursor` as its last source token instead of its own, for a fragment built
-    /// from a copy of the source text that ends where `cursor` does (e.g. a macro's arguments parsed
-    /// again): the trivia after `cursor` is placed after the fragment
+    /// For a fragment built from a copy of the source ending at `cursor` (e.g. reparsed macro
+    /// arguments)
     pub fn with_cursor(mut self, cursor: SyntaxToken) -> Self {
         self.cursor = Some(cursor);
         self
     }
 
-    /// Whether a layout of the fragment may end with a closing delimiter, e.g. a call `f(...)`
     pub fn may_end_with_delimiter(&self) -> bool {
         self.branches.iter().any(|b| b.end.is_closing())
     }
 
-    /// Whether a comment follows the cursor in the source, before the next code token
     pub fn comment_follows(&self) -> bool {
         let next = self.cursor.as_ref().and_then(|c| c.next_token());
         trivia_from(next).any(|t| is_comment_kind(t.kind()))

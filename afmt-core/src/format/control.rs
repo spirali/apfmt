@@ -46,11 +46,8 @@ pub(super) fn format_while_expr(fmt: &Formatter, expr: WhileExpr) -> Frag {
     builder.into_frag()
 }
 
-/// `'a: for pat in iterable {`; a broken head is preferably broken before `in` (Style Guide): `for pat`
-/// / `    in iterable` / `{`; a broken pattern costs a split (see `pat_layouts`), and after it `{`
-/// follows only an iterable spanning more lines (see `pattern_head`): `} in items` / `{`. After
-/// comments ending the line of `in`, the iterable is on an indented line, so the head hangs: `for p
-/// in` / `    // c` / `    items` / `{`
+/// `'a: for pat in iterable {`; preferably broken before `in` (Style Guide): `for pat` / `    in
+/// iterable` / `{`
 pub(super) fn format_for_expr(fmt: &Formatter, expr: ForExpr) -> Frag {
     let mut builder = Builder::new(fmt);
     push_label(fmt, &mut builder, expr.label());
@@ -65,9 +62,8 @@ pub(super) fn format_for_expr(fmt: &Formatter, expr: ForExpr) -> Frag {
     }
     let head =
         |pat: Frag, iterable: Frag| Builder::concat(fmt, [pat, in_keyword.clone(), iterable]);
-    // Broken before `in` is preferred to an iterable broken on the line of `for`, hanging or not
-    // (Style Guide): `for p` / `    in a.b().c(d)` / `{`, not `for p in a.b().c(` / `    d,` / `) {`;
-    // not after comments ending the line of `in`, which break it anyway
+    // Broken before `in` is preferred to an iterable broken on the line of `for` (Style Guide); not
+    // after comments ending the line of `in`
     let on_line = HeadLayouts {
         hanging: if comment_after_in {
             iterable.hanging.clone()
@@ -77,7 +73,6 @@ pub(super) fn format_for_expr(fmt: &Formatter, expr: ForExpr) -> Frag {
         other: iterable.other.clone().map(|i| fmt.keep_together(i)),
     };
     let HeadLayouts { hanging, other } = pattern_head(fmt, &pat, &all_pat, &on_line, head);
-    // The `in` line hangs
     let in_line = Builder::concat(
         fmt,
         [in_keyword.clone(), fmt.keep_together(iterable.all(fmt))],
@@ -103,8 +98,6 @@ pub(super) fn format_match_expr(fmt: &Formatter, expr: MatchExpr) -> Frag {
     format_head_with_block(fmt, expr.match_token().unwrap(), &head, arms)
 }
 
-/// The head and the arms of `match scrutinee { arms }`; a head broken over more lines costs a split
-/// (see `format_head_with_block`)
 fn match_expr_parts(fmt: &Formatter, expr: &MatchExpr) -> (HeadLayouts, Frag) {
     let head = format_head_expr(fmt, expr.expr().unwrap());
     let list = expr.match_arm_list().unwrap();
@@ -129,7 +122,7 @@ fn is_empty_block(expr: &Expr) -> bool {
     })
 }
 
-/// The Style Guide's control-flow expressions, which are put in a block as a match arm body
+/// Put in a block as a match arm body
 fn is_control_flow(expr: &Expr) -> bool {
     matches!(
         expr,
@@ -137,31 +130,17 @@ fn is_control_flow(expr: &Expr) -> bool {
     )
 }
 
-/// The layouts of a match arm body, see `arm_body_layouts`
 struct ArmBodyLayouts {
-    /// On the line of `=>` (`None` if it may not be there)
+    /// `None` if it may not be there
     same_line: Option<Frag>,
-    /// In a block: `=> {` / `    body` / `}`
     block: Frag,
 }
 
-/// The layouts of a match arm body: on the line of `=>`, and in a block. A body broken over more
-/// lines costs a split in both, so a body that fits on one line in the block goes there, as in
-/// rustfmt; in added braces, it costs one more, so a body broken anyway stays on the line of `=>`
-/// rather than moving into braces only to hug its arguments (`=> Compact(` / `    new(a, b),` /
-/// `),`, as rustfmt's `prefer_next_line`); a control-flow expression is always in a block (Style
-/// Guide). Only a combinable expression or a chain spans more lines on the line of `=>`, a
-/// combinable one in the layouts it has as an overflowing argument (see `format_expr_item`); others,
-/// e.g. an assignment, `return x` or a binary expression, are on one line there or in the block
-/// (Style Guide: "A non-combinable expression"). A block of the source with a single macro call keeps its braces
-/// (Style Guide: "Do not flatten a right-hand side block containing a single macro call because its
-/// expanded form could contain a trailing semicolon"). A `match` is not a control-flow expression
-/// of the Style Guide: it stays on the line of `=>` with its head on one line, also after a broken
-/// pattern (`} => match x {`, as in rustfmt).
+/// On the line of `=>`, and in a block; a broken body costs a split in both, and one more in added
+/// braces. Control flow is always in a block, a single macro call keeps its braces (Style Guide).
 fn arm_body_layouts(fmt: &Formatter, body: Expr) -> ArmBodyLayouts {
-    // `blocks`: the plain blocks around the expression in the source (`{ expr }`, `{ { expr } }`),
-    // removed when the body stays on the line of `=>`; a plain block that is not `{ expr }` stays a
-    // block (only the outer ones of nested blocks are removed)
+    // The plain blocks around the expression (`{ expr }`), removed when the body stays on the line
+    // of `=>`
     let (expr, blocks) = match body {
         Expr::BlockExpr(block) if plain_stmt_list(&block).is_some() => {
             let blocks = NestedPlainBlocks::of(block);
@@ -195,13 +174,12 @@ fn arm_body_layouts(fmt: &Formatter, body: Expr) -> ArmBodyLayouts {
             let inner = format_head_with_block(fmt, keyword, &head, arms);
             (fmt.keep_together(inner), flat_head)
         }
-        // `if` here is in a block: it gets the layouts of a statement (see `format_expr_at`)
+        // `if` here is in a block: it gets the layouts of a statement
         Expr::BlockExpr(_) | Expr::IfExpr(_) => {
             let inner = fmt.keep_together(format_expr_at(fmt, expr, ExprPosition::ArmBody));
             (inner.clone(), Some(inner))
         }
-        // A chain also broken before its elements (`=> xs` / `    .iter()` / `    .count(),`), as in
-        // rustfmt; the Style Guide does not say
+        // A chain also broken before its elements, as in rustfmt; the Style Guide does not say
         _ if operand_chain(&expr).is_some() => {
             let inner = fmt.keep_together(format_expr(fmt, expr));
             (inner.clone(), Some(inner))
@@ -212,8 +190,8 @@ fn arm_body_layouts(fmt: &Formatter, body: Expr) -> ArmBodyLayouts {
                 overflow,
                 ..
             } = format_expr_item(fmt, expr);
-            // A combinable expression overflows in all its layouts (chains are above), a closure
-            // in some, without the single line
+            // A combinable expression overflows in all its layouts, a closure in some, without the
+            // single line
             let same_line = match overflow {
                 Overflow::With(_) => Some(inner.clone()),
                 overflow => fmt.alt_some(
@@ -243,10 +221,8 @@ fn arm_body_layouts(fmt: &Formatter, body: Expr) -> ArmBodyLayouts {
     ArmBodyLayouts { same_line, block }
 }
 
-/// `pat if guard => body,` (Style Guide "Match"): the body on the line of `=>` with a comma, or in a
-/// block without one (see `arm_body_layouts`), with one with `match_block_trailing_comma` (rustfmt's
-/// option). A broken left-hand side costs a split; with a guard, it
-/// breaks before `if`, and the block starts on its own line: `pat` / `    if guard =>` / `{`.
+/// `pat if guard => body,`: the body after `=>` with a comma, or in a block without one (unless
+/// `match_block_trailing_comma`); with a guard, broken before `if`
 fn format_match_arm(fmt: &Formatter, arm: &MatchArm, group: Option<AlignGroup>) -> Frag {
     let pat = pat_layouts(fmt, arm.pat().unwrap());
     let all_pat = pat.clone().all(fmt);
@@ -264,8 +240,7 @@ fn format_match_arm(fmt: &Formatter, arm: &MatchArm, group: Option<AlignGroup>) 
     let ArmBodyLayouts { same_line, block } = arm_body_layouts(fmt, arm.expr().unwrap());
 
     let mut lhs = Builder::new(fmt);
-    // A broken left-hand side with a guard breaks before `if`, so the guard stays on one line here,
-    // and the pattern does not end on a `| C` line (Style Guide, see `pat_layouts`)
+    // The guard stays on one line, and the pattern does not end on a `| C` line (Style Guide)
     lhs.push(if guard.is_some() {
         pat.other.expect("a pattern has a single-line layout")
     } else {
@@ -275,10 +250,8 @@ fn format_match_arm(fmt: &Formatter, arm: &MatchArm, group: Option<AlignGroup>) 
         lhs.push(fmt.flat(guard.clone()));
     }
     lhs.push(arrow.clone());
-    // Broken only if it does not fit on one line with room for ` {` after it (rustfmt reserves the
-    // room for ` => {` in the same way), also when the body could gain by it (by being less indented
-    // than in a block): "If using a block form on the right-hand side of a match arm makes it
-    // possible to avoid breaking on the left-hand side, do that" (Style Guide)
+    // Broken only if it does not fit with room for ` {` (Style Guide: "If using a block form on the
+    // right-hand side ... makes it possible to avoid breaking on the left-hand side, do that")
     let lhs = fmt.flat_where_fits(lhs.into_frag(), " {".len() as u32);
     let with_body = |lhs: Frag, body: Frag, comma: bool| {
         let mut builder = Builder::new(fmt);
@@ -298,8 +271,8 @@ fn format_match_arm(fmt: &Formatter, arm: &MatchArm, group: Option<AlignGroup>) 
     if let Some(guard) = guard {
         let mut broken = Builder::new(fmt);
         broken.push(all_pat);
-        // Preferred to a broken pattern: "Avoid splitting the left-hand side" (Style Guide). The
-        // block starts on its own line, an empty one stays on the line of the guard (as in rustfmt).
+        // "Avoid splitting the left-hand side" (Style Guide); an empty block stays on the line of
+        // the guard
         let broken = if is_empty_block(&arm.expr().unwrap()) {
             broken.push(fmt.indented_line(Builder::concat(fmt, [guard, arrow, block])));
             with_body(broken.into_frag(), Frag::empty(), block_comma)

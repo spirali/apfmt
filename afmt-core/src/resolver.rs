@@ -8,20 +8,16 @@ use std::cmp::Ordering;
 
 #[derive(Clone)]
 struct Measure {
-    /// The column after the layout; `None` when it ends with a line break: the indentation of the new
-    /// line is written with the next text, at the indentation current there (`Renderer`), e.g. the
-    /// outer one for `)` after a broken list whose last line break is inside its `Nest`
+    /// The column after the layout; `None` when it ends with a line break: the next text writes the
+    /// indentation current there (e.g. the outer one for `)` after a broken list)
     last: Option<u32>,
-    /// The overflow beyond the page width: the columns beyond it, and `overflow_line_penalty` for each
-    /// line that overflows (see `overflow`); saturating, a single line can be very long (e.g. an
-    /// embedded blob of data)
+    /// The columns beyond the page width plus `overflow_line_penalty` for each overflowing line;
+    /// saturating, a single line can be very long
     badness: u32,
-    /// Compared after `badness`, the lower the better: `LINE_COST` for each line plus the costs
-    /// (see `DocNode::Cost`, `DocNode::KeepTogether`)
+    /// The lower the better: `LINE_COST` for each line plus the costs
     cost: i64,
-    /// The layout spans more than one line
     multi_line: bool,
-    /// Compared after `cost`, the higher the better (see `DocNode::WeakPreference`)
+    /// The higher the better
     weak_preference: WeakPreference,
 }
 
@@ -71,7 +67,6 @@ impl Measure {
         }
     }
 
-    /// Whether the layout ranks at least as well as `other` (see `rank_cmp`)
     fn rank_le(&self, other: &Measure) -> bool {
         match self.rank_cmp(other) {
             Ordering::Less | Ordering::Equal => true,
@@ -79,8 +74,7 @@ impl Measure {
         }
     }
 
-    /// The order of layouts from the best (`Less`): the overflow, then the cost (lines and
-    /// `Cost`s), then the weak preference
+    /// From the best (`Less`): the overflow, then the cost, then the weak preference
     fn rank_cmp(&self, other: &Measure) -> Ordering {
         self.badness
             .cmp(&other.badness)
@@ -91,23 +85,18 @@ impl Measure {
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Context {
-    /// `None` at the start of a line, before its indentation (see `Measure::last`)
+    /// `None` at the start of a line, before its indentation
     col: Option<u32>,
     indent: u32,
-    /// Newlines are not allowed
     flat: bool,
-    /// Text must end at most at this column until the first line break (`DocNode::FirstLineWithin`)
     first_line_end: Option<u32>,
 }
 
 impl Context {
-    /// The column where the next text starts
     fn text_col(&self) -> u32 {
         self.col.unwrap_or(self.indent)
     }
 
-    /// The context after a layout with `measure` placed in this one: at its last column, and free of
-    /// the first-line limit after a line break
     fn after(&self, measure: &Measure) -> Context {
         Context {
             col: measure.last,
@@ -167,8 +156,8 @@ impl LayoutSet {
     }*/
 }
 
-/// The leaves of a content (`Text`, `Newline`, `Mark`) in order, each with its indentation; it walks
-/// an explicit stack instead of recursing, a content nests as deeply as its doc (e.g. a long chain)
+/// The leaves of a content in order, each with its indentation; an explicit stack, since a content
+/// nests as deeply as its doc (e.g. a long chain)
 struct Leaves<'a> {
     content_arena: &'a ContentArena,
     stack: Vec<(Content, u32)>,
@@ -291,7 +280,7 @@ impl MarkCollector<'_> {
     }
 }
 
-/// The padding of each mark, aligning the comments of each run of consecutive marked lines
+/// Aligns the comments of each run of consecutive marked lines
 fn align_marks(resolver: &Resolver, content: Content) -> Vec<u32> {
     let mut collector = MarkCollector {
         resolver,
@@ -356,8 +345,8 @@ pub(crate) struct Resolver<'a> {
     content_arena: ContentArena,
     config: &'a Config,
     root: DocId,
-    /// The layouts of the docs that are shared by more alternatives (`Alt` nodes), by context; the
-    /// doc is a DAG, so without it a shared doc is resolved again in every alternative containing it
+    /// The layouts of shared docs (`Alt` nodes) by context; without it a shared doc is resolved
+    /// again in every alternative containing it
     memo: FxHashMap<(DocId, Context), LayoutSet>,
 }
 
@@ -379,7 +368,6 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// The text of a `Content::Text` leaf; `None` when it is empty
     fn text_of(&self, doc: DocId) -> Option<&str> {
         let s = match self.doc_arena.get_node(doc) {
             DocNode::Token(token) => token.text(),
@@ -390,7 +378,6 @@ impl<'a> Resolver<'a> {
         (!s.is_empty()).then_some(s)
     }
 
-    /// Appends the best layout of the root doc to `out`, which ends at the start of a line
     pub fn render_into(&mut self, out: &mut String) {
         let layout_set = self.resolve();
         //layout_set.dump();
@@ -406,13 +393,11 @@ impl<'a> Resolver<'a> {
         *out = renderer.out;
     }
 
-    /// The layouts of the root doc at the start of a line; it runs on an explicit stack of `Task`s
-    /// instead of recursion, a doc nests deeply (e.g. a long chain of `Concat`s) and the recursion
-    /// would overflow the stack
+    /// An explicit stack of `Task`s instead of recursion: a doc nests deeply (e.g. a long chain of
+    /// `Concat`s) and the recursion would overflow the stack
     fn resolve(&mut self) -> LayoutSet {
         let mut tasks = Vec::with_capacity(128);
-        // The doc resolved next: a fast path that avoids pushing and popping a `Task::Resolve`,
-        // which defers a doc until the tasks above it are done
+        // A fast path that avoids pushing and popping a `Task::Resolve`
         let mut next = Some((
             Context {
                 col: None,
@@ -496,8 +481,8 @@ impl<'a> Resolver<'a> {
                     results.push(layout_set);
                 }
                 Task::ConcatStart(ctx, doc2) => {
-                    // The layouts of the first doc stay on the results, under those of the `Concat`
-                    // so far; with none, they are the empty result
+                    // The layouts of the first doc stay on the results; with none, they are the
+                    // empty result
                     let Some(layout1) = results.last().unwrap().layouts.first() else {
                         continue;
                     };
@@ -555,9 +540,8 @@ impl<'a> Resolver<'a> {
         results: &mut Vec<LayoutSet>,
     ) -> Option<(Context, DocId)> {
         let resolve_text = |s: &str| {
-            // Before the first line break of a `FirstLineWithin`, the text (its first line) must end
-            // within the limit; a single line within it (also `Flat`) contains no line break at all,
-            // not even inside a token (a multi-line string literal)
+            // Before the first line break of a `FirstLineWithin`, the text must end within the
+            // limit; a single line within it contains no line break at all, not even inside a token
             if let Some(end) = ctx.first_line_end {
                 if ctx.flat && s.contains('\n') {
                     return LayoutSet::empty();
@@ -685,8 +669,6 @@ enum Task {
     WeakPreference(WeakPreference),
     KeepTogether(Cost),
     MultiLine,
-    /// Only the layouts whose last line ends at most at the column (`DocNode::ShortLastLine`,
-    /// `DocNode::RoomAfter`)
     LastLineEndsWithin(u32),
     IgnoreOverflow,
     Alt(Context, DocId),
@@ -695,8 +677,7 @@ enum Task {
     Concat(Context, DocId, u32),
 }
 
-/// The layouts rendered with `indent`; a layout ending with a line break keeps `last: None`, the next
-/// text after it is indented by the indentation current there
+/// A layout ending with a line break keeps `last: None`
 fn indented(content_arena: &mut ContentArena, indent: u32, mut layout_set: LayoutSet) -> LayoutSet {
     for layout in &mut layout_set.layouts {
         layout.content = Content::Indent(indent, content_arena.make(layout.content));
@@ -704,8 +685,8 @@ fn indented(content_arena: &mut ContentArena, indent: u32, mut layout_set: Layou
     layout_set
 }
 
-/// The Pareto frontier of the layouts by (`last`, rank); a layout ending with a line break (`last: None`)
-/// counts as ending leftmost, it leaves the most room for what follows
+/// The Pareto frontier by (`last`, rank); a layout ending with a line break counts as ending
+/// leftmost
 fn merge_layout_sets(a: LayoutSet, b: LayoutSet) -> LayoutSet {
     let mut out = LayoutVec::new();
     let mut a_it = a.layouts.into_iter();

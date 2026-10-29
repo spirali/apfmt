@@ -23,8 +23,7 @@ use ra_ap_syntax::{AstNode, SyntaxKind, SyntaxNode};
 fn format_let_stmt(fmt: &Formatter, stmt: LetStmt) -> Frag {
     let mut builder = Builder::new(fmt);
     builder.push_keyword(stmt.let_token().unwrap());
-    // `pat: Type`, broken only when nothing else helps (Style Guide: break after `=`, then before
-    // `else`)
+    // `pat: Type`, broken only when nothing else helps (Style Guide)
     let mut lhs = Builder::new(fmt);
     lhs.push(fmt.keep_together(format_pat(fmt, stmt.pat().unwrap())));
     if let Some(ty) = stmt.ty() {
@@ -32,14 +31,14 @@ fn format_let_stmt(fmt: &Formatter, stmt: LetStmt) -> Frag {
         lhs.push(format_type(fmt, ty));
     }
     let lhs = lhs.into_frag();
-    // `let pat = init else { expr };` on a single line (Style Guide), started like `builder`
+    // `let pat = init else { expr };` on a single line (Style Guide)
     let mut single_line = None;
     match (stmt.initializer(), stmt.let_else()) {
         (Some(init), Some(let_else)) => {
             let block = let_else.block_expr().unwrap();
             let eq_token = stmt.eq_token().unwrap();
-            // Comments ending the line of `=` rule out a single line and put the initializer on an
-            // indented line, so it hangs: `let x = // c` / `    init` / `else {`
+            // Comments ending the line of `=` put the initializer on an indented line: `let x = //
+            // c` / `    init`
             let comment_after_eq = comments_break_line_after(&eq_token);
             let tail = (!comment_after_eq)
                 .then(|| single_line_block_expr(&block).map(|expr| format_expr(fmt, expr)))
@@ -86,15 +85,8 @@ fn format_let_stmt(fmt: &Formatter, stmt: LetStmt) -> Frag {
     fmt.alt_opt(with_semicolon(builder), single_line)
 }
 
-/// `pat = init else {` of `let pat = init else { ... };` (Style Guide "else blocks (let-else
-/// statements)"), `init` after `=`. `else {` follows the initializer on its line unless the
-/// initializer ends with an indented continuation line (a broken chain, or the initializer moved to
-/// the line after `=`); then it goes on its own line. It also goes there, at no cost, after an
-/// initializer on a single line on the line of `=`: "If the let statement components preceding the
-/// else can be formatted on a single line, but the else { does not fit on the same line, break the
-/// line before the else." After a broken pattern (or type), `else {` follows only an initializer
-/// spanning more lines, whose last line is then closing delimiters at the indentation of `let`
-/// (`} = x` / `else {`, as in rustfmt).
+/// `pat = init else {`: `else {` follows the initializer unless it ends with a continuation line,
+/// or it does not fit after a flat one (Style Guide); after a broken pattern only after `} = x`.
 fn format_let_else(
     fmt: &Formatter,
     lhs: Frag,
@@ -115,7 +107,7 @@ fn format_let_else(
         .into_iter()
         .flatten()
         .reduce(|a, b| fmt.alt_frag(a, b));
-    // `else {` on its own line after a hanging initializer, shared by both left-hand sides
+    // Shared by both left-hand sides
     let hanging_else = hanging.map(|hanging| {
         let head = HeadLayouts {
             hanging: Some(hanging),
@@ -123,7 +115,6 @@ fn format_let_else(
         };
         format_head_followed_by(fmt, &head, else_block.clone())
     });
-    // The initializer placed by `other`, then the hanging one
     let init_else = |other: Option<Frag>| {
         let other_else = other.map(|other| {
             format_head_followed_by(fmt, &HeadLayouts::other(other), else_block.clone())
@@ -139,7 +130,7 @@ fn format_let_else(
     )
 }
 
-/// An expression statement; `semicolon: false` drops its `;` (see `format_stmt_list`)
+/// `semicolon: false` drops its `;`
 fn format_expr_stmt(fmt: &Formatter, stmt: ExprStmt, semicolon: bool) -> Frag {
     let mut builder = Builder::new(fmt);
     builder.push(format_expr_at(
@@ -147,7 +138,7 @@ fn format_expr_stmt(fmt: &Formatter, stmt: ExprStmt, semicolon: bool) -> Frag {
         stmt.expr().unwrap(),
         ExprPosition::Statement,
     ));
-    // Block-like expressions (`if`, ...) may stand without `;`
+    // Block-like expressions may stand without `;`
     if stmt.semicolon_token().is_some() {
         if semicolon {
             builder.push_separator(SyntaxKind::SEMICOLON);
@@ -168,9 +159,8 @@ fn format_stmt(fmt: &Formatter, stmt: Stmt) -> Frag {
     }
 }
 
-/// The statements of a broken block; `tail` is the already formatted tail expression, when it is
-/// shared with another layout. With `normalize_jump`, a `return`, `break` or `continue` ending the
-/// block gets `;` with `trailing_semicolon` and loses it without (as rustfmt): `break;`, `break`.
+/// `tail` is the formatted tail expression, when shared. With `normalize_jump`, a final jump gets
+/// `;` with `trailing_semicolon` and loses it without (as rustfmt).
 fn format_stmt_list(
     fmt: &Formatter,
     stmt_list: StmtList,
@@ -204,8 +194,7 @@ fn format_stmt_list(
     delims.format_block(fmt, lines)
 }
 
-/// `tail`, the formatted tail expression `node` of a block, followed by `;` if it is a `return`,
-/// `break` or `continue` and `trailing_semicolon` is on (as rustfmt): `break;`
+/// Followed by `;` if it is a jump and `trailing_semicolon` is on (as rustfmt)
 pub(super) fn format_block_tail(fmt: &Formatter, node: &SyntaxNode, tail: Frag) -> Frag {
     if !(fmt.config().trailing_semicolon && is_jump_expr(node)) {
         return tail;
@@ -220,8 +209,7 @@ pub(super) fn format_block_expr(fmt: &Formatter, body: BlockExpr) -> Frag {
     format_block_expr_with_tail(fmt, body, None)
 }
 
-/// `{ ... }` with its label and modifiers: `'a: {`, `unsafe {`, `async move {`, `const {`, `gen {`;
-/// see `format_stmt_list` for `tail`
+/// `'a: {`, `unsafe {`, `async move {`, `const {`, `gen {`
 pub(super) fn format_block_expr_with_tail(
     fmt: &Formatter,
     body: BlockExpr,
@@ -237,15 +225,13 @@ pub(super) fn format_block_expr_with_tail(
     builder.into_frag()
 }
 
-/// The transcriber of a `macro_rules!` rule parsed as a block (see `parse_transcriber`), broken; a
-/// `return`, `break` or `continue` ending it keeps or lacks its `;` as in the source: it is not a
-/// block of the expansion, and `;` would end up in an expression where the macro is used
-/// (rustc's lint `semicolon_in_expressions_from_macros`), as rustfmt leaves it
+/// Broken; a final jump keeps its `;` as in the source, since it would end up in an expression
+/// where the macro is used (as rustfmt)
 pub(super) fn format_transcriber_block(fmt: &Formatter, body: BlockExpr) -> Frag {
     format_stmt_list(fmt, body.stmt_list().unwrap(), None, false)
 }
 
-/// Pushes the label and the modifiers of a block in front of its `{`: `'a: `, `unsafe `, `async move `
+/// `'a: `, `unsafe `, `async move `
 pub(super) fn push_block_prefix(fmt: &Formatter, builder: &mut Builder, body: &BlockExpr) {
     push_label(fmt, builder, body.label());
     push_modifiers(builder, body.syntax());

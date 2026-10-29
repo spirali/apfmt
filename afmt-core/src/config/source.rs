@@ -10,7 +10,6 @@ use crate::config::cargo::{cargo_edition, find_cargo_manifest};
 use crate::config::lookup::{config_in_dir, find_config};
 use crate::config::parser::read_config;
 
-/// Where the config of a source comes from
 #[derive(Clone, Debug, Default)]
 pub struct ConfigOptions {
     /// The config file to use, or a directory with one, instead of looking it up
@@ -19,17 +18,12 @@ pub struct ConfigOptions {
     pub no_config: bool,
     /// Ignore rustfmt's config files (`rustfmt.toml`, `.rustfmt.toml`)
     pub no_rustfmt_toml: bool,
-    /// The edition, overriding the one of `Cargo.toml` and of the config file; `Cargo.toml` is
-    /// then not read
+    /// Overrides `Cargo.toml` and the config file; `Cargo.toml` is then not read
     pub edition: Option<Edition>,
 }
 
-/// The config for a source in `dir`: the config file (`ConfigOptions::config_path`, or the one
-/// `find_config` finds from `dir`) applied to the defaults, and the edition: the explicit one
-/// (`ConfigOptions::edition`), else the one of the package in the nearest `Cargo.toml` (as
-/// `cargo fmt` passes it), else the one of the config file. A `Cargo.toml` that cannot be read is
-/// not an error, the source itself may be fine: it gives a warning (returned with the config) and
-/// the edition of the config file is used, as rustfmt, which does not read `Cargo.toml`, would.
+/// The config file applied to the defaults, and the edition: explicit, else from `Cargo.toml`, else
+/// from the config file. An unreadable `Cargo.toml` is a returned warning.
 pub fn config_for_source(
     dir: &Path,
     options: &ConfigOptions,
@@ -63,7 +57,7 @@ pub fn config_for_source(
     Ok((config, warnings))
 }
 
-/// The config file for a source in `dir`; an explicitly given one that does not exist is an error
+/// An explicitly given one that does not exist is an error
 fn config_file(dir: &Path, options: &ConfigOptions) -> crate::Result<Option<PathBuf>> {
     let include_rustfmt = !options.no_rustfmt_toml;
     let Some(path) = &options.config_path else {
@@ -88,8 +82,8 @@ mod tests {
     use super::*;
     use crate::test_utils::TempDir;
 
-    /// The config of a source in a package directory with `afmt.toml` (so no config file outside
-    /// the directory is found) and `Cargo.toml`
+    /// In a package directory with `afmt.toml`, so no config file outside it is found, and
+    /// `Cargo.toml`
     fn config_in_package(
         name: &str,
         afmt_toml: &str,

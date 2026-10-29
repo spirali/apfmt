@@ -14,9 +14,8 @@ use crate::syntax_utils::has_attrs;
 use ra_ap_syntax::AstNode;
 use ra_ap_syntax::ast::{Expr, HasArgList, HasGenericArgs, IndexExpr};
 
-/// The postfix chain of `expr` behind its prefix operators, `&` / `&mut` and casts, if it is one:
-/// `a.b()` of `&a.b()`, `!a.b()`, `a.b() as T`, also nested (`&mut *a.b()`); `expr` itself if it is a
-/// chain
+/// The chain behind prefix operators, `&` / `&mut` and casts: `a.b()` of `&mut *a.b() as T`; `expr`
+/// itself if it is a chain
 pub(super) fn operand_chain(expr: &Expr) -> Option<Expr> {
     match expr {
         Expr::RefExpr(e) => operand_chain(&e.expr()?),
@@ -27,9 +26,7 @@ pub(super) fn operand_chain(expr: &Expr) -> Option<Expr> {
     }
 }
 
-/// The layouts of the postfix chain `chain` of `expr` (see `operand_chain`) with the operators of
-/// `expr` around them, which then apply to the chain as a whole: `&` in front of a broken chain is
-/// followed by its elements at the indentation of `&`, not of the root
+/// The chain layouts with the operators of `expr` around them, applying to the chain as a whole
 pub(super) fn operator_chain_parts(fmt: &Formatter, expr: &Expr, chain: Expr) -> ChainLayouts {
     if *expr == chain {
         return postfix_chain_parts(fmt, chain);
@@ -39,8 +36,7 @@ pub(super) fn operator_chain_parts(fmt: &Formatter, expr: &Expr, chain: Expr) ->
         .map(|chain| Builder::concat(fmt, [prefix.clone(), chain, suffix.clone()]))
 }
 
-/// The prefix operators in front of the chain of `expr` and the casts after it (see
-/// `operand_chain`): `&mut *` and `as T` of `&mut *a.b() as T`
+/// E.g. `&mut *` and `as T` of `&mut *a.b() as T`
 fn format_operators_around_chain(fmt: &Formatter, expr: &Expr) -> (Frag, Frag) {
     let mut prefix = Builder::new(fmt);
     let mut casts = Vec::new();
@@ -73,9 +69,8 @@ fn format_operators_around_chain(fmt: &Formatter, expr: &Expr) -> (Frag, Frag) {
     (prefix.into_frag(), suffix.into_frag())
 }
 
-/// `[index]` of `target[index]`, broken only when it does not fit on one line, and then block
-/// indented between the brackets, never before `[` (Style Guide "Array accesses, indexing, and
-/// slicing"): `target[` / `    index` / `]`
+/// `[index]`, broken only when it does not fit, between the brackets (Style Guide): `target[` /
+/// `    index` / `]`
 fn format_index(fmt: &Formatter, expr: &IndexExpr) -> Frag {
     let index = ListItem::new(format_expr(fmt, expr.index().unwrap()));
     let layout =
@@ -84,14 +79,8 @@ fn format_index(fmt: &Formatter, expr: &IndexExpr) -> Frag {
     fmt.keep_together(delimited_list(fmt, &delims, &[index], layout))
 }
 
-/// Splits a postfix chain `a.b()?.c()` into its root (`a`, the return value) and the postfix
-/// expressions applied to it, innermost first. An index is not a part of a chain, as in rustfmt (the
-/// Style Guide's chain is of field accesses, method calls and `?`): it ends the root, so the root of
-/// `a.b[i].c()` is `a.b[i]`, itself a chain followed by an index (see `postfix_chain_parts`); so does
-/// a call of the chain's result (`a.b()(x).c()`, see `is_chain_call`). A root ending with an index
-/// thus stays on the first line while it fits (`edges.outputs()[0]` / `.take()`), unlike `?`, which
-/// stays with its element (`edges` / `.outputs()?` / `.take()`); an index as a suffix of its element
-/// was considered and rejected, see PostfixChain in `docs/formatting-taxonomy.md`.
+/// Splits `a.b()?.c()` into the root and the postfix expressions, innermost first. An index or a
+/// chain call ends the root, as in rustfmt (see PostfixChain in `docs/formatting-taxonomy.md`).
 fn collect_postfix_chain(expr: Expr, postfix: &mut Vec<Expr>) -> Expr {
     let inner = match &expr {
         Expr::MethodCallExpr(e) => e.receiver(),
@@ -105,29 +94,23 @@ fn collect_postfix_chain(expr: Expr, postfix: &mut Vec<Expr>) -> Expr {
     root
 }
 
-/// A chain of fields, method calls, `.await`, `?` and indexes, see `postfix_chain_layouts`
 pub(super) fn format_postfix_chain(fmt: &Formatter, expr: Expr) -> Frag {
     postfix_chain_parts(fmt, expr).layouts.all(fmt)
 }
 
-/// The layouts of a postfix chain, see `postfix_chain_layouts`. `?` stays with the element (or root)
-/// in front of it: `a.b()?`. An index follows the chain in front of it, on the line of its last
-/// element, whose `chain_width` it does not count, as in rustfmt: `a.b().c()[0]`, `a` / `.b()` /
-/// `.c()[0]`; so do the arguments of a call of the chain's result (`a.b()(x)`, see `is_chain_call`).
-/// A root ending with an index or such a call is a chain itself (see `collect_postfix_chain`).
+/// `?` stays with the element in front of it. An index or a chain call follows the last element on
+/// its line, not counted in `chain_width`, as in rustfmt: `a` / `.b()` / `.c()[0]`.
 pub(super) fn postfix_chain_parts(fmt: &Formatter, expr: Expr) -> ChainLayouts {
     postfix_chain_parts_then(fmt, expr, &Frag::empty())
 }
 
-/// The layouts of the postfix chain `expr` followed by `suffix` on the line of its last element
-/// (the indexes after it), see `postfix_chain_parts`
+/// `suffix` (the indexes after it) follows on the line of its last element
 fn postfix_chain_parts_then(fmt: &Formatter, expr: Expr, suffix: &Frag) -> ChainLayouts {
     debug_assert_attrs_placed(fmt, &expr);
     if let Expr::IndexExpr(index_expr) = &expr {
         let index = Builder::concat(fmt, [format_index(fmt, index_expr), suffix.clone()]);
         return ChainLayouts::new(chain_root_layouts(fmt, index_expr.base().unwrap(), &index));
     }
-    // A call of the chain's result follows it as an index does
     if let Expr::CallExpr(call) = &expr {
         let args = format_arg_list(fmt, call.arg_list().unwrap());
         let args = Builder::concat(fmt, [args, suffix.clone()]);
@@ -135,7 +118,6 @@ fn postfix_chain_parts_then(fmt: &Formatter, expr: Expr, suffix: &Frag) -> Chain
     }
     let mut postfix = Vec::new();
     let root_expr = collect_postfix_chain(expr, &mut postfix);
-    // `?` following the root
     let mut root = Builder::new(fmt);
     let mut elements: Vec<(Builder, Builder)> = Vec::new();
     for expr in postfix {
@@ -185,8 +167,7 @@ fn postfix_chain_parts_then(fmt: &Formatter, expr: Expr, suffix: &Frag) -> Chain
     postfix_chain_layouts(fmt, root, &elements, suffix)
 }
 
-/// The layouts of the root of a postfix chain followed by `suffix` on its last line: a root ending
-/// with an index is a chain itself (see `collect_postfix_chain`), another one an expression
+/// A root ending with an index is a chain itself, another one an expression
 fn chain_root_layouts(fmt: &Formatter, expr: Expr, suffix: &Frag) -> HeadLayouts {
     if is_postfix_expr(&expr) && !has_attrs(&expr) {
         postfix_chain_parts_then(fmt, expr, suffix).layouts
@@ -196,7 +177,6 @@ fn chain_root_layouts(fmt: &Formatter, expr: Expr, suffix: &Frag) -> HeadLayouts
     }
 }
 
-/// Whether the expression is a postfix chain, see `format_postfix_chain`
 pub(super) fn is_postfix_expr(expr: &Expr) -> bool {
     matches!(
         expr,
@@ -208,8 +188,7 @@ pub(super) fn is_postfix_expr(expr: &Expr) -> bool {
     ) || is_chain_call(expr)
 }
 
-/// Whether the expression calls the result of a postfix chain (`a.b()(x)`, `a.handlers[i](x)`): a
-/// chain itself, its arguments following the chain as an index does (see `postfix_chain_parts`)
+/// `a.b()(x)`, `a.handlers[i](x)`: a chain itself, its arguments following it as an index does
 pub(super) fn is_chain_call(expr: &Expr) -> bool {
     let Expr::CallExpr(call) = expr else {
         return false;

@@ -8,22 +8,19 @@ use ra_ap_syntax::{
     AstNode, Edition, NodeOrToken, SourceFile, SyntaxKind, SyntaxNode, SyntaxToken, T, TextSize,
 };
 
-/// Whether the node has attributes
 pub(crate) fn has_attrs(node: &impl HasAttrs) -> bool {
     node.attrs().next().is_some()
 }
 
-/// Whether `node` is a macro call with braces, `m! { ... }`, as an expression: as the only content of a
-/// block, it is a statement (it may expand to statements or items, `let a = 1;`), so the block cannot
-/// be removed; with `()` or `[]`, it is an expression there as anywhere else
+/// `m! { ... }` as an expression: as the only content of a block it is a statement (it may expand
+/// to statements), so the block cannot be removed
 pub(crate) fn is_brace_macro_expr(node: &SyntaxNode) -> bool {
     ast::MacroExpr::cast(node.clone())
         .and_then(|expr| expr.macro_call()?.token_tree()?.l_curly_token())
         .is_some()
 }
 
-/// Whether `node` is a `return`, `break` or `continue` expression, which ends its block with `;`
-/// (`trailing_semicolon`)
+/// Ends its block with `;` (`trailing_semicolon`)
 pub(crate) fn is_jump_expr(node: &SyntaxNode) -> bool {
     matches!(
         node.kind(),
@@ -31,8 +28,7 @@ pub(crate) fn is_jump_expr(node: &SyntaxNode) -> bool {
     )
 }
 
-/// The statement `return;`, `break;` or `continue;` ending a block without a tail expression, whose
-/// `;` the formatter adds or removes (`trailing_semicolon`)
+/// `return;`, `break;` or `continue;` ending a block, whose `;` follows `trailing_semicolon`
 pub(crate) fn trailing_jump_stmt(stmt_list: &ast::StmtList) -> Option<ast::ExprStmt> {
     if stmt_list.tail_expr().is_some() {
         return None;
@@ -45,8 +41,7 @@ pub(crate) fn trailing_jump_stmt(stmt_list: &ast::StmtList) -> Option<ast::ExprS
     }
 }
 
-/// A stray `;` in a block, not part of a statement (`;;`), which the formatter removes
-/// (`rewrite/empty_stmts.rs`)
+/// A stray `;` in a block (`;;`), removed by `rewrite/empty_stmts.rs`
 pub(crate) fn is_stray_semicolon(token: &SyntaxToken) -> bool {
     token.kind() == SyntaxKind::SEMICOLON
         && token
@@ -54,20 +49,15 @@ pub(crate) fn is_stray_semicolon(token: &SyntaxToken) -> bool {
             .is_some_and(|p| p.kind() == SyntaxKind::STMT_LIST)
 }
 
-/// The tokens of a tree parsed again that are written as other text, with that text: in a
-/// transcriber of `macro_rules!`, the placeholders of the metavariables (`_x` for `$x`, see
-/// `parse_transcriber`)
+/// Tokens of a reparsed tree written as other text: in a `macro_rules!` transcriber, `_x` for `$x`
 pub(crate) type Placeholders = FxHashMap<SyntaxToken, String>;
 
-/// A token tree parsed again as the node `N` (see `parse_token_tree`, `parse_transcriber`)
 pub(crate) struct Reparsed<N> {
     pub node: N,
-    /// The tokens of `node` written as other text, see `Placeholders`
     pub placeholders: Vec<(SyntaxToken, String)>,
 }
 
 impl<N: AstNode> Reparsed<N> {
-    /// The node as a plain syntax node
     pub fn into_syntax(self) -> Reparsed<SyntaxNode> {
         Reparsed {
             node: self.node.syntax().clone(),
@@ -76,21 +66,14 @@ impl<N: AstNode> Reparsed<N> {
     }
 }
 
-/// The text of a token tree to parse again, with the placeholders in it (see `substituted_text`)
 struct SubstitutedText {
     text: String,
-    /// The offset and the length of each placeholder in `text`, with the text it stands for
+    /// The offset and length of each placeholder in `text`, with the text it stands for
     placeholders: Vec<(usize, usize, String)>,
 }
 
-/// The text of `tree`, with its delimiters. With `specifiers` (in a transcriber of `macro_rules!`,
-/// the fragment specifiers of its matcher), each metavariable `$name` (and `$crate`) is replaced
-/// with one token that may stand where the fragment may, of the same width except for `vis`:
-/// `'name` for a `lifetime`, `pub` for a `vis`, otherwise the identifier `_name`; and each
-/// repetition `$( ... ) sep? op` on a single line with the identifier `_rep`, written as the source
-/// text of the repetition (see `repetition_end`); `None` when a `$` is followed by neither (or by a
-/// repetition spanning lines). The tokens of `tree` that are `placeholders` already (`tree` is in a
-/// tree parsed again) stay placeholders.
+/// The text of `tree`; with `specifiers` (a `macro_rules!` transcriber), `$name` is replaced by a
+/// same-width token valid for its fragment, a single-line repetition by `_rep`
 fn substituted_text(
     tree: &ast::TokenTree,
     specifiers: Option<&FxHashMap<String, String>>,
@@ -141,9 +124,7 @@ fn substituted_text(
     })
 }
 
-/// The index in `tokens` of the last token of the repetition `$( ... ) sep? op` whose `(` is at
-/// `open`: the operator `*`, `+` or `?`, after an optional separator token; `None` if there is no
-/// operator
+/// The index of the operator `*`, `+` or `?` of the repetition whose `(` is at `open`
 fn repetition_end(tokens: &[SyntaxToken], open: usize) -> Option<usize> {
     let group = tokens[open].parent()?;
     let is_close = |t: &SyntaxToken| t.kind() == T![')'] && t.parent().as_ref() == Some(&group);
@@ -158,16 +139,10 @@ fn repetition_end(tokens: &[SyntaxToken], open: usize) -> Option<usize> {
     is_op(&tokens[op]).then_some(op)
 }
 
-/// Whether formatting `node` could change whether two adjacent punctuation tokens are joined (no
-/// whitespace between them), which a procedural macro sees (`Punct::spacing`) and may read as one
-/// operator: `arg!(-f --foo)` would become `-f - -foo` (the binary `-` and the unary one), `x<-y`
-/// would become `x < -y`, `& &x` would become `&&x`. A pair stays as it is only where afmt never
-/// puts whitespace between them and they are written joined (see `is_printed_joined`). Commas and
-/// semicolons are separators, never part of an operator, so their spacing may change; so may the
-/// spacing after `?`, which depends on the layout of a chain (`x?.y` or `x?` / `.y`), and `_` is a
-/// word, not punctuation, for a procedural macro.
+/// Whether formatting could join or split adjacent punctuation, which a procedural macro may read
+/// as one operator (`& &x` → `&&x`); commas, semicolons, `?` and `_` may change
 fn changes_punct_spacing(node: &SyntaxNode) -> bool {
-    // A nested token tree (`vec![...]` in the arguments) is checked when it is parsed itself
+    // A nested token tree is checked when it is parsed itself
     let is_punct = |t: &SyntaxToken| {
         t.kind().is_punct()
             && t.parent()
@@ -200,18 +175,13 @@ fn changes_punct_spacing(node: &SyntaxNode) -> bool {
         })
 }
 
-/// Whether afmt prints the punctuation tokens `first` and `second` without whitespace between
-/// them: a prefix operator and the start of its operand (`!!x`, `&*x`, `-!x`), the pipe opening
-/// closure parameters and a pattern (`|&x|`), a reference pattern or type (`&&x`, `&[T]`), a range
-/// and its end (`..*x`, `..=-1`, no spaces in ranges), a path and `*` or `<` (`a::*`, `::<&T>`),
-/// and the angle brackets of a type with what follows them (`>>`, `>::`, `|x: Vec<T>|`,
-/// `Vec<T>: Clone`). Every other pair gets whitespace, e.g. around a binary operator.
+/// Whether afmt prints `first` and `second` without whitespace between them: prefix operators, ref
+/// patterns, ranges, paths, and angle brackets (`!!x`, `|&x|`, `..=-1`, `a::*`, `>>`)
 fn is_printed_joined(first: &SyntaxToken, second: &SyntaxToken) -> bool {
     use SyntaxKind::{PARAM_LIST, PREFIX_EXPR, PTR_TYPE, REF_EXPR, REF_PAT, REF_TYPE};
     let parent = first.parent();
     let opens_parent = || parent.as_ref().and_then(|p| p.first_token()).as_ref() == Some(first);
     match (first.kind(), parent.as_ref().map(|p| p.kind())) {
-        // An operator or `|` opening its node, followed by its operand or pattern: `!!x`, `&*x`, `|&x|`
         (_, Some(PREFIX_EXPR | REF_EXPR | REF_PAT | REF_TYPE | PTR_TYPE))
         | (T![|], Some(PARAM_LIST)) => opens_parent(),
         (T![..] | T![..=] | T![...], Some(SyntaxKind::RANGE_EXPR | SyntaxKind::RANGE_PAT)) => true,
@@ -228,9 +198,8 @@ fn is_printed_joined(first: &SyntaxToken, second: &SyntaxToken) -> bool {
     }
 }
 
-/// Whether the node `kind` holds `<` and `>` as the angle brackets of a type (`Vec<T>`,
-/// `<T as A>::f`), not comparisons; the generic parameters of an item are followed by a space
-/// (`impl<T> ::a::B`)
+/// `<` and `>` as angle brackets (`Vec<T>`), not comparisons; item generic parameters are followed
+/// by a space (`impl<T> ::a::B`)
 fn is_angle_list(kind: SyntaxKind) -> bool {
     matches!(
         kind,
@@ -238,9 +207,7 @@ fn is_angle_list(kind: SyntaxKind) -> bool {
     )
 }
 
-/// Whether `node` contains a comparison with an unparenthesized comparison as an operand
-/// (`a < b > c`, `a == b == c`): rust-analyzer parses it without an error, rustc rejects it
-/// ("comparison operators cannot be chained")
+/// `a < b > c`, `a == b == c`: rust-analyzer parses it, rustc rejects it
 fn has_chained_comparison(node: &SyntaxNode) -> bool {
     let is_comparison =
         |expr: &ast::BinExpr| matches!(expr.op_kind(), Some(ast::BinaryOp::CmpOp(_)));
@@ -255,13 +222,8 @@ fn has_chained_comparison(node: &SyntaxNode) -> bool {
         })
 }
 
-/// `substituted` (the text of `tree`) parsed between `prefix` and `suffix` as the node `pick` finds
-/// in the file; `None` if the file has syntax errors (also those only rustc reports, see
-/// `has_chained_comparison`: such tokens are not code, e.g. `arg!(--opt <FILE> "help")`, and
-/// formatting them would change their spacing), if formatting could change whether punctuation is
-/// joined (see `changes_punct_spacing`), or if the node is not exactly the text. The parsed
-/// text starts with the indentation of the source line of `tree`, so the lines of the tree have the
-/// same indentation relative to its first line as in the source (see `Formatter::reindented_range`).
+/// `substituted` parsed between `prefix` and `suffix` as the node `pick` finds; `None` on syntax
+/// errors, punctuation spacing changes, or if the node is not exactly the text.
 fn reparse<N: AstNode>(
     tree: &ast::TokenTree,
     substituted: &SubstitutedText,
@@ -296,9 +258,8 @@ fn reparse<N: AstNode>(
     Some(Reparsed { node, placeholders })
 }
 
-/// The token tree of a macro call, with its delimiters, parsed again as the node `N` (`(...)` as the
-/// arguments of a call `__afmt(...)`, `[...]` as an array); `None` if the text does not parse as
-/// exactly that node. Its `placeholders` stay placeholders (see `reparse`).
+/// The token tree parsed as `N` (`(...)` as call arguments, `[...]` as an array); `None` if it does
+/// not parse as exactly that node
 pub(crate) fn parse_token_tree<N: AstNode>(
     tree: &ast::TokenTree,
     edition: Edition,
@@ -318,10 +279,8 @@ pub(crate) fn parse_token_tree<N: AstNode>(
     })
 }
 
-/// The transcriber of `rule` parsed again as the items of a module (an `ItemList`), else as the body
-/// of a function (a `BlockExpr`: statements and a tail expression), with its metavariables replaced
-/// by placeholders (see `substituted_text`); `None` for a transcriber in `()` or `[]`, with a
-/// repetition `$( ... )`, or that does not parse. Its `placeholders` stay placeholders.
+/// The transcriber of `rule` parsed as items, else as a function body, with placeholders for its
+/// metavariables; `None` for `()`/`[]`, a repetition, or if it does not parse
 pub(crate) fn parse_transcriber(
     rule: &MacroRule,
     edition: Edition,
@@ -356,15 +315,14 @@ pub(crate) fn parse_transcriber(
     (items.map(Reparsed::into_syntax)).or_else(|| body().map(Reparsed::into_syntax))
 }
 
-/// A rule of `macro_rules!`, `(matcher) => { transcriber }`; `=>` is two tokens in a token tree
+/// `(matcher) => { transcriber }`; `=>` is two tokens in a token tree
 pub(crate) struct MacroRule {
     pub matcher: ast::TokenTree,
     pub arrow: (SyntaxToken, SyntaxToken),
     pub transcriber: ast::TokenTree,
 }
 
-/// The rules in the braces of `macro_rules!` (its token tree `tree`), separated by `;` (optional after
-/// the last one); `None` when the token tree is not such a list
+/// Separated by `;`; `None` when the token tree is not such a list
 pub(crate) fn macro_rules_rules(tree: &ast::TokenTree) -> Option<Vec<MacroRule>> {
     tree.l_curly_token()?;
     let mut elements = (tree.syntax().children_with_tokens())
@@ -399,7 +357,7 @@ pub(crate) fn macro_rules_rules(tree: &ast::TokenTree) -> Option<Vec<MacroRule>>
     }
 }
 
-/// The fragment specifiers of the metavariables of a matcher, by name: `x` → `expr` for `$x:expr`
+/// `x` → `expr` for `$x:expr`
 fn fragment_specifiers(matcher: &ast::TokenTree) -> FxHashMap<String, String> {
     let tokens: Vec<_> = (matcher.syntax().descendants_with_tokens())
         .filter_map(|e| e.into_token())
@@ -412,7 +370,7 @@ fn fragment_specifiers(matcher: &ast::TokenTree) -> FxHashMap<String, String> {
         .collect()
 }
 
-/// The line and the column (both from 1, the column in characters) of `offset` in `code`
+/// Both from 1, the column in characters
 pub(crate) fn line_column(code: &str, offset: TextSize) -> (usize, usize) {
     let before = &code[..usize::from(offset).min(code.len())];
     let line_start = before.rfind('\n').map_or(0, |i| i + 1);

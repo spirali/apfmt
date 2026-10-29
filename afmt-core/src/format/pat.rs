@@ -21,8 +21,8 @@ use ra_ap_syntax::ast::{
 };
 use ra_ap_syntax::{AstNode, SyntaxKind, SyntaxNode};
 
-/// The layouts of a pattern followed by something on its last line (`= expr`, `in iter`, `if guard`):
-/// a broken or-pattern ends on a `| C` continuation line, so it hangs; a broken pattern costs a split
+/// A pattern followed by more on its last line (`= expr`, `in iter`): a broken or-pattern hangs; a
+/// broken pattern costs a split
 pub(super) fn pat_layouts(fmt: &Formatter, pat: Pat) -> HeadLayouts {
     let or_pat = matches!(pat, Pat::OrPat(_));
     let frag = fmt.keep_together(format_pat(fmt, pat));
@@ -52,10 +52,8 @@ fn format_ident_pat(fmt: &Formatter, pat: IdentPat) -> Frag {
     builder.into_frag()
 }
 
-/// Whether a single pattern in parentheses may overflow, i.e. start on the line of `(` and end on
-/// the line of `)`: `Some(Foo {` / `...` / `})`. A struct, tuple struct or tuple pattern, also after
-/// `&`, as in rustfmt (`can_be_overflowed_pat`); not a slice pattern, which rustfmt does not hug
-/// (`Some(` / `    [` / `...` / `    ],` / `)`).
+/// A single pattern in parentheses that may overflow: a struct, tuple struct or tuple pattern, also
+/// after `&`, as in rustfmt (`can_be_overflowed_pat`); not a slice pattern
 fn is_combinable_pat(pat: &Pat) -> bool {
     match pat {
         Pat::RecordPat(_) | Pat::TupleStructPat(_) | Pat::TuplePat(_) => true,
@@ -64,8 +62,7 @@ fn is_combinable_pat(pat: &Pat) -> bool {
     }
 }
 
-/// How the last of the patterns `pats` in parentheses may hug them: a single combinable one (see
-/// `is_combinable_pat`), as a call argument does
+/// A single combinable pattern, as a call argument does
 fn last_pat_hug(pats: &[Pat]) -> Hug {
     match pats {
         [pat] if is_combinable_pat(pat) => Hug::Allowed,
@@ -73,8 +70,7 @@ fn last_pat_hug(pats: &[Pat]) -> Hug {
     }
 }
 
-/// The patterns in the parentheses of the tuple or tuple struct pattern `node`, laid out by
-/// `layout`; the last one may hug them (see `last_pat_hug`)
+/// The last pattern may hug the parentheses (see `last_pat_hug`)
 fn format_pat_list(fmt: &Formatter, node: &SyntaxNode, layout: ListLayout) -> Frag {
     let pats = node.children().filter_map(Pat::cast).collect::<Vec<_>>();
     let hug = last_pat_hug(&pats);
@@ -84,9 +80,13 @@ fn format_pat_list(fmt: &Formatter, node: &SyntaxNode, layout: ListLayout) -> Fr
 }
 
 fn format_tuple_pat(fmt: &Formatter, pat: TuplePat) -> Frag {
-    let fields = pat.fields().count();
-    let layout =
-        ListLayout::tall(FlatLimit::MaxWidth).trailing_separator(single_item_separator(fields));
+    let mut fields = pat.fields();
+    // `(..)` is a tuple pattern already, unlike `(a)`
+    let separator = match (fields.next(), fields.next()) {
+        (Some(Pat::RestPat(_)), None) => TrailingSeparator::IfVertical,
+        _ => single_item_separator(pat.fields().count()),
+    };
+    let layout = ListLayout::tall(FlatLimit::MaxWidth).trailing_separator(separator);
     format_pat_list(fmt, pat.syntax(), layout)
 }
 
@@ -98,8 +98,7 @@ fn format_tuple_struct_pat(fmt: &Formatter, pat: TupleStructPat) -> Frag {
     builder.into_frag()
 }
 
-/// `[a, b, ..]`, on a single line within `array_width` as an array (the Style Guide formats patterns
-/// like the corresponding expressions; as in rustfmt), otherwise one pattern per line (not filled)
+/// `[a, b, ..]`, on a single line within `array_width` (as rustfmt), otherwise one per line
 fn format_slice_pat(fmt: &Formatter, pat: SlicePat) -> Frag {
     let items = list_items_cast(pat.syntax(), |p| format_pat(fmt, p));
     let delims = Delimiters::brackets_of(pat.syntax());
@@ -117,7 +116,6 @@ fn format_literal_pat(fmt: &Formatter, pat: LiteralPat) -> Frag {
     builder.into_frag()
 }
 
-/// `&pat` or `&mut pat`
 fn format_ref_pat(fmt: &Formatter, pat: RefPat) -> Frag {
     let mut builder = Builder::new(fmt);
     builder.push_token(pat.amp_token().unwrap(), Tight);
@@ -133,8 +131,7 @@ fn format_paren_pat(fmt: &Formatter, pat: ParenPat) -> Frag {
     Delimiters::parens_of(pat.syntax()).enclose(fmt, inner)
 }
 
-/// `A | B`, broken before every `|` without indentation; a leading `|` is dropped (Style Guide: "Never
-/// start a match arm pattern with `|`")
+/// `A | B`, broken before every `|` without indentation; a leading `|` is dropped (Style Guide)
 fn format_or_pat(fmt: &Formatter, pat: OrPat) -> Frag {
     // The comments after a dropped `|` would have no place
     let leading = pat
@@ -148,7 +145,7 @@ fn format_or_pat(fmt: &Formatter, pat: OrPat) -> Frag {
     let (first, rest) = operator_chain(fmt, pat.syntax(), SyntaxKind::PIPE, |node| {
         format_pat(fmt, Pat::cast(node).unwrap())
     });
-    // Small alternatives are filled on lines (Style Guide "Match"), unless comments are among them
+    // Small alternatives are filled on lines (Style Guide "Match"), unless commented
     if pat.pats().all(|p| is_small_pat(&p, true)) && !has_comments(pat.syntax()) {
         unindented_infix_fill(fmt, first, &rest)
     } else {
@@ -156,8 +153,7 @@ fn format_or_pat(fmt: &Formatter, pat: OrPat) -> Frag {
     }
 }
 
-/// Whether the pattern is small in the sense of the Style Guide ("Match"): a single token, `&`
-/// followed by a small pattern, or (if `allow_tuple`) a tuple of one such pattern (`(a,)`)
+/// Style Guide ("Match"): a single token, `&` and a small pattern, or (`allow_tuple`) `(a,)`
 fn is_small_pat(pat: &Pat, allow_tuple: bool) -> bool {
     match pat {
         Pat::RefPat(pat) => pat.pat().is_some_and(|p| is_small_pat(&p, allow_tuple)),
@@ -181,9 +177,8 @@ fn is_small_pat(pat: &Pat, allow_tuple: bool) -> bool {
     }
 }
 
-/// `name`, `ref mut name` or `name: pat`, the pattern on the line of the name or on the next line
-/// (RhsBreak, as rustfmt; but a pattern broken on the next line, `name:` / `    Foo {`, is not preferred
-/// to one broken on the line of the name)
+/// `name`, `ref mut name` or `name: pat`, the pattern on the line of the name or the next
+/// (RhsBreak, as rustfmt)
 fn format_record_pat_field(fmt: &Formatter, field: RecordPatField) -> Frag {
     let pat = format_pat(fmt, field.pat().unwrap());
     let Some(name_ref) = field.name_ref() else {
@@ -196,8 +191,7 @@ fn format_record_pat_field(fmt: &Formatter, field: RecordPatField) -> Frag {
     builder.into_frag()
 }
 
-/// `S { a, b: c, .. }`: on a single line if the fields fit within `struct_lit_width`, otherwise one
-/// field per line; `..` is last, without a comma
+/// `S { a, b: c, .. }`: on a single line within `struct_lit_width`, otherwise one field per line
 fn format_record_pat(fmt: &Formatter, pat: RecordPat) -> Frag {
     let mut builder = Builder::new(fmt);
     builder.push(format_path(fmt, pat.path().unwrap()));
@@ -218,7 +212,7 @@ fn format_record_pat(fmt: &Formatter, pat: RecordPat) -> Frag {
     } else {
         TrailingSeparator::IfVertical
     };
-    // Blank lines between the fields are kept, as in a struct literal (rustfmt too)
+    // Blank lines between the fields are kept, as in a struct literal (as rustfmt)
     let layout = ListLayout::tall(FlatLimit::Within(fmt.config().struct_lit_width))
         .trailing_separator(trailing)
         .keep_blank_lines();
@@ -227,7 +221,6 @@ fn format_record_pat(fmt: &Formatter, pat: RecordPat) -> Frag {
     builder.into_frag()
 }
 
-/// `..`
 fn format_rest_pat(fmt: &Formatter, pat: RestPat) -> Frag {
     fmt.token(pat.dotdot_token().unwrap(), Word)
 }
@@ -261,7 +254,6 @@ mod tests {
     use ra_ap_syntax::ast::Pat;
     use ra_ap_syntax::{AstNode, Edition, SourceFile, SyntaxKind};
 
-    /// The hug of the last pattern of the first tuple or tuple struct pattern in `pat`
     fn hug(pat: &str) -> Hug {
         let source = format!("fn f() {{ let {pat} = x; }}");
         let parse = SourceFile::parse(&source, Edition::Edition2024);

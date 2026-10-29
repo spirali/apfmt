@@ -9,14 +9,12 @@ pub(crate) fn with_is_last<T>(items: &[T]) -> impl Iterator<Item = (&T, bool)> {
         .map(|(idx, item)| (item, idx + 1 == items.len()))
 }
 
-/// `path` absolute, with symbolic links and `..` resolved; as far as it can be (`path` itself when
-/// it does not exist)
+/// Absolute, with symbolic links and `..` resolved as far as it can be
 pub fn canonical_path(path: &Path) -> PathBuf {
     let path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
     path.canonicalize().unwrap_or(path)
 }
 
-/// The first of the files `names` that exists in `dir`
 pub(crate) fn file_in_dir(dir: &Path, names: &[&str]) -> Option<PathBuf> {
     names
         .iter()
@@ -24,7 +22,7 @@ pub(crate) fn file_in_dir(dir: &Path, names: &[&str]) -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
-/// The display width of `text`; printable ASCII, most text, is one column per byte
+/// Printable ASCII, most text, is one column per byte
 pub(crate) fn text_width(text: &str) -> u32 {
     if text.bytes().all(|b| (b' '..=b'~').contains(&b)) {
         return text.len() as u32;

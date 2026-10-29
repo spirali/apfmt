@@ -18,10 +18,8 @@ use crate::utils::with_is_last;
 use ra_ap_syntax::ast::{ArgList, ArrayExpr, CallExpr, Expr, HasArgList, LiteralKind, TupleExpr};
 use ra_ap_syntax::{AstNode, SyntaxKind, SyntaxNode};
 
-/// Whether a single argument can overflow, i.e. start on the line of `(` and end on the line of `)`:
-/// `f(if a {\n ...\n})`. Follows the combinable expressions of the style guide.
-/// Also behind operators (`f(!g(\n...\n))`, `f(&[\n...\n])`, `f(g(\n...\n)?)` as rustfmt does, see
-/// `without_operators`).
+/// A single argument that can start on the line of `(` and end on the line of `)`: the Style
+/// Guide's combinable expressions, also behind operators as rustfmt does (`f(&[` / `...` / `])`)
 fn is_combinable_expr(expr: &Expr) -> bool {
     match without_operators(expr) {
         Expr::CallExpr(_)
@@ -43,10 +41,8 @@ fn is_combinable_expr(expr: &Expr) -> bool {
     }
 }
 
-/// Whether the expression is a delimited list itself: a call, a list-like macro call, a struct
-/// literal or an array, also behind operators (`f(&[` / `...` / `])`, `f(g(` / `...` / `)?)`, see
-/// `without_operators`); the Style Guide's examples of a combined single argument. Not a call of a
-/// chain's result, which is a chain (`a.b()(x)`, see `is_chain_call`).
+/// A call, a list-like macro call, a struct literal or an array, also behind operators; not a call
+/// of a chain's result (`a.b()(x)`)
 fn is_delimited_list_expr(expr: &Expr) -> bool {
     match without_operators(expr) {
         expr @ Expr::CallExpr(_) => !is_chain_call(&expr),
@@ -55,11 +51,8 @@ fn is_delimited_list_expr(expr: &Expr) -> bool {
     }
 }
 
-/// Whether the hugs of the expression, a call whose last argument hugs it in turn, and so on, end
-/// in an expression whose first line has width rules of its own (see `ExprItem::own_width`): a
-/// closure, a chain or control flow (`Ok(X(Box::new(move |x| {`, `Some(a.b(c).map_err(|e| {`), not
-/// call arguments, an array or a struct literal; only these are limited to `fn_call_width` as
-/// the first line of a hug (see `format_expr_list`)
+/// Whether nested hugs end in a closure, a chain or control flow (`Ok(X(Box::new(move |x| {`): its
+/// first line has width rules of its own (see `ExprItem::own_width`)
 fn ends_in_own_width_hug(expr: &Expr) -> bool {
     match without_operators(expr) {
         Expr::ClosureExpr(_)
@@ -78,9 +71,8 @@ fn ends_in_own_width_hug(expr: &Expr) -> bool {
     }
 }
 
-/// How many calls, also behind operators, are nested as the only argument of each other, the
-/// innermost around a delimited list (see `is_delimited_list_expr`) that may hug it in turn: 2 for
-/// `X(Y(z(a, b)))` and `X(Y(Z { a }))`, 0 for `x(a, b)`
+/// How many calls are nested as the only argument of each other: 2 for `X(Y(z(a, b)))`, 0 for `x(a,
+/// b)`
 fn nested_hug_depth(expr: &Expr) -> u32 {
     let Expr::CallExpr(call) = without_operators(expr) else {
         return 0;
@@ -92,10 +84,8 @@ fn nested_hug_depth(expr: &Expr) -> u32 {
     }
 }
 
-/// Whether the delimited list expression (see `is_delimited_list_expr`) has more than a single simple
-/// item (see `is_simple_expr`; a macro call more than a single argument): hugged, it puts more on
-/// lines of their own than one short argument (`Err(custom(` / `span,` / `"..."` / `))`, not
-/// `Compact(new_units(` / `value,` / `))`)
+/// More than a single simple item: hugged, it puts more on lines of its own than one short argument
+/// (`Err(custom(` / `span,` / `"..."` / `))`, not `Compact(new_units(` / `value,` / `))`)
 fn has_list_content(expr: &Expr) -> bool {
     let has_content = |exprs: &[Expr]| match exprs {
         [] => false,
@@ -109,21 +99,14 @@ fn has_list_content(expr: &Expr) -> bool {
         Expr::ArrayExpr(array) => has_content(&array.exprs().collect::<Vec<_>>()),
         Expr::RecordExpr(record) => record.record_expr_field_list().is_some_and(|list| {
             let values = list.fields().map(|f| f.expr()).collect::<Option<Vec<_>>>();
-            // A shorthand field (`a`) is simple
             list.fields().count() > 1 || values.is_some_and(|values| has_content(&values))
         }),
         expr => macro_argument_count(&expr).is_some_and(|n| n > 1),
     }
 }
 
-/// Whether the expression is block-like, also behind operators: a block (also `unsafe`, `async`,
-/// labelled), a `loop`, a macro call with braces, or a `match`, `if`, `while` or `for` whose head
-/// cannot break (a simple scrutinee, condition or iterable, see `is_simple_expr`). As the only argument it hugs whenever it fits, as a
-/// closure does: broken over more lines (`f(` / `match x {` / `...` / `},` / `)`) it is never
-/// clearer, so the call breaks elsewhere first, e.g. after `=` (`let long =` / `    f(match x {`) or
-/// before the element of a chain (`a()` / `.b()` / `.f(m! {`), as rustfmt does. With a head that may
-/// break, the hug may put it on lines of its own (`f(if let Some(x) = long(...)` / `{`), so it is
-/// only allowed (see `is_combinable_expr`)
+/// A block, a `loop`, a brace macro call, or a `match`/`if`/`while`/`for` with a simple head. As
+/// the only argument it hugs whenever it fits, as a closure does, as rustfmt does.
 fn is_block_like_expr(expr: &Expr) -> bool {
     let is_simple = |e: Option<Expr>| e.is_some_and(|e| is_simple_expr(&e));
     match without_operators(expr) {
@@ -136,9 +119,7 @@ fn is_block_like_expr(expr: &Expr) -> bool {
     }
 }
 
-/// Whether the call is a constructor: its callee is a path whose last segment starts with an
-/// uppercase letter, a tuple struct or an enum variant by Rust's naming conventions (`Ok`, `Some`,
-/// `Error::Io`)
+/// A path callee whose last segment starts with an uppercase letter (`Ok`, `Some`, `Error::Io`)
 fn is_constructor_call(call: &CallExpr) -> bool {
     let Some(Expr::PathExpr(callee)) = call.expr() else {
         return false;
@@ -150,8 +131,7 @@ fn is_constructor_call(call: &CallExpr) -> bool {
         .is_some_and(|name| name.text().starts_with(char::is_uppercase))
 }
 
-/// Whether the expression is an array or an array-like macro call (`vec![a, b]`), also behind
-/// operators (see `without_operators`); not a repeat (`[a; n]`)
+/// Also behind operators; not a repeat (`[a; n]`)
 fn is_array_like_expr(expr: &Expr) -> bool {
     match without_operators(expr) {
         Expr::ArrayExpr(array) => array.semicolon_token().is_none(),
@@ -159,12 +139,8 @@ fn is_array_like_expr(expr: &Expr) -> bool {
     }
 }
 
-/// Whether the single argument `expr` of the argument list `node` hugs it whenever it fits, also in
-/// more lines than the broken call (see `Overflow::Preferred`): a delimited list with more than a
-/// single short item (see `has_list_content`; not `X(Y(` / `value,` / `))` only to put it on its own
-/// line), after a constructor, which adds no information of its own (`Ok(X::new(` / `a,` / `b,` /
-/// `))`, not `Ok(` / `X::new(a, b),` / `)`), or an array, whose elements are best one per line
-/// (`f(&[` / `a,` / `b,` / `])`, the Style Guide's `combinable([`)
+/// A single argument that hugs whenever it fits: a delimited list with content (`has_list_content`)
+/// after a constructor (`Ok(X::new(` / `a,` / `))`), or an array (`f(&[` / `a,` / `])`)
 fn is_preferred_hug(node: &SyntaxNode, expr: &Expr) -> bool {
     let after_constructor =
         || (node.parent().and_then(CallExpr::cast)).is_some_and(|call| is_constructor_call(&call));
@@ -174,8 +150,7 @@ fn is_preferred_hug(node: &SyntaxNode, expr: &Expr) -> bool {
         && (is_array_like_expr(expr) || after_constructor())
 }
 
-/// The expression without the operators applied to it: prefix operators, `&` / `&mut`, casts and
-/// `?` (`a.b()` of `&*a.b()? as T`)
+/// E.g. `a.b()` of `&*a.b()? as T`
 fn without_operators(expr: &Expr) -> Expr {
     let operand = match expr {
         Expr::PrefixExpr(e) => e.expr(),
@@ -187,11 +162,8 @@ fn without_operators(expr: &Expr) -> Expr {
     operand.map_or_else(|| expr.clone(), |e| without_operators(&e))
 }
 
-/// Whether `expr` is a string literal spanning lines, also after `&` / `&mut`, that starts on the
-/// line of the token before it in the source, with only spaces between them (`f(r#"` / `...` /
-/// `"#)`): as a single item, it hugs the list as in the source. The Style Guide breaks a call with
-/// a multi-line argument (a literal is not combinable), rustfmt only after a callee of at least
-/// `tab_spaces` columns; Prettier and Ruff follow the source the same way.
+/// A multi-line string literal starting on the line of the token before it (`f(r#"` / `...` /
+/// `"#)`): as a single item, it hugs the list as in the source (as Prettier and Ruff)
 fn is_hugging_string(expr: &Expr) -> bool {
     let Expr::Literal(literal) = without_refs(expr) else {
         return false;
@@ -208,7 +180,7 @@ fn is_hugging_string(expr: &Expr) -> bool {
         .all(|t| t.kind() == SyntaxKind::WHITESPACE && !t.text().contains('\n'))
 }
 
-/// The expression without the `&` / `&mut` in front of it (`|x| x` of `&&mut |x| x`)
+/// E.g. `|x| x` of `&&mut |x| x`
 fn without_refs(expr: &Expr) -> Expr {
     match expr {
         Expr::RefExpr(e) => e.expr().map_or_else(|| expr.clone(), |e| without_refs(&e)),
@@ -216,9 +188,8 @@ fn without_refs(expr: &Expr) -> Expr {
     }
 }
 
-/// Simple expressions in the sense of rustfmt's `is_simple_expr`: literals, plain names, and simple
-/// expressions after a unary operator, `&` or `&mut`, followed by a field, `?` or `as Type`, indexed by
-/// a simple expression (`a[i]`) or repeated (`[a; n]`)
+/// rustfmt's `is_simple_expr`: literals and names, possibly after a unary operator, `&` or `&mut`,
+/// followed by a field, `?` or `as Type`, indexed by a simple expression, or repeated
 pub(super) fn is_simple_expr(expr: &Expr) -> bool {
     let is_simple = |expr: Option<Expr>| expr.is_some_and(|e| is_simple_expr(&e));
     match expr {
@@ -236,7 +207,7 @@ pub(super) fn is_simple_expr(expr: &Expr) -> bool {
     }
 }
 
-/// A literal or a plain name, optionally after unary operators: `x`, `!x`, `-1`
+/// E.g. `x`, `!x`, `-1`
 pub(super) fn is_literal_or_name(expr: &Expr) -> bool {
     match expr {
         Expr::Literal(_) => true,
@@ -251,12 +222,8 @@ pub(super) fn is_literal_or_name(expr: &Expr) -> bool {
     }
 }
 
-/// How the last of the expressions `exprs` of the list `node` may hug it: a single combinable
-/// expression (see `is_combinable_expr`), rather than break the list in as many lines if it is a
-/// delimited list (see `is_delimited_list_expr`), whenever it fits after a constructor or as an
-/// array (see `is_preferred_hug`) or if it is block-like (see `is_block_like_expr`), or if it is a
-/// multi-line string hugging the list in the source (see `is_hugging_string`); a closure or a block
-/// after other expressions (`f(a, |x| {` / `...` / `})`, see `is_overflowing_last`)
+/// How the last of `exprs` may hug the list `node`: a single combinable expression, a closure or a
+/// block after other expressions (`f(a, |x| {` / `...` / `})`)
 fn last_item_hug(node: &SyntaxNode, exprs: &[Expr]) -> Hug {
     match exprs {
         [single] if is_preferred_hug(node, single) || is_block_like_expr(single) => Hug::Preferred,
@@ -271,9 +238,8 @@ fn last_item_hug(node: &SyntaxNode, exprs: &[Expr]) -> Hug {
     }
 }
 
-/// Whether a broken list of the expressions `exprs` (formatted as `items`) is filled on lines instead
-/// of one item per line: all items are simple and at most `short_array_element_width_threshold` wide
-/// on a single line, as in rustfmt. This is an explicit exception to the Style Guide.
+/// All items simple and at most `short_array_element_width_threshold` wide: filled as in rustfmt,
+/// an exception to the Style Guide
 fn is_fillable_list(fmt: &Formatter, exprs: &[Expr], items: &[ListItem]) -> bool {
     let threshold = fmt.config().short_array_element_width_threshold;
     threshold > 0
@@ -283,9 +249,7 @@ fn is_fillable_list(fmt: &Formatter, exprs: &[Expr], items: &[ListItem]) -> bool
             .all(|i| fmt.min_flat_width(&i.frag).is_some_and(|w| w <= threshold))
 }
 
-/// Whether the last of more expressions may overflow: a closure if no other one is (Style Guide), or
-/// a block, also `unsafe`, `async` or labelled (`f(a, unsafe {` / `...` / `})`, as rustfmt does),
-/// both also after `&` or `&mut` (`f(a, &mut |x| {` / `...` / `})`)
+/// A closure if no other one is (Style Guide), or a block (as rustfmt), also after `&` or `&mut`
 fn is_overflowing_last(exprs: &[Expr]) -> bool {
     let is_closure = |e: &Expr| matches!(without_refs(e), Expr::ClosureExpr(_));
     match exprs {
@@ -297,29 +261,19 @@ fn is_overflowing_last(exprs: &[Expr]) -> bool {
     }
 }
 
-/// An expression formatted as a list item, see `format_expr_item`
 pub(super) struct ExprItem {
     pub frag: Frag,
-    /// How it may overflow as the last item
     pub overflow: Overflow,
-    /// Whether its single line is limited by its own width rules rather than by the width of the
-    /// list (`fn_call_width`) when it is the only item: a chain with elements (`chain_width`), a
-    /// closure or a block-like expression (see `is_block_like_expr`), as in rustfmt
+    /// As the only item, its single line is limited by its own width rules, not `fn_call_width`: a
+    /// chain (`chain_width`), a closure or a block-like expression, as in rustfmt
     pub own_width: bool,
 }
 
-/// An expression as a list item, and how it may overflow as the last item (see `Overflow`): a
-/// combinable expression with all its layouts (see `is_combinable_expr`), a method call chain and
-/// a closure with some of them (see `postfix_chain_layouts` and `ClosureLayouts`)
+/// An expression as a list item, and how it may overflow as the last item
 pub(super) fn format_expr_item(fmt: &Formatter, expr: Expr) -> ExprItem {
     match expr {
-        // A chain, also behind operators: on the line of `(` only with its elements on one line, the
-        // arguments of the last one may break: `f(a.b(|x| {` / `...` / `}))`, `f(&a.b(` / `...` /
-        // `)?)`, not the chain broken before every `.` (its lines would start at the indentation of
-        // the statement, an operator seemingly applying to the root only: `f(*rt` / `.worker(w)` /
-        // `.unwrap())`); `f(g(` / `...` / `)?)` is the root of a chain without elements, and a single
-        // element may follow a broken root on its last line (`f(g(` / `...` / `).into())`, see
-        // `ChainLayouts::joined`)
+        // A chain hugs only with its elements on one line and the last arguments broken (`f(a.b(|x|
+        // {`); a single element may follow a broken root (`f(g(` / `...` / `).into())`)
         expr if !has_attrs(&expr)
             && let Some(chain) = operand_chain(&expr).filter(|chain| {
                 (matches!(
@@ -329,7 +283,6 @@ pub(super) fn format_expr_item(fmt: &Formatter, expr: Expr) -> ExprItem {
                     && is_combinable_expr(chain)
             }) =>
         {
-            // A chain without elements, `g(...)?`, is limited as the call is
             let own_width = matches!(
                 without_operators(&chain),
                 Expr::MethodCallExpr(_) | Expr::AwaitExpr(_)
@@ -357,9 +310,8 @@ pub(super) fn format_expr_item(fmt: &Formatter, expr: Expr) -> ExprItem {
         }
         expr => {
             let combinable = is_combinable_expr(&expr) || is_hugging_string(&expr);
-            // A closure behind operators (`&|x| ...`) or with attributes, a block-like expression, or
-            // a list with a width rule of its own (an array, a tuple, a struct literal), whose single
-            // line has width rules of its own (`Ok(unsafe { ... })`, `f([a.b(c)])`, as rustfmt does)
+            // A closure behind operators or with attributes, a block-like expression, or an array,
+            // tuple or struct literal: its single line has width rules of its own, as in rustfmt
             let own_width = matches!(
                 without_operators(&expr),
                 Expr::ClosureExpr(_) | Expr::ArrayExpr(_) | Expr::TupleExpr(_) | Expr::RecordExpr(_)
@@ -379,12 +331,8 @@ pub(super) fn format_expr_item(fmt: &Formatter, expr: Expr) -> ExprItem {
     }
 }
 
-/// The expressions of the comma-separated list `node` (call arguments, tuple fields, array elements)
-/// on a single line if they fit within `width`, otherwise one per line, or filled on lines if they
-/// are short (see `is_fillable_list`). The last expression may hug the list (see `last_item_hug`); a
-/// single other expression is limited only by `max_width`. A list with an item spanning more lines
-/// on a single line (a string literal, see `Formatter::has_multi_line_text`) is always broken.
-/// `refine` adjusts the layouts, e.g. the trailing separator.
+/// Call arguments, tuple fields or array elements: flat within `width`, otherwise one per line or
+/// filled; a multi-line string literal always breaks the list
 pub(super) fn format_expr_list(
     fmt: &Formatter,
     node: &SyntaxNode,
@@ -399,11 +347,8 @@ pub(super) fn format_expr_list(
     let mut items = with_is_last(&items)
         .map(|(item, is_last)| {
             let ExprItem { frag, overflow, .. } = &item.frag;
-            // "Where a function call has a single argument, and that argument is formatted across
-            // multiple lines, format the outer call as if it were a single-line call" (Style Guide):
-            // `Err(anyhow!(` / `...` / `))` rather than `Err(` / `anyhow!(...),` / `)` in as many
-            // lines; the broken call is kept when it takes fewer lines, except after a constructor
-            // or around an array (see `is_preferred_hug`)
+            // Style Guide: a single multi-line argument is hugged (`Err(anyhow!(` / `...` / `))`)
+            // unless the broken call takes fewer lines, except where `is_preferred_hug`
             let overflow = if is_last {
                 hug.overflow(overflow)
             } else {
@@ -412,26 +357,15 @@ pub(super) fn format_expr_list(
             item.map(|_| frag.clone()).with_overflow(overflow)
         })
         .collect::<Vec<ListItem>>();
-    // A single argument that cannot overflow is not limited by `fn_call_width` (see
-    // `FlatLimit::of_arguments`), nor is one with width rules of its own, a chain with elements or a
-    // closure (`ExprItem::own_width`). Another one that can (e.g. a call) is: when it does not fit,
-    // it is broken instead. All as rustfmt does; the Style Guide leaves what a small call is to the
-    // tool.
+    // A single argument that cannot overflow or has width rules of its own is not limited by
+    // `fn_call_width`; another one is, and it is broken instead, as in rustfmt
     let flat = if own_width {
         FlatLimit::MaxWidth
     } else {
         FlatLimit::of_arguments(fmt, &items, hug, width)
     };
-    // A single call hugging the list is as wide as its first line, which is within the width as the
-    // first line of a last item after others is (see `overflow_layout`), so the limits of nested
-    // hugs add up: `Ok(A(b(` / `x,` / `)))` only while `A(b(` is within it, otherwise `Ok(A(` /
-    // `b(x),` / `))`, as rustfmt does. Not control flow, whose head hugs whatever its width, nor a
-    // call with a string spanning lines, whose first line is the text of the string (see
-    // `is_hugging_string`), nor calls hugging in turn an expression with width rules of its own
-    // (see `ends_in_own_width_hug`). Where that rules out hugging all of them, the outer calls hug
-    // rather than the inner ones at the same cost ("format the outer call as if it were a
-    // single-line call", Style Guide), so a hug is preferred by the depth of the hugs below it:
-    // `Some(X(` / `Y {` / `...` / `},` / `))`, not `Some(` / `X(Y {` / `...` / `}),` / `)`.
+    // The limits of nested hugs add up, as in rustfmt: `Ok(A(b(` / `x,` / `)))` only while
+    // `Ok(A(b(` fits `width`. The outer calls are preferred to hug (Style Guide).
     if let (FlatLimit::Within(width), [expr], [item]) =
         (flat, exprs.as_slice(), items.as_mut_slice())
         && is_delimited_list_expr(expr)
@@ -448,10 +382,8 @@ pub(super) fn format_expr_list(
             }
         });
     }
-    // A string spanning lines, also under an operator (`&"a⏎b"`), is not hugged: "If ... any
-    // argument ... is multi-line, then format the call across multiple lines" (Style Guide; a
-    // literal is not combinable), as in rustfmt; a single one hugs the list only if it does in the
-    // source (see `is_hugging_string`)
+    // A multi-line string, also behind an operator, is not hugged (Style Guide, as in rustfmt),
+    // unless it hugs the list in the source
     let multi_line = items.iter().any(|item| fmt.has_multi_line_text(&item.frag));
     let layout = ListLayout::tall(flat)
         .fill_if(is_fillable_list(fmt, &exprs, &items))
@@ -480,7 +412,7 @@ pub(super) fn format_tuple_expr(fmt: &Formatter, expr: TupleExpr) -> Frag {
     )
 }
 
-/// The trailing separator of a tuple: `(a,)` is a tuple, `(a)` just a parenthesized expression
+/// `(a,)` is a tuple, `(a)` just a parenthesized expression
 pub(super) fn single_item_separator(items: usize) -> TrailingSeparator {
     if items == 1 {
         TrailingSeparator::Required
@@ -512,8 +444,6 @@ mod tests {
     use ra_ap_syntax::ast::Expr;
     use ra_ap_syntax::{AstNode, Edition, SourceFile, SyntaxKind};
 
-    /// The hug of the last item of the first list of expressions (arguments, tuple fields, array
-    /// elements) in `code`
     fn hug(code: &str) -> Hug {
         let source = format!("fn f() {{ {code}; }}");
         let parse = SourceFile::parse(&source, Edition::Edition2024);

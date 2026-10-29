@@ -17,13 +17,8 @@ fn separator_doc(kind: SyntaxKind) -> DocId {
     }
 }
 
-/// Puts a single space after the opening sigil of a line comment (`//a` -> `// a`) and after the
-/// opening and before the closing sigil of a single-line block comment (`/*a*/` -> `/* a */`), as the
-/// Style Guide recommends, when the comment text starts with a letter or a digit; other comments
-/// (empty ones, separators `//-----`, commented-out code `//#[cfg(x)]`, `////...`, ...) and multi-line
-/// block comments are left alone. Returns `None` when the text stays as it is. Not for doc comments
-/// (`is_doc_comment`): adding a space to some lines of a doc comment would change the indentation
-/// of its Markdown.
+/// `//a` -> `// a`, `/*a*/` -> `/* a */` when the text starts with a letter or a digit (see
+/// CLAUDE.md); `None` when the text stays. Not for doc comments, whose text is Markdown.
 pub(super) fn normalize_comment_sigil_spacing(text: &str) -> Option<String> {
     let starts_with_alphanumeric = |s: &str| s.starts_with(char::is_alphanumeric);
     if let Some(rest) = text.strip_prefix("//") {
@@ -31,15 +26,14 @@ pub(super) fn normalize_comment_sigil_spacing(text: &str) -> Option<String> {
     }
     let inner = text.strip_prefix("/*")?.strip_suffix("*/")?;
     let trimmed = inner.trim();
-    // `/* {trimmed} */` already
     let normalized =
         inner.len() == trimmed.len() + 2 && inner.starts_with(' ') && inner.ends_with(' ');
     (!normalized && !inner.contains('\n') && starts_with_alphanumeric(trimmed))
         .then(|| format!("/* {trimmed} */"))
 }
 
-/// A line of a comment without its trailing whitespace, which the Style Guide forbids; a line of a
-/// doc comment (`doc`) keeps it, since two trailing spaces end a line in Markdown
+/// Without trailing whitespace; a doc comment (`doc`) keeps it, two trailing spaces end a Markdown
+/// line
 pub(super) fn trim_comment_line(line: &str, doc: bool) -> &str {
     if doc { line } else { line.trim_end() }
 }
@@ -58,8 +52,7 @@ fn source_column(token: &SyntaxToken) -> usize {
     col
 }
 
-/// Lines of a multi-line block comment with the indentation of the comment start removed, so they can
-/// be aligned to the new column of the comment; blank lines are empty. `None` when the comment is
+/// Lines of a multi-line block comment without the indentation of the comment start. `None` when
 /// single-line or a line is indented less than the comment start.
 pub(super) fn multiline_comment_lines(token: &SyntaxToken) -> Option<Vec<&str>> {
     let (first, rest) = token.text().split_once('\n')?;
@@ -77,17 +70,15 @@ pub(super) fn multiline_comment_lines(token: &SyntaxToken) -> Option<Vec<&str>> 
 }
 
 impl<'a> Builder<'a> {
-    /// Ends the line after a trailing line comment, which would otherwise swallow the following code
+    /// A trailing line comment would otherwise swallow the following code
     pub fn end_line_after_line_comment(&mut self) {
         self.push_line_break_if(NEWLINE_DOC, |end| end == Break);
     }
 
-    /// Pushes the trivia after the cursor (comments, and the blank lines of the source, see
-    /// `flush_trivia_keeping_blank_lines`) and ends the line, so the next fragment starts a new line;
-    /// no line break follows a block comment that belongs to the next code (`/* c */ f();`)
+    /// Pushes the trivia after the cursor and ends the line; not after a block comment belonging to
+    /// the next code (`/* c */ f();`)
     pub fn flush_trivia_and_end_line(&mut self) {
         self.push_comments();
-        // The comment belongs to the following code, so no line break after it
         let leading_comment = self
             .frag
             .cursor
@@ -109,16 +100,13 @@ impl<'a> Builder<'a> {
         //self.frag.empty_lines = 0;
     }*/
 
-    /// Pushes the blank lines for `newlines` source newlines (at most `blank_lines_upper_bound`); a
-    /// single newline only ends a line comment, otherwise the caller decides the spacing
+    /// At most `blank_lines_upper_bound`; a single newline only ends a line comment
     fn push_blank_lines(&mut self, newlines: u32) {
         if newlines == 0 {
             return;
         }
         let mut blank = (newlines - 1).min(self.fmt.config.blank_lines_upper_bound);
         if blank == 0 {
-            // A single source newline is significant only after a line comment;
-            // otherwise the caller decides spacing
             self.end_line_after_line_comment();
             return;
         }
@@ -134,17 +122,14 @@ impl<'a> Builder<'a> {
         self.push_line_break_if(doc_id, |_| true);
     }
 
-    /// Pushes the comments after the cursor (`frag.cursor`), up to the next code token, and moves the
-    /// cursor to the last of them; the whitespace after it is left for `flush_trivia`
+    /// Pushes the comments after the cursor and moves the cursor to the last of them; the
+    /// whitespace after it is left for `flush_trivia`
     pub fn push_comments(&mut self) {
         self.push_trivia(None, TriviaStop::Code);
     }
 
-    /// Pushes the comment `token`; a line comment ends the line (`Break`). A `trailing` comment (after
-    /// code, ending the line) on a single line does not count as overflow, so a long one does not
-    /// change the layout of the code in front of it, as in rustfmt; a comment after an opening
-    /// delimiter is not trailing, it moves to the next line when it does not fit (see
-    /// `Formatter::body_after_opener`).
+    /// A line comment ends the line. A `trailing` comment does not count as overflow, so it does
+    /// not change the layout of the code in front of it, as in rustfmt.
     fn push_comment(&mut self, token: &SyntaxToken, trailing: bool) {
         let end = if is_line_comment(token) { Break } else { Word };
         let mut doc_id = self.fmt.comment_doc(token);
@@ -157,9 +142,8 @@ impl<'a> Builder<'a> {
         self.push(Frag::new(doc_id, Edge::Comment, end, None));
     }
 
-    /// Pushes the comments starting at `token` (inclusive) up to the first code token, for trivia that no
-    /// cursor precedes, e.g. at the start of the source; after the content already in the builder, they
-    /// start on a new line. The last comment becomes the cursor.
+    /// For trivia that no cursor precedes, e.g. at the start of the source; they start on a new
+    /// line and the last comment becomes the cursor
     pub fn push_comments_from(&mut self, token: Option<SyntaxToken>) {
         let first_comment = trivia_from(token).find(|t| is_comment_kind(t.kind()));
         if let Some(comment) = first_comment {
@@ -170,10 +154,8 @@ impl<'a> Builder<'a> {
         }
     }
 
-    /// Pushes the trivia after the cursor: its comments, with the line breaks and blank lines between them,
-    /// up to `stop` at the latest (see `trivia_end`). The source `separator`, if it follows the comments,
-    /// is taken without printing (the caller pushed one in front of them). Moves the cursor to the last
-    /// token taken and returns whether a comment was pushed.
+    /// Pushes the comments after the cursor up to `stop` (see `trivia_end`), taking the source
+    /// `separator` after them without printing. Returns whether a comment was pushed.
     pub(super) fn push_trivia(&mut self, separator: Option<SyntaxKind>, stop: TriviaStop) -> bool {
         let Some(cursor) = self.frag.cursor.take() else {
             return false;
@@ -185,7 +167,7 @@ impl<'a> Builder<'a> {
         }
         let mut pushed = false;
         let mut newlines = 0;
-        // Comments in front of the separator are moved behind it, so they are never own-line
+        // Comments in front of the separator are moved behind it
         let mut before_separator = separator
             .is_some_and(|kind| next_code_token(&cursor).is_some_and(|t| t.kind() == kind));
         let mut element = cursor.next_token();
@@ -198,7 +180,8 @@ impl<'a> Builder<'a> {
                     if before_separator {
                         newlines = 0;
                     }
-                    // Blank lines at the start of a fragment are dropped; the parent decides spacing
+                    // Blank lines at the start of a fragment are dropped; the parent decides
+                    // spacing
                     if newlines > 0 && !self.frag.is_empty() {
                         self.push_blank_lines(newlines);
                     }
@@ -213,7 +196,6 @@ impl<'a> Builder<'a> {
                     self.push_comment(&token, trailing);
                     pushed = true;
                 }
-                // The separator is moved before the comments, so newlines in front of it do not count
                 _ => {
                     newlines = 0;
                     before_separator = false;
@@ -228,15 +210,14 @@ impl<'a> Builder<'a> {
         pushed
     }
 
-    /// Pushes the comments after the cursor, then clears it, so the trivia after it is done; blank lines
-    /// after the last comment are dropped (see `flush_trivia_keeping_blank_lines`)
+    /// Pushes the comments after the cursor, then clears it; blank lines after the last comment are
+    /// dropped
     pub fn flush_trivia(&mut self) {
         self.push_comments();
         self.frag.cursor = None;
     }
 
-    /// Like `flush_trivia`, but the blank lines after the last comment are kept (up to
-    /// `blank_lines_upper_bound`), e.g. between statements
+    /// E.g. between statements
     fn flush_trivia_keeping_blank_lines(&mut self) {
         self.push_comments();
         let Some(cursor) = self.frag.cursor.take() else {
@@ -251,31 +232,24 @@ impl<'a> Builder<'a> {
         }
     }
 
-    /// Pushes the separator `kind` (`,` or `;`, a generated one) and takes the source separator after the
-    /// cursor, if there is one, together with the comments in front of it, which are placed after it.
-    /// The trivia after the source separator is left for what follows (the cursor is the separator),
-    /// so the fragment ends with the separator, e.g. for measuring it.
+    /// Pushes the separator `kind` and takes the source one with the comments in front of it, which
+    /// go after it. The cursor is then the separator.
     pub fn push_separator(&mut self, kind: SyntaxKind) {
         self.take_separator(kind, true);
     }
 
-    /// Like `push_separator`, but the separator is not printed (e.g. an optional trailing comma)
     pub fn skip_separator(&mut self, kind: SyntaxKind) {
         self.take_separator(kind, false);
     }
 
-    /// `push_separator` if `push`, otherwise `skip_separator`, e.g. a trailing comma only when a list
-    /// is broken
     pub fn push_or_skip_separator(&mut self, kind: SyntaxKind, push: bool) {
         self.take_separator(kind, push);
     }
 
-    /// Takes the source separator `kind` after the cursor (if there is one) together with the comments
-    /// in front of it, which are pushed after it; with `push`, a separator is pushed in front of them,
-    /// but after a repetition of `macro_rules!` only where the source has one: the repetition may end
-    /// with its own separator or expand to nothing (`$($id,)+,` and `f($($a),*,)` would not compile)
+    /// After a repetition of `macro_rules!`, a separator is pushed only where the source has one
+    /// (`$($id,)+,` would not compile)
     fn take_separator(&mut self, kind: SyntaxKind, push: bool) {
-        // Pushed without processing the trivia after the cursor, which follows the separator
+        // The trivia after the cursor follows the separator
         let cursor = self.frag.cursor.take();
         let push = push
             && cursor.as_ref().is_none_or(|cursor| {
@@ -289,13 +263,10 @@ impl<'a> Builder<'a> {
         self.push_trivia(Some(kind), TriviaStop::Separator);
     }
 
-    /// Pushes a separator `kind` after a list item (the cursor) and takes the source one, together with
-    /// the item's post comments, as rustfmt calls them: the comments in front of the separator and the
-    /// comments after it that end the line. Comments followed by code on the same line and own-line comments are
-    /// pre comments of the next item, so they are left for `push_leading_comments`.
-    /// Returns whether a post comment was pushed.
+    /// Takes the source separator with the item's post comments (rustfmt): those in front of it and
+    /// those ending its line. Returns whether a post comment was pushed.
     pub fn push_separator_with_trailing_comments(&mut self, kind: SyntaxKind) -> bool {
-        // Pushed without processing the trivia after the cursor, which follows the separator
+        // The trivia after the cursor follows the separator
         let cursor = self.frag.cursor.take();
         self.push(Frag::new_simple(separator_doc(kind), Comma, None));
         let Some(cursor) = cursor else {
@@ -306,8 +277,7 @@ impl<'a> Builder<'a> {
         self.push_trivia(Some(kind), stop)
     }
 
-    /// Pushes the comments in front of the next list item (rustfmt's pre comments). A line break
-    /// follows them when the source has one after them, otherwise the item follows after a space.
+    /// rustfmt's pre comments; a line break follows them when the source has one
     pub fn push_leading_comments(&mut self) {
         self.push_comments();
         let Some(cursor) = self.frag.cursor.as_ref() else {
@@ -322,10 +292,8 @@ impl<'a> Builder<'a> {
         }
     }
 
-    /// Pushes the comments after the cursor if nothing but comments follows on its line, e.g. `( // c`
-    /// or `{ /* c */`; a comment followed by code on the line is left for that code. Returns whether it
-    /// pushed any; the code after them starts on a new line. Used at the start of a block or a broken
-    /// list, placed with `Formatter::body_after_opener`.
+    /// Pushes the comments after the cursor if nothing else follows on its line (`( // c`); returns
+    /// whether it pushed any. Placed with `Formatter::body_after_opener`.
     pub fn push_comments_ending_line(&mut self) -> bool {
         let ends_line = self
             .frag
@@ -337,12 +305,8 @@ impl<'a> Builder<'a> {
 }
 
 impl Formatter<'_> {
-    /// The source text from `first` to `last` (inclusive) as lines, with the indentation of the source
-    /// line of `first` removed from the following lines, so they can be indented as the line the text is
-    /// placed on. A line break inside a token (a multi-line string literal or block comment) is kept in
-    /// its line unchanged; trailing whitespace is removed and blank lines are empty. `None` when a line
-    /// starts with less indentation than the line of `first`, or with a tab. A placeholder token is
-    /// written as the text it stands for (see `Formatter::format_reparsed`).
+    /// The source from `first` to `last` as lines, without the indentation of the line of `first`
+    /// (`None` when a line is indented less or with a tab); placeholders written as their text
     pub(super) fn reindented_lines(
         &self,
         first: &SyntaxToken,
