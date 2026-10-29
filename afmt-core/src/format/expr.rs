@@ -20,7 +20,7 @@ use crate::doc::{CLOSE_BRACE_DOC, OPEN_BRACE_DOC};
 use crate::format::common::format_lifetime;
 use crate::formatter::Edge::{BraceClose, BraceOpen, Comma, Operator, Tight, Word};
 use crate::formatter::{Builder, Formatter, Frag};
-use crate::layout::chain::{broken_infix_chain, infix_chain};
+use crate::layout::chain::{broken_infix_chain, infix_chain, short_first_operand};
 use crate::layout::head::{HeadLayouts, pattern_head};
 use crate::layout::list::TrailingSeparator;
 use crate::layout::list::{
@@ -69,7 +69,15 @@ fn format_bin_expr(fmt: &Formatter, expr: BinExpr) -> Frag {
         return format_assignment(fmt, expr);
     }
     let (first, rest) = bin_chain_operands(fmt, expr);
-    infix_chain(fmt, first, &rest)
+    let chain = infix_chain(fmt, first.clone(), &rest);
+    let [(op, operand)] = rest.as_slice() else {
+        return chain;
+    };
+    // As rustfmt: the right operand stays on the line when `first op ` is at most `tab_spaces` wide
+    let op_width = fmt.min_flat_width(op).unwrap_or(0) + 2;
+    let max_width = fmt.config().tab_spaces.saturating_sub(op_width);
+    let short_first = short_first_operand(fmt, &first, op, operand, max_width);
+    fmt.alt_opt(chain, short_first)
 }
 
 fn bin_chain_operands(fmt: &Formatter, expr: BinExpr) -> (Frag, Vec<(Frag, Frag)>) {
@@ -211,11 +219,8 @@ fn format_range_expr(fmt: &Formatter, expr: RangeExpr) -> Frag {
     let op = fmt.token(expr.op_token().unwrap(), Tight);
     let end = format_expr(fmt, end);
     let chain = infix_chain(fmt, start.clone(), &[(op.clone(), end.clone())]);
-    let Some(short_start) = fmt.flat_within(start, fmt.config().tab_spaces) else {
-        return chain;
-    };
-    let broken_end = Builder::concat(fmt, [short_start, op, fmt.multi_line(end)]);
-    fmt.alt_frag(chain, broken_end)
+    let short_start = short_first_operand(fmt, &start, &op, &end, fmt.config().tab_spaces);
+    fmt.alt_opt(chain, short_start)
 }
 
 /// A keyword optionally followed by a label and a value: `return x`, `break 'a x`, `continue 'a`

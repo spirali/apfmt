@@ -58,6 +58,22 @@ pub(crate) fn unindented_infix_fill(fmt: &Formatter, first: Frag, rest: &[(Frag,
     builder.into_frag()
 }
 
+/// `first op operand` with `first` on a single line within `max_width` and `operand` broken on its
+/// line: `x = 0 + f(` / `    a,` / `);`
+pub(crate) fn short_first_operand(
+    fmt: &Formatter,
+    first: &Frag,
+    op: &Frag,
+    operand: &Frag,
+    max_width: u32,
+) -> Option<Frag> {
+    if first.comment_follows() || op.comment_follows() {
+        return None;
+    }
+    let first = fmt.flat_within(first.clone(), max_width)?;
+    Some(Builder::concat(fmt, [first, op.clone(), fmt.multi_line(operand.clone())]))
+}
+
 /// The broken layout of `infix_chain`
 pub(crate) fn broken_infix_chain(fmt: &Formatter, first: Frag, rest: &[(Frag, Frag)]) -> Frag {
     vertical_lines(fmt, &first, &operator_lines(fmt, rest))
