@@ -2,8 +2,7 @@
 
 use crate::comments::{
     comments_at_closing_indentation, comments_break_line_after, is_code_kind, is_comment_kind,
-    is_line_comment, next_code_token, own_line_comment_follows, prev_code_token,
-    rest_of_line_is_comments, trivia_from,
+    is_line_comment, next_code_token, own_line_comment_follows, prev_code_token, trivia_from,
 };
 use crate::doc::WeakPreference;
 use crate::formatter::Edge::{BraceClose, BraceOpen, Close, Comma, Open, Word};
@@ -323,14 +322,8 @@ fn vertical_list(
             // Blank lines in front of the closing delimiter are dropped
             builder.flush_trivia();
             builder.push_newline();
-        } else if builder
-            .cursor()
-            .is_some_and(|c| !rest_of_line_is_comments(c, None))
-        {
-            // Block comments followed by the next item on their line stay in front of it
-            builder.push_newline();
         } else {
-            builder.flush_trivia_and_end_line_with(keep_blank_lines);
+            builder.end_line_before_item(keep_blank_lines);
         }
     }
     fmt.body_after_opener(line_comments, builder.into_frag())
@@ -541,6 +534,25 @@ impl Delimiters {
     /// `{`, then `lines` block indented, then `}`. Own-line comments at the indentation of `}` in
     /// front of `} else` stay there (`comments_at_closing_indentation`).
     pub fn format_block(&self, fmt: &Formatter, lines: impl IntoIterator<Item = Frag>) -> Frag {
+        self.format_lines(fmt, lines, false)
+    }
+
+    /// As `format_block`, for lines that are items of a list: a block comment followed by the next
+    /// item on its line stays in front of it, as in `vertical_list`
+    pub fn format_item_block(
+        &self,
+        fmt: &Formatter,
+        lines: impl IntoIterator<Item = Frag>,
+    ) -> Frag {
+        self.format_lines(fmt, lines, true)
+    }
+
+    fn format_lines(
+        &self,
+        fmt: &Formatter,
+        lines: impl IntoIterator<Item = Frag>,
+        items: bool,
+    ) -> Frag {
         let mut lines = lines.into_iter().peekable();
         if lines.peek().is_none() {
             return self.format_empty(fmt);
@@ -550,7 +562,12 @@ impl Delimiters {
         let line_comments = builder.push_comments_ending_line();
         builder.push_comments();
         for line in lines {
-            builder.push_on_new_line(line);
+            if items && !builder.is_empty() {
+                builder.end_line_before_item(true);
+                builder.push(line);
+            } else {
+                builder.push_on_new_line(line);
+            }
         }
         let before_else = next_code_token(&self.close).is_some_and(|t| t.kind() == T![else]);
         if !(before_else && comments_at_closing_indentation(&self.close)) {

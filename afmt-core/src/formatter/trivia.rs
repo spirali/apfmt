@@ -81,6 +81,19 @@ impl<'a> Builder<'a> {
         self.flush_trivia_and_end_line_with(true);
     }
 
+    /// Ends the line of a list item; block comments followed by the next item on their line stay
+    /// pending, in front of it (`a, /* b */ b,` → `a,` / `/* b */ b,`)
+    pub fn end_line_before_item(&mut self, keep_blank_lines: bool) {
+        if self
+            .cursor()
+            .is_some_and(|c| !rest_of_line_is_comments(c, None))
+        {
+            self.push_newline();
+        } else {
+            self.flush_trivia_and_end_line_with(keep_blank_lines);
+        }
+    }
+
     /// As `flush_trivia_and_end_line`, with the blank lines after the last comment dropped unless
     /// `keep_blank_lines`
     pub fn flush_trivia_and_end_line_with(&mut self, keep_blank_lines: bool) {

@@ -171,7 +171,8 @@ pub(crate) fn prev_code_token(token: &SyntaxToken) -> Option<SyntaxToken> {
 pub(crate) enum TriviaStop {
     Code,
     OwnLine,
-    /// Right after the separator; comments behind it are left
+    /// Right after the separator; comments behind it, or behind its place if the source has none,
+    /// are left
     Separator,
 }
 
@@ -198,6 +199,10 @@ pub(crate) fn trivia_end(
                 });
                 if follows && separator.is_some() {
                     newlines = 0;
+                }
+                // Without the separator in the source, the comments are behind its place
+                if !follows && separator.is_some() && stop == TriviaStop::Separator {
+                    break;
                 }
                 if newlines > 0 && stop != TriviaStop::Code {
                     break;

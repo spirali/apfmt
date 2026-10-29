@@ -106,7 +106,7 @@ fn match_expr_parts(fmt: &Formatter, expr: &MatchExpr) -> (HeadLayouts, Frag) {
         list.arms()
             .map(|arm| format_with_attrs(fmt, &arm, false, || format_match_arm(fmt, &arm, group))),
     );
-    let arms = Delimiters::braces_of(list.syntax()).format_block(fmt, lines);
+    let arms = Delimiters::braces_of(list.syntax()).format_item_block(fmt, lines);
     (head, arms)
 }
 
