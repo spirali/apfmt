@@ -2,7 +2,8 @@
 
 use super::attr::{debug_assert_attrs_placed, format_skippable_with_attrs, format_with_attrs};
 use super::chain::{
-    format_postfix_chain, is_postfix_expr, operand_chain, operator_chain_parts, postfix_chain_parts,
+    format_postfix_chain, is_postfix_expr, operand_chain_in_parens, operator_chain_parts,
+    postfix_chain_parts,
 };
 use super::closure::format_closure_expr;
 use super::control::{format_for_expr, format_loop_expr, format_match_expr, format_while_expr};
@@ -603,8 +604,8 @@ pub(super) fn format_head_expr(fmt: &Formatter, expr: Expr) -> HeadLayouts {
     if let Expr::LetExpr(let_expr) = &expr {
         return let_head_layouts(fmt, let_expr);
     }
-    // `!a.b()`, `&a.b()`, `a.b() as T`: hangs as the chain does
-    if let Some(chain) = operand_chain(&expr) {
+    // `!a.b()`, `&a.b()`, `a.b() as T`, `(a.b())`: hangs as the chain does
+    if let Some(chain) = operand_chain_in_parens(&expr) {
         return operator_chain_parts(fmt, &expr, chain).layouts;
     }
     if is_broken_let_chain(&expr) {

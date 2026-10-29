@@ -4,7 +4,8 @@ use super::attr::debug_assert_attrs_placed;
 use super::expr::{cast_type_parts, format_expr, prefix_op_token, push_ref_operator};
 use super::expr_list::format_arg_list;
 use super::path::{format_generic_arg_list, format_name_ref};
-use crate::formatter::Edge::{Tight, Word};
+use crate::comments::{comments_break_line_after, own_line_comment_follows, prev_code_token};
+use crate::formatter::Edge::{Close, Open, Tight, Word};
 use crate::formatter::{Builder, Formatter, Frag};
 use crate::layout::chain::{ChainElement, ChainLayouts, postfix_chain_layouts};
 use crate::layout::head::HeadLayouts;
@@ -12,18 +13,38 @@ use crate::layout::list::TrailingSeparator;
 use crate::layout::list::{Delimiters, FlatLimit, ListItem, ListLayout, delimited_list};
 use crate::syntax_utils::has_attrs;
 use ra_ap_syntax::AstNode;
-use ra_ap_syntax::ast::{Expr, HasArgList, HasGenericArgs, IndexExpr};
+use ra_ap_syntax::ast::{CastExpr, Expr, HasArgList, HasGenericArgs, IndexExpr, ParenExpr};
 
 /// The chain behind prefix operators, `&` / `&mut` and casts: `a.b()` of `&mut *a.b() as T`; `expr`
 /// itself if it is a chain
 pub(super) fn operand_chain(expr: &Expr) -> Option<Expr> {
+    operand_chain_through(expr, false)
+}
+
+/// Also behind parentheses without comments breaking a line inside them: `a.b()` of `!(a.b())`
+pub(super) fn operand_chain_in_parens(expr: &Expr) -> Option<Expr> {
+    operand_chain_through(expr, true)
+}
+
+fn operand_chain_through(expr: &Expr, parens: bool) -> Option<Expr> {
     match expr {
-        Expr::RefExpr(e) => operand_chain(&e.expr()?),
-        Expr::PrefixExpr(e) => operand_chain(&e.expr()?),
-        Expr::CastExpr(e) => operand_chain(&e.expr()?),
+        Expr::ParenExpr(e) if parens && !has_attrs(&e.expr()?) && !has_line_comments_inside(e) => {
+            operand_chain_through(&e.expr()?, parens)
+        }
+        Expr::RefExpr(e) => operand_chain_through(&e.expr()?, parens),
+        Expr::PrefixExpr(e) => operand_chain_through(&e.expr()?, parens),
+        Expr::CastExpr(e) => operand_chain_through(&e.expr()?, parens),
         expr if is_postfix_expr(expr) && !has_attrs(expr) => Some(expr.clone()),
         _ => None,
     }
+}
+
+fn has_line_comments_inside(expr: &ParenExpr) -> bool {
+    let (Some(open), Some(close)) = (expr.l_paren_token(), expr.r_paren_token()) else {
+        return true;
+    };
+    comments_break_line_after(&open)
+        || prev_code_token(&close).is_some_and(|t| own_line_comment_follows(&t))
 }
 
 /// The chain layouts with the operators of `expr` around them, applying to the chain as a whole
@@ -36,13 +57,19 @@ pub(super) fn operator_chain_parts(fmt: &Formatter, expr: &Expr, chain: Expr) ->
         .map(|chain| Builder::concat(fmt, [prefix.clone(), chain, suffix.clone()]))
 }
 
-/// E.g. `&mut *` and `as T` of `&mut *a.b() as T`
+/// E.g. `&mut *(` and `as T)` of `&mut *(a.b() as T)`
 fn format_operators_around_chain(fmt: &Formatter, expr: &Expr) -> (Frag, Frag) {
     let mut prefix = Builder::new(fmt);
-    let mut casts = Vec::new();
+    let mut suffixes = Vec::new();
     let mut expr = expr.clone();
     loop {
         expr = match expr {
+            Expr::ParenExpr(e) => {
+                prefix.push_token(e.l_paren_token().unwrap(), Open);
+                let inner = e.expr().unwrap();
+                suffixes.push(ChainSuffix::Paren(e));
+                inner
+            }
             Expr::RefExpr(e) => {
                 push_ref_operator(&mut prefix, &e);
                 e.expr().unwrap()
@@ -53,20 +80,30 @@ fn format_operators_around_chain(fmt: &Formatter, expr: &Expr) -> (Frag, Frag) {
             }
             Expr::CastExpr(e) => {
                 let operand = e.expr().unwrap();
-                casts.push(e);
+                suffixes.push(ChainSuffix::Cast(e));
                 operand
             }
             _ => break,
         };
     }
-    // The innermost cast is the first one after the chain
+    // The innermost suffix is the first one after the chain
     let mut suffix = Builder::new(fmt);
-    for cast in casts.iter().rev() {
-        let (as_token, ty) = cast_type_parts(fmt, cast);
-        suffix.push(as_token);
-        suffix.push(ty);
+    for item in suffixes.iter().rev() {
+        match item {
+            ChainSuffix::Cast(cast) => {
+                let (as_token, ty) = cast_type_parts(fmt, cast);
+                suffix.push(as_token);
+                suffix.push(ty);
+            }
+            ChainSuffix::Paren(paren) => suffix.push_token(paren.r_paren_token().unwrap(), Close),
+        }
     }
     (prefix.into_frag(), suffix.into_frag())
+}
+
+enum ChainSuffix {
+    Cast(CastExpr),
+    Paren(ParenExpr),
 }
 
 /// `[index]`, broken only when it does not fit, between the brackets (Style Guide): `target[` /
