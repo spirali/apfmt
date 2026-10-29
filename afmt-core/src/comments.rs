@@ -40,13 +40,18 @@ pub(crate) fn count_newlines(token: &SyntaxToken) -> u32 {
     token.text().bytes().filter(|c| *c == b'\n').count() as u32
 }
 
-/// At the start of a line or after an opening delimiter, followed by code: `/* c */ f();`, `{ /* c
-/// */ 1 }`
+/// At the start of a line (after block comments only) or after an opening delimiter, followed by
+/// code: `/* c */ f();`, `/* a */ /* b */ f();`, `{ /* c */ 1 }`
 pub(crate) fn is_leading_block_comment(token: &SyntaxToken) -> bool {
     let has_newline = |t: Option<SyntaxToken>| {
         t.is_some_and(|t| t.kind() == SyntaxKind::WHITESPACE && count_newlines(&t) > 0)
     };
-    let line_start = token.prev_token().is_none() || has_newline(token.prev_token());
+    let line_start = std::iter::successors(token.prev_token(), |t| t.prev_token())
+        .find(|t| match t.kind() {
+            SyntaxKind::WHITESPACE => count_newlines(t) > 0,
+            kind => !is_comment_kind(kind) || is_line_comment(t),
+        })
+        .is_none_or(|t| has_newline(Some(t)));
     let after_opener = std::iter::successors(token.prev_token(), |t| t.prev_token())
         .find(|t| is_code_kind(t.kind()))
         .is_some_and(|t| {

@@ -314,7 +314,10 @@ pub(super) fn format_expr_item(fmt: &Formatter, expr: Expr) -> ExprItem {
             // tuple or struct literal: its single line has width rules of its own, as in rustfmt
             let own_width = matches!(
                 without_operators(&expr),
-                Expr::ClosureExpr(_) | Expr::ArrayExpr(_) | Expr::TupleExpr(_) | Expr::RecordExpr(_)
+                Expr::ClosureExpr(_)
+                    | Expr::ArrayExpr(_)
+                    | Expr::TupleExpr(_)
+                    | Expr::RecordExpr(_)
             ) || is_block_like_expr(&expr);
             let frag = format_expr(fmt, expr);
             let overflow = if combinable {

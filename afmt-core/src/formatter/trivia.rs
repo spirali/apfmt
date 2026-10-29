@@ -78,13 +78,23 @@ impl<'a> Builder<'a> {
     /// Pushes the trivia after the cursor and ends the line; not after a block comment belonging to
     /// the next code (`/* c */ f();`)
     pub fn flush_trivia_and_end_line(&mut self) {
+        self.flush_trivia_and_end_line_with(true);
+    }
+
+    /// As `flush_trivia_and_end_line`, with the blank lines after the last comment dropped unless
+    /// `keep_blank_lines`
+    pub fn flush_trivia_and_end_line_with(&mut self, keep_blank_lines: bool) {
         self.push_comments();
         let leading_comment = self
             .frag
             .cursor
             .as_ref()
             .is_some_and(is_leading_block_comment);
-        self.flush_trivia_keeping_blank_lines();
+        if keep_blank_lines {
+            self.flush_trivia_keeping_blank_lines();
+        } else {
+            self.flush_trivia();
+        }
         if leading_comment {
             return;
         }

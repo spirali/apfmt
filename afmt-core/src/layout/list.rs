@@ -2,7 +2,8 @@
 
 use crate::comments::{
     comments_at_closing_indentation, comments_break_line_after, is_code_kind, is_comment_kind,
-    is_line_comment, next_code_token, own_line_comment_follows, prev_code_token, trivia_from,
+    is_line_comment, next_code_token, own_line_comment_follows, prev_code_token,
+    rest_of_line_is_comments, trivia_from,
 };
 use crate::doc::WeakPreference;
 use crate::formatter::Edge::{BraceClose, BraceOpen, Close, Comma, Open, Word};
@@ -318,12 +319,18 @@ fn vertical_list(
         if !ends_line {
             continue;
         }
-        // Blank lines in front of the closing delimiter are dropped
-        if keep_blank_lines && !is_last {
-            builder.flush_trivia_and_end_line();
-        } else {
+        if is_last {
+            // Blank lines in front of the closing delimiter are dropped
             builder.flush_trivia();
             builder.push_newline();
+        } else if builder
+            .cursor()
+            .is_some_and(|c| !rest_of_line_is_comments(c, None))
+        {
+            // Block comments followed by the next item on their line stay in front of it
+            builder.push_newline();
+        } else {
+            builder.flush_trivia_and_end_line_with(keep_blank_lines);
         }
     }
     fmt.body_after_opener(line_comments, builder.into_frag())
