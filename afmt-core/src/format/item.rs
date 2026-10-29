@@ -256,25 +256,38 @@ fn format_fn(fmt: &Formatter, item_fn: AstFn) -> Frag {
     let param_list = item_fn.param_list().unwrap();
     let has_params = param_list.self_param().is_some() || param_list.params().next().is_some();
     let params = format_param_list(fmt, param_list);
-    let signature = match item_fn.ret_type().map(|ret| format_ret_type(fmt, ret)) {
+    let ret = item_fn.ret_type().map(|ret| format_ret_type(fmt, ret));
+    let with_head = |signature: Frag| {
+        if item_fn.generic_param_list().is_some() && has_params {
+            // Broken generics are followed by broken parameters, as rustfmt does: `>(` / `    a: A,`
+            // / `) {`
+            fmt.concat_breaking_together(head.clone(), signature)
+        } else {
+            Builder::concat(fmt, [head.clone(), signature])
+        }
+    };
+    let signature = with_head(match ret.clone() {
         // The return type breaks only after the parameters (Style Guide): `) -> Result<` / `...`
-        Some(ret) if has_params => fmt.concat_breaking_in_order(params, ret),
+        Some(ret) if has_params => fmt.concat_breaking_in_order(params.clone(), ret),
         // Without parameters, the return type moves to the next line as rustfmt does: `fn name()` /
         // `-> Type {`
         Some(ret) => {
             let ret = fmt.alt_frag(ret.clone(), fmt.on_next_line(ret));
-            Builder::concat(fmt, [params, ret])
+            Builder::concat(fmt, [params.clone(), ret])
         }
-        None => params,
-    };
-    let signature = if item_fn.generic_param_list().is_some() && has_params {
-        // Broken generics are followed by broken parameters, as rustfmt does: `>(` / `    a: A,` /
-        // `) {`
-        fmt.concat_breaking_together(head, signature)
-    } else {
-        Builder::concat(fmt, [head, signature])
-    };
+        None => params.clone(),
+    });
     let body = item_fn.body();
+    // `{` on its own line rather than breaking the return type (as rustfmt): `) -> Result<A, B>` /
+    // `{`
+    if has_params && let (Some(ret), Some(body), None) = (ret, &body, item_fn.where_clause()) {
+        let flat_ret = Builder::concat(fmt, [fmt.multi_line(params), fmt.flat(ret)]);
+        let body = format_block_expr(fmt, body.clone());
+        let body_on_next_line =
+            Builder::concat(fmt, [with_head(flat_ret), fmt.on_next_line(body.clone())]);
+        builder.push(fmt.alt_frag(Builder::concat(fmt, [signature, body]), body_on_next_line));
+        return builder.into_frag();
+    }
     match item_fn.where_clause() {
         // `where` right after the closing `)` of a broken signature (Style Guide): `) where`
         Some(clause) if item_fn.ret_type().is_none() => {

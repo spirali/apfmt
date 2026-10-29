@@ -201,8 +201,21 @@ pub(super) fn format_range<R: RangeItem>(
     builder.into_frag()
 }
 
+/// `a..b` as a binary operator, broken before `..` (as rustfmt): `a` / `    ..b`; after a start of
+/// at most `tab_spaces` columns, the end may break on its line (`0..f(` / `    x,` / `)`, as rustfmt)
 fn format_range_expr(fmt: &Formatter, expr: RangeExpr) -> Frag {
-    format_range(fmt, &expr, |e| format_expr(fmt, e))
+    let (Some(start), Some(end)) = (expr.start(), expr.end()) else {
+        return format_range(fmt, &expr, |e| format_expr(fmt, e));
+    };
+    let start = format_expr(fmt, start);
+    let op = fmt.token(expr.op_token().unwrap(), Tight);
+    let end = format_expr(fmt, end);
+    let chain = infix_chain(fmt, start.clone(), &[(op.clone(), end.clone())]);
+    let Some(short_start) = fmt.flat_within(start, fmt.config().tab_spaces) else {
+        return chain;
+    };
+    let broken_end = Builder::concat(fmt, [short_start, op, fmt.multi_line(end)]);
+    fmt.alt_frag(chain, broken_end)
 }
 
 /// A keyword optionally followed by a label and a value: `return x`, `break 'a x`, `continue 'a`
@@ -246,11 +259,11 @@ fn format_let_expr(fmt: &Formatter, expr: LetExpr) -> Frag {
     let_head_layouts(fmt, &expr).all(fmt)
 }
 
-/// A broken `a && b`, also in parentheses or under a prefix operator or a cast (`!(a` / `    && b)`),
+/// A broken `a && b` or `a..b`, also in parentheses or under a prefix operator or a cast (`!(a` / `    && b)`),
 /// ends with an indented continuation line: `{` then goes on its own line (chains have their own layouts)
 fn is_hanging_expr(expr: &Expr) -> bool {
     match expr {
-        Expr::BinExpr(_) => true,
+        Expr::BinExpr(_) | Expr::RangeExpr(_) => true,
         Expr::ParenExpr(e) => e.expr().is_some_and(|e| is_hanging_expr(&e)),
         Expr::PrefixExpr(e) => e.expr().is_some_and(|e| is_hanging_expr(&e)),
         Expr::RefExpr(e) => e.expr().is_some_and(|e| is_hanging_expr(&e)),
