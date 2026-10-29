@@ -5,13 +5,12 @@
 use super::line_if_alone;
 use super::sort::version_cmp;
 use crate::comments::{
-    TriviaStop, comments_ending_line_end, count_newlines, first_code_token, has_comments,
-    is_comment_kind, is_line_comment, own_line_comment_follows, post_comments_end, trivia_end,
-    trivia_from,
+    TriviaStop, comments_ending_line_end, count_newlines, has_comments, is_code_kind,
+    is_comment_kind, is_line_comment, post_comments_end, tokens_between, trivia_end,
 };
 use crate::layout::list::list_items_cast;
 use crate::syntax_utils::has_attrs;
-use ra_ap_syntax::ast::{HasName, Path, Use, UseTree, UseTreeList};
+use ra_ap_syntax::ast::{HasAttrs, HasName, Path, Use, UseTree, UseTreeList};
 use ra_ap_syntax::{AstNode, SourceFile, SyntaxKind, SyntaxNode, SyntaxToken, TextRange, TextSize};
 use std::cmp::Ordering;
 
@@ -259,24 +258,50 @@ fn push_after(out: &mut String, text: &str, line_comment: bool) {
     out.push_str(text);
 }
 
-/// Attributes, e.g. `#[macro_use]`, prevent sorting (Style Guide)
 fn sortable_use(node: &SyntaxNode) -> Option<Use> {
-    Use::cast(node.clone()).filter(|item| !has_attrs(item))
+    Use::cast(node.clone()).filter(|item| !has_macro_use(item))
+}
+
+/// `#[macro_use]` prevents sorting, as in rustfmt; other attributes and doc comments move with
+/// their item
+fn has_macro_use(item: &Use) -> bool {
+    item.attrs()
+        .any(|attr| attr.simple_name().is_some_and(|name| name == "macro_use"))
+}
+
+fn is_in_doc_comment(token: &SyntaxToken) -> bool {
+    token
+        .parent()
+        .is_some_and(|node| node.kind() == SyntaxKind::DOC_COMMENT)
+}
+
+/// Its first doc comment, attribute or code token; plain comments in front of them stay
+fn item_start(item: &Use) -> SyntaxToken {
+    std::iter::successors(item.syntax().first_token(), |t| t.next_token())
+        .find(|t| is_code_kind(t.kind()) || is_in_doc_comment(t))
+        .unwrap()
 }
 
 /// On the next line, or on the same line without comments; a blank or comment line starts a new
 /// group (as in rustfmt)
-fn is_same_group(prev: &Use) -> bool {
-    let semicolon = prev.syntax().last_token().unwrap();
-    let trivia = || trivia_from(semicolon.next_token());
-    match trivia().map(|t| count_newlines(&t)).sum::<u32>() {
-        0 => !trivia().any(|t| is_comment_kind(t.kind())),
-        1 => !own_line_comment_follows(&semicolon),
-        _ => false,
+fn is_same_group(prev: &Use, next: &Use) -> bool {
+    let start = item_start(next);
+    let mut newlines = 0;
+    let mut comments = false;
+    for t in std::iter::successors(semicolon(prev).next_token(), |t| t.next_token())
+        .take_while(|t| *t != start)
+    {
+        if is_comment_kind(t.kind()) {
+            comments = true;
+            if newlines > 0 {
+                return false;
+            }
+        }
+        newlines += count_newlines(&t);
     }
+    newlines == 1 || (newlines == 0 && !comments)
 }
 
-/// A `use` item with attributes is a group alone
 fn use_groups(node: &SyntaxNode) -> Vec<Vec<Use>> {
     let mut groups: Vec<Vec<Use>> = Vec::new();
     let mut children = node.children().peekable();
@@ -284,11 +309,11 @@ fn use_groups(node: &SyntaxNode) -> Vec<Vec<Use>> {
         let Some(item) = Use::cast(child) else {
             continue;
         };
-        let sortable = !has_attrs(&item);
+        let sortable = !has_macro_use(&item);
         let mut group = vec![item];
         while sortable
             && let Some(next) = children.peek().and_then(sortable_use)
-            && is_same_group(group.last().unwrap())
+            && is_same_group(group.last().unwrap(), &next)
         {
             group.push(next);
             children.next();
@@ -298,13 +323,17 @@ fn use_groups(node: &SyntaxNode) -> Vec<Vec<Use>> {
     groups
 }
 
-/// From its first code token to the comments ending the line of its `;`, which move with it
+/// From its first doc comment, attribute or code token to the comments ending the line of its `;`,
+/// which move with it; a doc comment there belongs to the next item
 fn use_range(item: &Use) -> TextRange {
-    let start = first_code_token(item.syntax()).text_range().start();
-    let end = comments_ending_line_end(&semicolon(item))
-        .text_range()
-        .end();
-    TextRange::new(start, end)
+    let semicolon = semicolon(item);
+    let line_end = comments_ending_line_end(&semicolon);
+    let end = tokens_between(&semicolon, &line_end)
+        .take_while(|t| !is_in_doc_comment(t))
+        .filter(|t| *t == semicolon || is_comment_kind(t.kind()))
+        .last()
+        .unwrap();
+    TextRange::new(item_start(item).text_range().start(), end.text_range().end())
 }
 
 fn semicolon(item: &Use) -> SyntaxToken {
@@ -314,7 +343,7 @@ fn semicolon(item: &Use) -> SyntaxToken {
 /// `use a::{};` is removed, unless it has attributes or comments in it or after it on its line
 fn is_removed(item: &Use) -> bool {
     let semicolon = semicolon(item);
-    let start = first_code_token(item.syntax()).text_range().start();
+    let start = item_start(item).text_range().start();
     !has_attrs(item)
         && item.use_tree().is_some_and(|tree| is_empty_tree(&tree))
         && trivia_end(&semicolon, None, TriviaStop::OwnLine) == semicolon
@@ -376,6 +405,20 @@ mod tests {
             rewrite("// first\nuse c; // c\nuse b;\n\nuse a;\n").unwrap(),
             "// first\nuse b;\nuse c; // c\n\nuse a;\n"
         );
+    }
+
+    #[test]
+    fn doc_comments_and_attributes_move_with_item() {
+        assert_eq!(
+            rewrite("use c;\n/// b\n#[cfg(x)]\nuse b;\nuse a;\n").unwrap(),
+            "use a;\n/// b\n#[cfg(x)]\nuse b;\nuse c;\n"
+        );
+        // A doc comment ending the line of a `;` belongs to the next item
+        assert_eq!(
+            rewrite("use b;\nuse a; /// f\nfn f() {}\n").unwrap(),
+            "use a;\nuse b; /// f\nfn f() {}\n"
+        );
+        assert_eq!(rewrite("use b;\n#[macro_use]\nuse a;\n"), None);
     }
 
     #[test]
