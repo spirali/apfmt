@@ -246,10 +246,17 @@ fn format_let_expr(fmt: &Formatter, expr: LetExpr) -> Frag {
     let_head_layouts(fmt, &expr).all(fmt)
 }
 
-/// A broken `a && b`, ending with an indented continuation line: `{` then goes on its own line
-/// (chains have their own layouts)
+/// A broken `a && b`, also in parentheses or under a prefix operator or a cast (`!(a` / `    && b)`),
+/// ends with an indented continuation line: `{` then goes on its own line (chains have their own layouts)
 fn is_hanging_expr(expr: &Expr) -> bool {
-    matches!(expr, Expr::BinExpr(_))
+    match expr {
+        Expr::BinExpr(_) => true,
+        Expr::ParenExpr(e) => e.expr().is_some_and(|e| is_hanging_expr(&e)),
+        Expr::PrefixExpr(e) => e.expr().is_some_and(|e| is_hanging_expr(&e)),
+        Expr::RefExpr(e) => e.expr().is_some_and(|e| is_hanging_expr(&e)),
+        Expr::CastExpr(e) => e.expr().is_some_and(|e| is_hanging_expr(&e)),
+        _ => false,
+    }
 }
 
 /// `keyword head {` of a control-flow expression. A broken head costs a split, as `{` on its own
