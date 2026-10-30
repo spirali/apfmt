@@ -2,6 +2,7 @@ use super::frag::{Edge, Frag};
 use super::{Builder, Formatter};
 use crate::comments::{
     TriviaStop, count_newlines, is_comment_kind, is_leading_block_comment, is_line_comment,
+    is_outer_doc_comment,
     line_ends_after, line_indentation, next_code_token, post_comments_stop,
     rest_of_line_is_comments, tokens_between, trivia_end, trivia_from,
 };
@@ -154,7 +155,11 @@ impl<'a> Builder<'a> {
     /// A line comment ends the line. A `trailing` comment does not count as overflow, so it does
     /// not change the layout of the code in front of it, as in rustfmt.
     fn push_comment(&mut self, token: &SyntaxToken, trailing: bool) {
-        let end = if is_line_comment(token) { Break } else { Word };
+        let end = if is_line_comment(token) || is_outer_doc_comment(token) {
+            Break
+        } else {
+            Word
+        };
         let mut doc_id = self.fmt.comment_doc(token);
         if trailing && !token.text().contains('\n') {
             if let Some(group) = self.align_group {
@@ -202,6 +207,9 @@ impl<'a> Builder<'a> {
                 kind if is_comment_kind(kind) => {
                     if before_separator {
                         newlines = 0;
+                    }
+                    if is_outer_doc_comment(&token) {
+                        newlines = newlines.max(1);
                     }
                     // Blank lines at the start of a fragment are dropped; the parent decides
                     // spacing

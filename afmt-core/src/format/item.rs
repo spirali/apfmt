@@ -10,7 +10,7 @@ use super::macros::{format_macro_call, format_macro_rules};
 use super::pat::format_pat;
 use super::path::format_path;
 use super::stmt::format_block_expr;
-use super::ty::{format_ret_type, format_type};
+use super::ty::{format_ret_type, format_type, format_type_annotation};
 use super::{format_unsupported, format_unsupported_kind};
 use crate::comments::{is_code_kind, is_comment_kind};
 use crate::format::common::{format_lifetime, format_name};
@@ -804,8 +804,8 @@ fn push_typed_value(
     value: Option<Expr>,
 ) {
     if let Some(ty) = ty {
-        builder.push_token(colon.unwrap(), Comma);
-        builder.push(format_type(fmt, ty));
+        let room = if value.is_some() { " =" } else { ";" };
+        builder.push(format_type_annotation(fmt, colon.unwrap(), ty, room.len() as u32));
     }
     if let Some(value) = value {
         builder.push_token(eq.unwrap(), Operator);

@@ -7,7 +7,7 @@ use super::generics::{format_for_binder, format_type_bound_list};
 use super::item::{format_param_list, push_qualifiers};
 use super::path::format_path;
 use crate::format::common::format_repeat;
-use crate::formatter::Edge::{Operator, Tight, Word};
+use crate::formatter::Edge::{Comma, Operator, Tight, Word};
 use crate::formatter::{Builder, Formatter, Frag};
 use crate::layout::list::{Delimiters, FlatLimit, ListLayout, delimited_list, list_items_cast};
 use ra_ap_syntax::AstNode;
@@ -101,6 +101,21 @@ fn format_fn_ptr_type(fmt: &Formatter, ty: FnPtrType) -> Frag {
         builder.push(format_ret_type(fmt, ret_type));
     }
     builder.into_frag()
+}
+
+/// `: Type`: on the line of `:` in any layout that fits with `room` columns after it, otherwise
+/// on the next line, block-indented (as rustfmt; the Style Guide tries the next line first)
+pub(super) fn format_type_annotation(
+    fmt: &Formatter,
+    colon: SyntaxToken,
+    ty: Type,
+    room: u32,
+) -> Frag {
+    let colon = fmt.token(colon, Comma);
+    let ty = format_type(fmt, ty);
+    let same = Builder::concat(fmt, [colon.clone(), ty.clone()]);
+    let next = Builder::concat(fmt, [colon, fmt.indented_line(ty)]);
+    fmt.fits_or(same.clone(), room, fmt.alt_frag(same, next))
 }
 
 pub(super) fn format_type(fmt: &Formatter, ty: Type) -> Frag {

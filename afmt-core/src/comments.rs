@@ -1,7 +1,7 @@
 //! Facts about comments and trivia in the source: token queries (what follows a token, where a
 //! comment is); placing and normalizing comments in the output is `formatter/trivia.rs`
 
-use ra_ap_syntax::{SyntaxKind, SyntaxNode, SyntaxToken};
+use ra_ap_syntax::{AstNode, SyntaxKind, SyntaxNode, SyntaxToken, ast};
 
 /// `//`, `/* */` or a doc comment; the parser puts a doc comment in a `DOC_COMMENT` node, for afmt
 /// it is a comment like any other
@@ -13,6 +13,20 @@ pub(crate) fn is_comment_kind(kind: SyntaxKind) -> bool {
             | SyntaxKind::OUTER_DOC_COMMENT
             | SyntaxKind::DOC_COMMENT
     )
+}
+
+/// `///` or `/** */` documenting the next item, field, statement, ...: it starts a line, as if a
+/// line break preceded it. On an expression only when it ends its line (`/** a */ 1` stays), as
+/// in rustfmt.
+pub(crate) fn is_outer_doc_comment(token: &SyntaxToken) -> bool {
+    let on_expr = || {
+        token
+            .parent()
+            .and_then(|doc| doc.parent())
+            .is_some_and(|node| ast::Expr::can_cast(node.kind()))
+    };
+    token.kind() == SyntaxKind::OUTER_DOC_COMMENT
+        && (rest_of_line_is_comments(token, None) || !on_expr())
 }
 
 /// Neither whitespace nor a comment; unlike `SyntaxKind::is_trivia`, doc comments are trivia
@@ -73,6 +87,7 @@ pub(crate) fn rest_of_line_is_comments(token: &SyntaxToken, separator: Option<Sy
     while let Some(t) = element {
         match t.kind() {
             SyntaxKind::WHITESPACE if seen_separator && count_newlines(&t) > 0 => return true,
+            _ if seen_separator && is_outer_doc_comment(&t) => return true,
             k if is_comment_kind(k) => {}
             SyntaxKind::WHITESPACE => {}
             k if Some(k) == separator && !seen_separator => seen_separator = true,
@@ -87,18 +102,23 @@ pub(crate) fn rest_of_line_is_comments(token: &SyntaxToken, separator: Option<Sy
 pub(crate) fn line_ends_after(token: &SyntaxToken, separator: Option<SyntaxKind>) -> bool {
     std::iter::successors(token.next_token(), |t| t.next_token())
         .find(|t| match t.kind() {
+            _ if is_outer_doc_comment(t) => true,
             kind if is_comment_kind(kind) => false,
             SyntaxKind::WHITESPACE => count_newlines(t) > 0,
             kind => Some(kind) != separator,
         })
-        .is_none_or(|t| t.kind() == SyntaxKind::WHITESPACE)
+        .is_none_or(|t| t.kind() == SyntaxKind::WHITESPACE || is_outer_doc_comment(&t))
 }
 
 /// The first comment on a later line than `token`, before the next code token. Consecutive
 /// whitespace is a single token, so the token after the first line break is the comment or code.
 pub(crate) fn first_own_line_comment(token: &SyntaxToken) -> Option<SyntaxToken> {
-    let line_break = trivia_from(token.next_token())
-        .find(|t| t.kind() == SyntaxKind::WHITESPACE && t.text().contains('\n'))?;
+    let line_break = trivia_from(token.next_token()).find(|t| {
+        (t.kind() == SyntaxKind::WHITESPACE && t.text().contains('\n')) || is_outer_doc_comment(t)
+    })?;
+    if is_outer_doc_comment(&line_break) {
+        return Some(line_break);
+    }
     line_break
         .next_token()
         .filter(|t| is_comment_kind(t.kind()))
@@ -204,7 +224,8 @@ pub(crate) fn trivia_end(
                 if !follows && separator.is_some() && stop == TriviaStop::Separator {
                     break;
                 }
-                if newlines > 0 && stop != TriviaStop::Code {
+                let starts_line = newlines > 0 || (is_outer_doc_comment(&t) && separator.is_none());
+                if starts_line && stop != TriviaStop::Code {
                     break;
                 }
                 newlines = 0;

@@ -474,12 +474,24 @@ impl<'a> Formatter<'a> {
     /// On a single line where it fits with `room` columns left after it, otherwise in any layout,
     /// whatever what follows could gain (`DocNode::Fallback`)
     pub fn flat_where_fits(&self, frag: Frag, room: u32) -> Frag {
-        self.map_branches(frag, |b| {
-            if !self.doc_arena.borrow_mut().has_flat_layout(b.doc_id) {
+        match self.flat_if_possible(frag.clone()) {
+            Some(flat) => self.fits_or(flat, room, frag),
+            None => frag,
+        }
+    }
+
+    /// The layouts of `first` that fit with `room` columns left after their last line, otherwise
+    /// those of `second` (`DocNode::Fallback`); a branch of `first` pairs with one of `second` by edges
+    pub fn fits_or(&self, first: Frag, room: u32, second: Frag) -> Frag {
+        self.map_branches(second, |b| {
+            let Some(f) = first
+                .branches
+                .iter()
+                .find(|f| f.start == b.start && f.end == b.end)
+            else {
                 return b;
-            }
-            let flat = self.make_node(DocNode::Flat(b.doc_id));
-            let fits = self.make_node(DocNode::RoomAfter(flat, room));
+            };
+            let fits = self.make_node(DocNode::RoomAfter(f.doc_id, room));
             Branch {
                 doc_id: self.make_node(DocNode::Fallback(fits, b.doc_id)),
                 ..b

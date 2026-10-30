@@ -8,7 +8,7 @@ use super::expr::{
 use super::format_unsupported;
 use super::item::format_item;
 use super::pat::format_pat;
-use super::ty::format_type;
+use super::ty::format_type_annotation;
 use crate::comments::comments_break_line_after;
 use crate::doc::SEMICOLON_DOC;
 use crate::format::common::{push_label, push_modifiers};
@@ -27,8 +27,9 @@ fn format_let_stmt(fmt: &Formatter, stmt: LetStmt) -> Frag {
     let mut lhs = Builder::new(fmt);
     lhs.push(fmt.keep_together(format_pat(fmt, stmt.pat().unwrap())));
     if let Some(ty) = stmt.ty() {
-        lhs.push_token(stmt.colon_token().unwrap(), Comma);
-        lhs.push(format_type(fmt, ty));
+        let room = if stmt.initializer().is_some() { " =" } else { ";" };
+        let colon = stmt.colon_token().unwrap();
+        lhs.push(format_type_annotation(fmt, colon, ty, room.len() as u32));
     }
     let lhs = lhs.into_frag();
     // `let pat = init else { expr };` on a single line (Style Guide)
