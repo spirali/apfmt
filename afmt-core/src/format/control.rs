@@ -242,7 +242,7 @@ fn format_match_arm(fmt: &Formatter, arm: &MatchArm, group: Option<AlignGroup>) 
     let mut lhs = Builder::new(fmt);
     // The guard stays on one line, and the pattern does not end on a `| C` line (Style Guide)
     lhs.push(if guard.is_some() {
-        pat.other.expect("a pattern has a single-line layout")
+        pat.other.clone().expect("a pattern has a single-line layout")
     } else {
         all_pat.clone()
     });
@@ -269,18 +269,31 @@ fn format_match_arm(fmt: &Formatter, arm: &MatchArm, group: Option<AlignGroup>) 
         layouts = fmt.alt_frag(with_body(lhs, same_line, true), layouts);
     }
     if let Some(guard) = guard {
-        let mut broken = Builder::new(fmt);
-        broken.push(all_pat);
         // "Avoid splitting the left-hand side" (Style Guide); an empty block stays on the line of
         // the guard
-        let broken = if is_empty_block(&arm.expr().unwrap()) {
-            broken.push(fmt.indented_line(Builder::concat(fmt, [guard, arrow, block])));
-            with_body(broken.into_frag(), Frag::empty(), block_comma)
+        let empty_block = is_empty_block(&arm.expr().unwrap());
+        let guard = if empty_block {
+            Builder::concat(fmt, [guard, arrow, block.clone()])
         } else {
-            broken.push(fmt.indented_line(Builder::concat(fmt, [guard, arrow])));
-            with_body(broken.into_frag(), fmt.on_next_line(block), block_comma)
+            Builder::concat(fmt, [guard, arrow])
         };
-        layouts = fmt.alt_frag(layouts, broken);
+        let mut broken = Builder::concat(fmt, [all_pat, fmt.indented_line(guard.clone())]);
+        // After a pattern not wider than the indent, the broken guard stays on its line where it
+        // fits (`_ if a` / `    || b =>`), as in rustfmt and as the Style Guide does after `}`
+        let flat_pat = pat.other.filter(|other| {
+            fmt.min_flat_width(other)
+                .is_some_and(|width| width <= fmt.config().tab_spaces)
+        });
+        if let Some(flat_pat) = flat_pat {
+            let short = Builder::concat(fmt, [flat_pat, fmt.multi_line(guard)]);
+            broken = fmt.fits_or(short, 0, broken);
+        }
+        let body = if empty_block {
+            Frag::empty()
+        } else {
+            fmt.on_next_line(block)
+        };
+        layouts = fmt.alt_frag(layouts, with_body(broken, body, block_comma));
     }
     layouts
 }

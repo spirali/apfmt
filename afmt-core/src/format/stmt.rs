@@ -23,13 +23,16 @@ use ra_ap_syntax::{AstNode, SyntaxKind, SyntaxNode};
 fn format_let_stmt(fmt: &Formatter, stmt: LetStmt) -> Frag {
     let mut builder = Builder::new(fmt);
     builder.push_keyword(stmt.let_token().unwrap());
-    // `pat: Type`, broken only when nothing else helps (Style Guide)
+    // `pat: Type`; the pattern is broken only where it does not fit on one line, whatever the
+    // initializer could gain (Style Guide: the left-hand side is split last)
+    let after_lhs = if stmt.initializer().is_some() { " =" } else { ";" };
+    let after_pat = if stmt.ty().is_some() { ":" } else { after_lhs };
+    let pat = fmt.keep_together(format_pat(fmt, stmt.pat().unwrap()));
     let mut lhs = Builder::new(fmt);
-    lhs.push(fmt.keep_together(format_pat(fmt, stmt.pat().unwrap())));
+    lhs.push(fmt.flat_where_fits(pat, after_pat.len() as u32));
     if let Some(ty) = stmt.ty() {
-        let room = if stmt.initializer().is_some() { " =" } else { ";" };
         let colon = stmt.colon_token().unwrap();
-        lhs.push(format_type_annotation(fmt, colon, ty, room.len() as u32));
+        lhs.push(format_type_annotation(fmt, colon, ty, after_lhs.len() as u32));
     }
     let lhs = lhs.into_frag();
     // `let pat = init else { expr };` on a single line (Style Guide)
