@@ -1,7 +1,7 @@
 use super::frag::{Edge, Frag};
 use super::{Builder, Formatter};
 use crate::comments::{
-    TriviaStop, count_newlines, is_comment_kind, is_leading_block_comment, is_line_comment,
+    TriviaStop, comments_ending_line_end, count_newlines, is_comment_kind, is_leading_block_comment, is_line_comment,
     is_outer_doc_comment,
     line_ends_after, line_indentation, next_code_token, post_comments_stop,
     rest_of_line_is_comments, tokens_between, trivia_end, trivia_from,
@@ -321,6 +321,20 @@ impl<'a> Builder<'a> {
         {
             self.push_line_break_if(NEWLINE_DOC, |end| end != Nothing);
         }
+    }
+
+    /// Pushes the trivia after the cursor, then the comments ending the line of `token`, a later
+    /// source token that is placed after them (`a && // c` / `b` as `a // c` / `&& b`); returns the
+    /// last comment, the cursor `token` then takes
+    pub fn push_comments_ending_line_of(&mut self, token: &SyntaxToken) -> Option<SyntaxToken> {
+        let end = comments_ending_line_end(token);
+        if end == *token {
+            return None;
+        }
+        self.flush_trivia();
+        self.frag.cursor = Some(token.clone());
+        self.push_trivia(None, TriviaStop::OwnLine);
+        Some(end)
     }
 
     /// Pushes the comments after the cursor if nothing else follows on its line (`( // c`); returns

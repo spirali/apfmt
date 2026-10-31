@@ -1,10 +1,11 @@
 //! Chains: binary operators (`a && b && c`) and postfix chains (`a.b().c()?`)
 
+use crate::comments::comments_ending_line_end;
 use crate::doc::WeakPreference;
 use crate::formatter::Edge::Operator;
 use crate::formatter::{Builder, Formatter, Frag};
 use crate::layout::head::HeadLayouts;
-use ra_ap_syntax::{NodeOrToken, SyntaxKind, SyntaxNode};
+use ra_ap_syntax::{NodeOrToken, SyntaxKind, SyntaxNode, SyntaxToken};
 
 /// `a op b op c` on one line, or broken before every operator with indented continuation lines. A
 /// short first operand takes the next one, as in rustfmt: `a + b` / `    + c`.
@@ -39,12 +40,37 @@ pub(crate) fn operator_chain(
                 }
             }
             NodeOrToken::Token(token) if token.kind() == op && first.is_some() => {
-                operator = Some(fmt.token(token, Operator));
+                operator = Some(token);
             }
             NodeOrToken::Token(_) => {}
         }
     }
-    (first.expect("an operand"), rest)
+    operator_operands(fmt, first.expect("an operand"), rest)
+}
+
+/// The operands with their operators for `infix_chain`. Comments ending the line of an operator end
+/// the operand in front of it, since a broken chain starts the next line with the operator.
+pub(crate) fn operator_operands(
+    fmt: &Formatter,
+    first: Frag,
+    rest: Vec<(SyntaxToken, Frag)>,
+) -> (Frag, Vec<(Frag, Frag)>) {
+    let mut operands = vec![first];
+    let mut operators = Vec::new();
+    for (op, operand) in rest {
+        let mut operator = fmt.token(op.clone(), Operator);
+        if comments_ending_line_end(&op) != op {
+            let mut previous = Builder::new(fmt);
+            previous.push(operands.pop().unwrap());
+            let last_comment = previous.push_comments_ending_line_of(&op).unwrap();
+            operands.push(previous.into_frag());
+            operator = operator.with_cursor(last_comment);
+        }
+        operators.push(operator);
+        operands.push(operand);
+    }
+    let first = operands.remove(0);
+    (first, operators.into_iter().zip(operands).collect())
 }
 
 /// `a op b op c` filled on lines, broken before an operator, unindented: `A | B | C` / `| D | E`

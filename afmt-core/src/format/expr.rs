@@ -25,7 +25,8 @@ use crate::format::common::format_lifetime;
 use crate::formatter::Edge::{BraceClose, BraceOpen, Comma, Operator, Tight, Word};
 use crate::formatter::{Builder, Formatter, Frag};
 use crate::layout::chain::{
-    broken_infix_chain, flat_operands_then_last, infix_chain, short_first_operand,
+    broken_infix_chain, flat_operands_then_last, infix_chain, operator_operands,
+    short_first_operand,
 };
 use crate::layout::head::{HeadLayouts, pattern_head};
 use crate::layout::list::TrailingSeparator;
@@ -112,9 +113,9 @@ fn bin_chain_operands(fmt: &Formatter, expr: BinExpr) -> (Frag, Vec<(Frag, Frag)
     let first = format_expr(fmt, collect_bin_chain(expr, &mut rest));
     let rest = rest
         .into_iter()
-        .map(|(op, e)| (fmt.token(op, Operator), format_expr(fmt, e)))
+        .map(|(op, e)| (op, format_expr(fmt, e)))
         .collect();
-    (first, rest)
+    operator_operands(fmt, first, rest)
 }
 
 /// `lhs = rhs`, `lhs += rhs`, ...: broken after the operator, the left side only when nothing else
