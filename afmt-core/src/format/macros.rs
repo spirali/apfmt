@@ -11,7 +11,9 @@ use crate::comments::{has_comments, is_code_kind, prev_code_token};
 use crate::formatter::Edge::{BraceClose, BraceOpen, Close, Open, Operator, Tight, Word};
 use crate::formatter::{Builder, Formatter, Frag};
 use crate::layout::list::{Delimiters, TrailingSeparator};
-use crate::syntax_utils::{MacroRule, macro_rules_rules, parse_token_tree, parse_transcriber};
+use crate::syntax_utils::{
+    MacroArgs, MacroRule, macro_rules_rules, macro_token_tree, parse_macro_args, parse_transcriber,
+};
 use ra_ap_syntax::ast::{
     ArgList, ArrayExpr, BlockExpr, Expr, HasName, ItemList, MacroCall, MacroRules, StmtList,
 };
@@ -34,10 +36,10 @@ fn format_token_tree(fmt: &Formatter, call: &MacroCall) -> Frag {
     let tree = &call.token_tree().unwrap();
     let close = tree.syntax().last_token().unwrap();
     let edition = fmt.config().edition;
-    let parsed = match tree.syntax().first_token().unwrap().kind() {
-        SyntaxKind::L_PAREN => fmt.format_reparsed(
-            |placeholders| parse_token_tree::<ArgList>(tree, edition, placeholders),
-            |args| {
+    let parsed = fmt.format_reparsed(
+        |placeholders| parse_macro_args(tree, edition, placeholders),
+        |args| match args {
+            MacroArgs::List(args) => {
                 let trailing = source_trailing_comma(args.syntax());
                 format_expr_list(
                     fmt,
@@ -49,14 +51,10 @@ fn format_token_tree(fmt: &Formatter, call: &MacroCall) -> Frag {
                         layout.trailing_separator(trailing).lines_if(lines)
                     },
                 )
-            },
-        ),
-        SyntaxKind::L_BRACK => fmt.format_reparsed(
-            |placeholders| parse_token_tree::<ArrayExpr>(tree, edition, placeholders),
-            |array| format_bracket_args(fmt, call, array),
-        ),
-        _ => None,
-    };
+            }
+            MacroArgs::Array(array) => format_bracket_args(fmt, call, array),
+        },
+    );
     match parsed {
         Some(frag) => frag.with_cursor(close),
         None => Delimiters::of_token_tree(tree).format_reindented(fmt),
@@ -220,10 +218,7 @@ pub(super) fn macro_argument_count(expr: &Expr) -> Option<usize> {
     if !is_list_macro(expr) {
         return None;
     }
-    let Expr::MacroExpr(expr) = expr else {
-        return None;
-    };
-    let tree = expr.macro_call()?.token_tree()?;
+    let tree = macro_token_tree(expr)?;
     let mut count = 0;
     let mut in_argument = false;
     // Nested delimiters are child token trees
@@ -245,11 +240,7 @@ pub(super) fn macro_argument_count(expr: &Expr) -> Option<usize> {
 }
 
 fn macro_delimiter(expr: &Expr) -> Option<SyntaxKind> {
-    let Expr::MacroExpr(expr) = expr else {
-        return None;
-    };
-    let tree = expr.macro_call()?.token_tree()?;
-    Some(tree.syntax().first_token()?.kind())
+    Some(macro_token_tree(expr)?.syntax().first_token()?.kind())
 }
 
 /// Laid out as a list, so it may overflow as the last argument of a call
@@ -260,30 +251,14 @@ pub(super) fn is_list_macro(expr: &Expr) -> bool {
     )
 }
 
-/// `m! { ... }`, copied; like a block, it may overflow as the only argument of a call
-pub(super) fn is_brace_macro(expr: &Expr) -> bool {
-    macro_delimiter(expr) == Some(SyntaxKind::L_CURLY)
-}
-
 /// Its token tree is copied (reindented) rather than formatted: braces, or arguments that do not
 /// parse
 pub(super) fn is_copied_macro(fmt: &Formatter, expr: &Expr) -> bool {
-    let Expr::MacroExpr(expr) = expr else {
-        return false;
-    };
-    let Some(tree) = expr.macro_call().and_then(|call| call.token_tree()) else {
+    let Some(tree) = macro_token_tree(expr) else {
         return false;
     };
     let edition = fmt.config().edition;
-    match tree.syntax().first_token().unwrap().kind() {
-        SyntaxKind::L_PAREN => {
-            !fmt.can_reparse(|p| parse_token_tree::<ArgList>(&tree, edition, p))
-        }
-        SyntaxKind::L_BRACK => {
-            !fmt.can_reparse(|p| parse_token_tree::<ArrayExpr>(&tree, edition, p))
-        }
-        _ => true,
-    }
+    !fmt.can_reparse(|p| parse_macro_args(&tree, edition, p))
 }
 
 /// `vec![a, b]`

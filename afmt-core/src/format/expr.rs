@@ -23,7 +23,7 @@ use crate::comments::{comments_break_line_after, is_code_kind, is_comment_kind};
 use crate::doc::{CLOSE_BRACE_DOC, OPEN_BRACE_DOC};
 use crate::format::common::format_lifetime;
 use crate::formatter::Edge::{BraceClose, BraceOpen, Comma, Operator, Tight, Word};
-use crate::formatter::{Builder, Formatter, Frag};
+use crate::formatter::{Builder, Formatter, Frag, NextLine};
 use crate::layout::chain::{
     broken_infix_chain, flat_operands_then_last, infix_chain, operator_operands,
     short_first_operand,
@@ -33,7 +33,7 @@ use crate::layout::list::TrailingSeparator;
 use crate::layout::list::{
     Delimiters, FlatLimit, ListItem, ListLayout, delimited_list, list_items_cast,
 };
-use crate::syntax_utils::{has_attrs, is_brace_macro_expr};
+use crate::syntax_utils::{has_attrs, is_brace_macro};
 use ra_ap_syntax::ast::{
     BinExpr, BinaryOp, BlockExpr, BreakExpr, CallExpr, CastExpr, ContinueExpr, ElseBranch, Expr,
     HasArgList, HasAttrs, IfExpr, LetExpr, Literal, LogicOp, ParenExpr, PathExpr, PrefixExpr,
@@ -82,7 +82,8 @@ fn format_bin_expr(fmt: &Formatter, expr: BinExpr) -> Frag {
 /// The layouts of `a op b op c`, and apart from them the operands on one line followed by a block
 /// as the last operand, which `{` of a control-flow head may follow (`if a && {` / `...` / `} {`)
 fn bin_expr_layouts(fmt: &Formatter, expr: BinExpr) -> (Frag, Option<Frag>) {
-    let block_last = expr.rhs().is_some_and(|rhs| is_plain_block(&rhs));
+    let block_last =
+        matches!(expr.rhs(), Some(Expr::BlockExpr(block)) if plain_stmt_list(&block).is_some());
     let (first, rest) = bin_chain_operands(fmt, expr);
     let mut chain = infix_chain(fmt, first.clone(), &rest);
     if let [(op, operand)] = rest.as_slice() {
@@ -97,15 +98,6 @@ fn bin_expr_layouts(fmt: &Formatter, expr: BinExpr) -> (Frag, Option<Frag>) {
         .then(|| flat_operands_then_last(fmt, &first, &rest))
         .flatten();
     (chain, block_last)
-}
-
-/// `{ ... }` without a label, a modifier (`unsafe`, `async`, ...) or attributes
-fn is_plain_block(expr: &Expr) -> bool {
-    let Expr::BlockExpr(block) = expr else {
-        return false;
-    };
-    let l_curly = block.stmt_list().and_then(|list| list.l_curly_token());
-    l_curly.is_some() && l_curly == block.syntax().first_token()
 }
 
 fn bin_chain_operands(fmt: &Formatter, expr: BinExpr) -> (Frag, Vec<(Frag, Frag)>) {
@@ -136,18 +128,18 @@ pub(super) fn format_rhs(fmt: &Formatter, expr: Expr) -> Frag {
         && !has_attrs(&expr)
         && has_single_hugging_argument(&call)
     {
-        return fmt.same_or_indented_line_saving_one_line(format_expr(fmt, expr));
+        return fmt.same_or_indented_line(format_expr(fmt, expr), NextLine::SavingOneLine);
     }
     if !has_attrs(&expr) && is_postfix_expr(&expr) {
         return match postfix_chain_parts(fmt, expr).layouts {
             HeadLayouts {
                 hanging: Some(hanging),
                 other: Some(other),
-            } => fmt.same_or_indented_line_saving_lines_preferring(hanging, other),
-            layouts => fmt.same_or_indented_line_saving_lines(layouts.all(fmt)),
+            } => fmt.same_or_indented_line_preferring(hanging, other),
+            layouts => fmt.same_or_indented_line(layouts.all(fmt), NextLine::SavingTwoLines),
         };
     }
-    fmt.same_or_indented_line_saving_lines(format_expr(fmt, expr))
+    fmt.same_or_indented_line(format_expr(fmt, expr), NextLine::SavingTwoLines)
 }
 
 /// E.g. `f(x)` of `f(x)??`
@@ -374,7 +366,7 @@ pub(super) fn format_head_followed_by(fmt: &Formatter, head: &HeadLayouts, block
     layouts.unwrap()
 }
 
-/// No label or modifier in front of `{` (`unsafe {` is an expression)
+/// No label, modifier or attribute in front of `{` (`unsafe {` is an expression)
 pub(super) fn plain_stmt_list(block: &BlockExpr) -> Option<StmtList> {
     let stmt_list = block.stmt_list()?;
     (block.syntax().first_token() == stmt_list.l_curly_token()).then_some(stmt_list)
@@ -438,7 +430,7 @@ pub(super) fn single_line_block_expr(block: &BlockExpr) -> Option<Expr> {
     {
         return None;
     }
-    tail.filter(|expr| !is_brace_macro_expr(expr.syntax()))
+    tail.filter(|expr| !is_brace_macro(expr))
 }
 
 /// The caller restricts it to a single line
@@ -664,20 +656,14 @@ pub(super) fn format_head_expr(fmt: &Formatter, expr: Expr) -> HeadLayouts {
         && !matches!(bin.op_kind(), Some(BinaryOp::Assignment { .. }))
     {
         let (chain, block_last) = bin_expr_layouts(fmt, bin.clone());
-        return HeadLayouts {
-            // Broken only when the head does not fit: `if a && b` / `{` comes first
-            hanging: Some(fmt.multi_line(chain.clone())),
-            other: fmt.alt_some(Some(fmt.flat(chain)), block_last),
-        };
+        let mut head = HeadLayouts::hanging_when_broken(fmt, chain);
+        head.other = fmt.alt_some(head.other, block_last);
+        return head;
     }
     let hanging = is_hanging_expr(&expr);
     let frag = format_expr(fmt, expr);
     if hanging {
-        HeadLayouts {
-            // Broken only when the head does not fit: `if a && b` / `{` comes first
-            hanging: Some(fmt.multi_line(frag.clone())),
-            other: Some(fmt.flat(frag)),
-        }
+        HeadLayouts::hanging_when_broken(fmt, frag)
     } else {
         HeadLayouts::other(frag)
     }

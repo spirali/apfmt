@@ -18,7 +18,8 @@ mod ty;
 use self::attr::format_attr;
 use self::item::format_item;
 use crate::comments::{
-    count_newlines, first_code_token, is_code_kind, is_comment_kind, next_code_token, trivia_from,
+    comment_follows, count_newlines, first_code_token, is_code_kind, newlines_after,
+    next_code_token,
 };
 use crate::formatter::Edge::Word;
 use crate::formatter::{Builder, Formatter, Frag};
@@ -35,13 +36,8 @@ pub(crate) fn format_source_file(fmt: &Formatter, node: &SourceFile, mut emit: i
         builder.push(fmt.text(shebang.text().trim_end(), Word));
         first = shebang.next_token();
         // Pushed without a cursor, so the blank line after it is kept here
-        let newlines = count_newlines(&shebang)
-            + trivia_from(first.clone())
-                .take_while(|t| t.kind() == SyntaxKind::WHITESPACE)
-                .map(|t| count_newlines(&t))
-                .sum::<u32>();
-        let more = trivia_from(first.clone()).any(|t| is_comment_kind(t.kind()))
-            || next_code_token(&shebang).is_some();
+        let newlines = count_newlines(&shebang) + newlines_after(&shebang);
+        let more = comment_follows(&shebang) || next_code_token(&shebang).is_some();
         if newlines > 1 && more && fmt.config().blank_lines_upper_bound > 0 {
             builder.push_blank_line();
         }

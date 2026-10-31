@@ -54,6 +54,19 @@ pub(crate) fn count_newlines(token: &SyntaxToken) -> u32 {
     token.text().bytes().filter(|c| *c == b'\n').count() as u32
 }
 
+/// The newlines in the whitespace right after `token`
+pub(crate) fn newlines_after(token: &SyntaxToken) -> u32 {
+    trivia_from(token.next_token())
+        .take_while(|t| t.kind() == SyntaxKind::WHITESPACE)
+        .map(|t| count_newlines(&t))
+        .sum()
+}
+
+/// A comment between `token` and the next code
+pub(crate) fn comment_follows(token: &SyntaxToken) -> bool {
+    trivia_from(token.next_token()).any(|t| is_comment_kind(t.kind()))
+}
+
 /// At the start of a line (after block comments only) or after an opening delimiter, followed by
 /// code: `/* c */ f();`, `/* a */ /* b */ f();`, `{ /* c */ 1 }`
 pub(crate) fn is_leading_block_comment(token: &SyntaxToken) -> bool {

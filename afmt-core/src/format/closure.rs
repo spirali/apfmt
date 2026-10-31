@@ -34,7 +34,7 @@ fn unbraced_closure_body(expr: &ClosureExpr) -> Option<Expr> {
 
 /// A body without braces that may span more lines: `|x| unsafe {`, `|x| match x {`, `|| Foo {`;
 /// others get braces (Style Guide)
-fn is_block_like_expr(expr: &Expr) -> bool {
+fn may_break_unbraced(expr: &Expr) -> bool {
     matches!(
         expr,
         Expr::BlockExpr(_) | Expr::MatchExpr(_) | Expr::RecordExpr(_)
@@ -89,8 +89,8 @@ pub(super) fn closure_layouts(fmt: &Formatter, expr: ClosureExpr) -> ClosureLayo
     }
 }
 
-/// With `keep_braces`, also those keeping the source braces. Without braces if flat or block-like,
-/// otherwise in braces: `|a| {` / `    body` / `}`.
+/// With `keep_braces`, also those keeping the source braces. Without braces if flat or
+/// `may_break_unbraced`, otherwise in braces: `|a| {` / `    body` / `}`.
 fn closure_body_layouts(
     fmt: &Formatter,
     expr: &ClosureExpr,
@@ -115,10 +115,10 @@ fn closure_body_layouts(
             return (block.clone(), Some(block));
         }
     };
-    let block_like = is_block_like_expr(&inner);
+    let may_break = may_break_unbraced(&inner);
     let inner_node = inner.syntax().clone();
     let inner_frag = format_expr(fmt, inner);
-    let unbraced = if block_like {
+    let unbraced = if may_break {
         inner_frag.clone()
     } else {
         fmt.flat(inner_frag.clone())
@@ -143,10 +143,10 @@ fn closure_body_layouts(
             (all, Some(fmt.alt_frag(inline, braced)))
         }
         _ => {
-            // Braces around a block-like body cost a split, as in a match arm: `|x| Foo {` rather
-            // than `|x| {` / `Foo {`
+            // Braces around a body that may break without them cost a split, as in a match arm:
+            // `|x| Foo {` rather than `|x| {` / `Foo {`
             let braced = format_added_braces(fmt, &inner_node, inner_frag);
-            let braced = if block_like {
+            let braced = if may_break {
                 fmt.dispreferred(braced)
             } else {
                 braced

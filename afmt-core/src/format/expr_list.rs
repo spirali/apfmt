@@ -4,7 +4,7 @@ use super::chain::{is_chain_call, operand_chain, operator_chain_parts};
 use super::closure::closure_layouts;
 use super::expr::format_expr;
 use super::macros::{
-    is_array_macro, is_brace_macro, is_copied_macro, is_list_macro, macro_argument_count,
+    is_array_macro, is_copied_macro, is_list_macro, macro_argument_count,
 };
 use crate::comments::{prev_code_token, trivia_from};
 use crate::doc::WeakPreference;
@@ -15,7 +15,7 @@ use crate::layout::list::TrailingSeparator;
 use crate::layout::list::{
     Delimiters, FlatLimit, Hug, ListItem, ListLayout, Overflow, delimited_list, list_items_cast,
 };
-use crate::syntax_utils::has_attrs;
+use crate::syntax_utils::{has_attrs, is_brace_macro};
 use crate::utils::with_is_last;
 use ra_ap_syntax::ast::{ArgList, ArrayExpr, CallExpr, Expr, HasArgList, LiteralKind, TupleExpr};
 use ra_ap_syntax::{AstNode, SyntaxKind, SyntaxNode};
@@ -109,7 +109,7 @@ fn has_list_content(expr: &Expr) -> bool {
 
 /// A block, a `loop`, a brace macro call, or a `match`/`if`/`while`/`for` with a simple head. As
 /// the only argument it hugs whenever it fits, as a closure does, as rustfmt does.
-fn is_block_like_expr(expr: &Expr) -> bool {
+fn is_block_with_simple_head(expr: &Expr) -> bool {
     let is_simple = |e: Option<Expr>| e.is_some_and(|e| is_simple_expr(&e));
     match without_operators(expr) {
         Expr::BlockExpr(_) | Expr::LoopExpr(_) => true,
@@ -242,7 +242,9 @@ pub(super) fn is_literal_or_name(expr: &Expr) -> bool {
 /// block after other expressions (`f(a, |x| {` / `...` / `})`)
 fn last_item_hug(node: &SyntaxNode, exprs: &[Expr]) -> Hug {
     match exprs {
-        [single] if is_preferred_hug(node, single) || is_block_like_expr(single) => Hug::Preferred,
+        [single] if is_preferred_hug(node, single) || is_block_with_simple_head(single) => {
+            Hug::Preferred
+        }
         [single] if is_delimited_list_expr(single) => Hug::WeakPreference,
         // Not a tuple: its comma would follow the string (`(r#"` / `...` / `"#,)`)
         [single] if is_hugging_string(single) && !TupleExpr::can_cast(node.kind()) => {
@@ -292,7 +294,7 @@ pub(super) struct ExprItem {
     pub frag: Frag,
     pub overflow: Overflow,
     /// As the only item, its single line is limited by its own width rules, not `fn_call_width`: a
-    /// chain (`chain_width`), a closure or a block-like expression, as in rustfmt
+    /// chain (`chain_width`), a closure or a block with a simple head, as in rustfmt
     pub own_width: bool,
 }
 
@@ -337,15 +339,16 @@ pub(super) fn format_expr_item(fmt: &Formatter, expr: Expr) -> ExprItem {
         }
         expr => {
             let combinable = is_combinable_expr(&expr) || is_hugging_string(&expr);
-            // A closure behind operators or with attributes, a block-like expression, or an array,
-            // tuple or struct literal: its single line has width rules of its own, as in rustfmt
+            // A closure behind operators or with attributes, a block with a simple head, or an
+            // array, tuple or struct literal: its single line has width rules of its own, as in
+            // rustfmt
             let own_width = matches!(
                 without_operators(&expr),
                 Expr::ClosureExpr(_)
                     | Expr::ArrayExpr(_)
                     | Expr::TupleExpr(_)
                     | Expr::RecordExpr(_)
-            ) || is_block_like_expr(&expr);
+            ) || is_block_with_simple_head(&expr);
             let frag = format_expr(fmt, expr);
             let overflow = if combinable {
                 Overflow::With(frag.clone())

@@ -27,6 +27,28 @@ use trivia::{multiline_comment_lines, normalize_comment_sigil_spacing, trim_comm
 const OVERFLOW_FALLBACK: Cost = Cost::splits(10_000);
 
 /// Source text that afmt cannot format yet, copied unchanged (see `Formatter::unsupported`)
+/// How many lines a layout broken on the next line must save to win over one broken on the
+/// current line
+#[derive(Clone, Copy)]
+pub(crate) enum NextLine {
+    /// The order of the Style Guide (`let`): single line on the current line, single line on the
+    /// next line, broken on the current line, broken on the next line
+    InOrder,
+    /// rustfmt needs one: `x = cmd` / `.args([` → `x =` / `cmd.args([`
+    SavingTwoLines,
+    SavingOneLine,
+}
+
+impl NextLine {
+    fn cost(self) -> Cost {
+        match self {
+            NextLine::InOrder => Cost::splits(2),
+            NextLine::SavingTwoLines => Cost::new(SPLIT_COST + LINE_COST * 3 / 2),
+            NextLine::SavingOneLine => Cost::new(SPLIT_COST + LINE_COST / 2),
+        }
+    }
+}
+
 pub(crate) struct Unsupported {
     pub range: TextRange,
     /// What is not supported, e.g. `MACRO_EXPR`
@@ -240,10 +262,7 @@ impl<'a> Formatter<'a> {
     }
 
     pub fn nest(&self, frag: Frag) -> Frag {
-        self.map_branches(frag, |b| Branch {
-            doc_id: self.make_node(DocNode::Nest(b.doc_id)),
-            ..b
-        })
+        self.wrap(frag, DocNode::Nest)
     }
 
     /// Puts `sep` in front of every branch; the fragment then starts with `start`
@@ -257,10 +276,7 @@ impl<'a> Formatter<'a> {
 
     /// Visual indentation: the following lines are aligned to the start, e.g. `|a: A,` / ` b: B|`
     pub fn align(&self, frag: Frag) -> Frag {
-        self.map_branches(frag, |b| Branch {
-            doc_id: self.make_node(DocNode::Align(b.doc_id)),
-            ..b
-        })
+        self.wrap(frag, DocNode::Align)
     }
 
     pub fn on_next_line(&self, frag: Frag) -> Frag {
@@ -287,59 +303,27 @@ impl<'a> Formatter<'a> {
         })
     }
 
-    /// In the order of preference (Style Guide `let`): single line on the current line, single line
-    /// on the next line, broken on the current line, broken on the next line.
-    pub fn same_or_indented_line(&self, frag: Frag) -> Frag {
-        let (same, next) = self.same_and_indented_line(frag);
+    /// The current line or the next line, indented; `next` decides when broken on the next line
+    /// wins over broken on the current line
+    pub fn same_or_indented_line(&self, frag: Frag, next: NextLine) -> Frag {
+        let (same, next) = self.same_and_indented_line(frag, next);
         self.alt_frag(same, next)
     }
 
-    /// As `same_or_indented_line`, but broken on the next line wins only when it saves at least two
-    /// lines (rustfmt needs one: `x = cmd` / `.args([` → `x =` / `cmd.args([`)
-    pub fn same_or_indented_line_saving_lines(&self, frag: Frag) -> Frag {
-        let next = Cost::new(Self::SAVING_LINES_NEXT_COST);
-        let (same, next) = self.same_and_indented_line_with(frag, next);
-        self.alt_frag(same, next)
-    }
-
-    const SAVING_LINES_NEXT_COST: i32 = SPLIT_COST + LINE_COST * 3 / 2;
-
-    /// As `same_or_indented_line_saving_lines`, but broken on the next line wins when it saves one
-    /// line
-    pub fn same_or_indented_line_saving_one_line(&self, frag: Frag) -> Frag {
-        let next = Cost::new(Self::SAVING_LINES_NEXT_COST - LINE_COST);
-        let (same, next) = self.same_and_indented_line_with(frag, next);
-        self.alt_frag(same, next)
-    }
-
-    /// As `same_or_indented_line_saving_lines`, but `preferred` on the next line wins when it saves
-    /// one line, as in rustfmt (`x =` / `a.b().c(|y| {` against `x = a` / `.b()` / `.c(|y| {`)
-    pub fn same_or_indented_line_saving_lines_preferring(
-        &self,
-        other: Frag,
-        preferred: Frag,
-    ) -> Frag {
+    /// As `same_or_indented_line` with `NextLine::SavingTwoLines`, but `preferred` on the next line
+    /// wins when it saves one line, as in rustfmt (`x =` / `a.b().c(|y| {` against `x = a` /
+    /// `.b()` / `.c(|y| {`)
+    pub fn same_or_indented_line_preferring(&self, other: Frag, preferred: Frag) -> Frag {
         let all = self.alt_frag(other.clone(), preferred.clone());
         let same = self.keep_together_with(all, Cost::SPLIT);
-        let other = self.keep_together_with(other, Cost::new(Self::SAVING_LINES_NEXT_COST));
-        let preferred_cost = Cost::new(Self::SAVING_LINES_NEXT_COST - LINE_COST);
-        let preferred = self.keep_together_with(preferred, preferred_cost);
+        let other = self.keep_together_with(other, NextLine::SavingTwoLines.cost());
+        let preferred = self.keep_together_with(preferred, NextLine::SavingOneLine.cost());
         self.alt_frag(same, self.indented_line(self.alt_frag(other, preferred)))
     }
 
-    /// As `same_and_indented_line`, broken on the next line costing as in
-    /// `same_or_indented_line_saving_lines`
-    pub fn same_and_indented_line_saving_lines(&self, frag: Frag) -> (Frag, Frag) {
-        self.same_and_indented_line_with(frag, Cost::new(Self::SAVING_LINES_NEXT_COST))
-    }
-
-    pub fn same_and_indented_line(&self, frag: Frag) -> (Frag, Frag) {
-        self.same_and_indented_line_with(frag, Cost::splits(2))
-    }
-
-    fn same_and_indented_line_with(&self, frag: Frag, next: Cost) -> (Frag, Frag) {
+    pub fn same_and_indented_line(&self, frag: Frag, next: NextLine) -> (Frag, Frag) {
         let same = self.keep_together_with(frag.clone(), Cost::SPLIT);
-        let next = self.keep_together_with(frag, next);
+        let next = self.keep_together_with(frag, next.cost());
         (same, self.indented_line(next))
     }
 
@@ -364,10 +348,7 @@ impl<'a> Formatter<'a> {
     }
 
     pub fn multi_line(&self, frag: Frag) -> Frag {
-        self.map_branches(frag, |b| Branch {
-            doc_id: self.make_node(DocNode::MultiLine(b.doc_id)),
-            ..b
-        })
+        self.wrap(frag, DocNode::MultiLine)
     }
 
     /// `second` breaks whenever `first` does, e.g. broken generics followed by parameters one per
@@ -414,10 +395,7 @@ impl<'a> Formatter<'a> {
     }
 
     fn keep_together_with(&self, frag: Frag, cost: Cost) -> Frag {
-        self.map_branches(frag, |b| Branch {
-            doc_id: self.make_node(DocNode::KeepTogether(b.doc_id, cost)),
-            ..b
-        })
+        self.wrap(frag, |d| DocNode::KeepTogether(d, cost))
     }
 
     /// Costs a split: a layout the Style Guide accepts only as a fallback, e.g. `{` on its own line
@@ -426,27 +404,18 @@ impl<'a> Formatter<'a> {
     }
 
     pub fn cost(&self, frag: Frag, cost: Cost) -> Frag {
-        self.map_branches(frag, |b| Branch {
-            doc_id: self.make_node(DocNode::Cost(b.doc_id, cost)),
-            ..b
-        })
+        self.wrap(frag, |d| DocNode::Cost(d, cost))
     }
 
     /// Compared only after the cost: decides between layouts that are otherwise equal
     pub fn weak_preference(&self, frag: Frag, preference: WeakPreference) -> Frag {
-        self.map_branches(frag, |b| Branch {
-            doc_id: self.make_node(DocNode::WeakPreference(b.doc_id, preference)),
-            ..b
-        })
+        self.wrap(frag, |d| DocNode::WeakPreference(d, preference))
     }
 
     /// The last line ends at most at the nested indentation, so what follows starts left of the
     /// nested lines below, e.g. `x.baz?` / `    .qux()`
     pub fn short_last_line(&self, frag: Frag) -> Frag {
-        self.map_branches(frag, |b| Branch {
-            doc_id: self.make_node(DocNode::ShortLastLine(b.doc_id)),
-            ..b
-        })
+        self.wrap(frag, DocNode::ShortLastLine)
     }
 
     /// Layouts whose last line is only closing delimiters at the starting indentation (`foo(` / `
@@ -471,10 +440,7 @@ impl<'a> Formatter<'a> {
     }
 
     pub fn first_line_within(&self, frag: Frag, width: u32) -> Frag {
-        self.map_branches(frag, |b| Branch {
-            doc_id: self.make_node(DocNode::FirstLineWithin(b.doc_id, width)),
-            ..b
-        })
+        self.wrap(frag, |d| DocNode::FirstLineWithin(d, width))
     }
 
     pub(super) fn ignore_overflow(&self, doc_id: DocId) -> DocId {
@@ -482,10 +448,7 @@ impl<'a> Formatter<'a> {
     }
 
     pub fn flat(&self, frag: Frag) -> Frag {
-        self.map_branches(frag, |b| Branch {
-            doc_id: self.make_node(DocNode::Flat(b.doc_id)),
-            ..b
-        })
+        self.wrap(frag, DocNode::Flat)
     }
 
     pub fn flat_if_possible(&self, frag: Frag) -> Option<Frag> {
@@ -600,6 +563,14 @@ impl<'a> Formatter<'a> {
             branches: self.group_branches(branches),
             cursor: frag1.cursor,
         }
+    }
+
+    /// Wraps the doc of every branch in `node`, keeping its edges
+    fn wrap(&self, frag: Frag, node: impl Fn(DocId) -> DocNode) -> Frag {
+        self.map_branches(frag, |b| Branch {
+            doc_id: self.make_node(node(b.doc_id)),
+            ..b
+        })
     }
 
     fn map_branches(&self, mut frag: Frag, f: impl FnMut(Branch) -> Branch) -> Frag {

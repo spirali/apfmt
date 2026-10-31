@@ -10,7 +10,7 @@ use std::time::Instant;
 
 use afmt::cargo::{Selection, metadata, select_packages};
 use afmt::report::{self, ColorWhen, FAILURE, SUCCESS, styled};
-use afmt::{FormatOptions, error_messages, format_code};
+use afmt::{FormatOptions, error_messages, format_code, source_dir};
 use afmt_core::{Config, Edition, canonical_path};
 use clap::Parser;
 
@@ -91,10 +91,6 @@ fn display_path(path: &Path) -> String {
 }
 
 /// The directory whose config applies to the file at `path`
-fn source_dir(path: &Path) -> &Path {
-    path.parent().unwrap_or(Path::new("."))
-}
-
 /// Files of a directory share their config file, so it is read once per directory and edition
 fn configs_by_dir<'a>(
     files: &'a [SourceFile],

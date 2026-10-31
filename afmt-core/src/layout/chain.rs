@@ -139,10 +139,7 @@ fn chain(fmt: &Formatter, first: Frag, rest: &[(Frag, Frag)], indent: bool) -> F
     let vertical = if indent {
         vertical_lines(fmt, &first, &lines)
     } else {
-        let mut vertical = Builder::new(fmt);
-        vertical.push(first);
-        vertical.push_lines(lines, false);
-        vertical.into_frag()
+        Builder::head_then_lines(fmt, first, lines, false)
     };
     fmt.alt_frag(fmt.flat(flat), vertical)
 }
@@ -202,12 +199,8 @@ pub(crate) fn postfix_chain_layouts(
         .collect::<Vec<_>>();
     let last_line = lines.pop().unwrap();
     lines.push(then_suffix(last_line));
-    let continued = root.hanging.map(|root| {
-        let mut builder = Builder::new(fmt);
-        builder.push(root);
-        builder.push_lines(lines.iter().cloned(), true);
-        builder.into_frag()
-    });
+    let continued =
+        (root.hanging).map(|root| Builder::head_then_lines(fmt, root, lines.iter().cloned(), true));
     let Some(root) = root.other else {
         return ChainLayouts::new(HeadLayouts {
             hanging: continued,
@@ -285,26 +278,22 @@ fn lines_after_head(fmt: &Formatter, head: &Frag, lines: &[Frag]) -> (Frag, Opti
     }
     let chain_width = fmt.config().chain_width;
     let short = fmt.min_flat_width(head).is_some_and(|w| w <= chain_width);
-    let mut indented = Builder::new(fmt);
-    indented.push(if short {
+    let first_head = if short {
         head.clone()
     } else {
         fmt.flat(head.clone())
-    });
-    indented.push_lines(lines.iter().cloned(), true);
-    let mut layout = indented.into_frag();
+    };
+    let mut layout = Builder::head_then_lines(fmt, first_head, lines.iter().cloned(), true);
     let broken_head = fmt.multi_line(head.clone());
     if !short {
         // At the indentation of the head only after a closing delimiter; after a continuation line,
         // they would be left of it (`(a` / `    + b)` / `    .c()`)
-        let mut unindented = Builder::new(fmt);
-        unindented.push(fmt.short_last_line(broken_head.clone()));
-        unindented.push_lines(lines.iter().cloned(), false);
-        let unindented = fmt.weak_preference(unindented.into_frag(), WeakPreference::PREFERRED);
-        let mut indented = Builder::new(fmt);
-        indented.push(broken_head.clone());
-        indented.push_lines(lines.iter().cloned(), true);
-        layout = fmt.alt_frag(fmt.alt_frag(layout, indented.into_frag()), unindented);
+        let short_last = fmt.short_last_line(broken_head.clone());
+        let unindented = Builder::head_then_lines(fmt, short_last, lines.iter().cloned(), false);
+        let unindented = fmt.weak_preference(unindented, WeakPreference::PREFERRED);
+        let indented =
+            Builder::head_then_lines(fmt, broken_head.clone(), lines.iter().cloned(), true);
+        layout = fmt.alt_frag(fmt.alt_frag(layout, indented), unindented);
     }
     let joined = match lines {
         [line] if broken_head.may_end_with_delimiter() => Some(line_after(fmt, broken_head, line)),
@@ -319,10 +308,7 @@ fn vertical_lines(fmt: &Formatter, head: &Frag, lines: &[Frag]) -> Frag {
     let mut head = head.clone();
     let mut layouts: Option<Frag> = None;
     for k in 0..=lines.len() {
-        let mut builder = Builder::new(fmt);
-        builder.push(head.clone());
-        builder.push_lines(lines[k..].iter().cloned(), true);
-        let layout = builder.into_frag();
+        let layout = Builder::head_then_lines(fmt, head.clone(), lines[k..].iter().cloned(), true);
         layouts = Some(fmt.alt_opt(layout, layouts));
         if k == lines.len() {
             break;

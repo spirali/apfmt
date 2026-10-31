@@ -50,6 +50,19 @@ impl<'a> Builder<'a> {
         builder.into_frag()
     }
 
+    /// `head` followed by `lines`, each on a line of its own, block-indented with `indent`
+    pub fn head_then_lines(
+        fmt: &'a Formatter,
+        head: Frag,
+        lines: impl IntoIterator<Item = Frag>,
+        indent: bool,
+    ) -> Frag {
+        let mut builder = Builder::new(fmt);
+        builder.push(head);
+        builder.push_lines(lines, indent);
+        builder.into_frag()
+    }
+
     #[inline]
     pub fn into_frag(self) -> Frag {
         self.frag

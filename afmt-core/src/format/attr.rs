@@ -8,7 +8,7 @@ use crate::formatter::{Builder, Formatter, Frag};
 use crate::layout::list::{
     Delimiters, FlatLimit, Hug, ListItem, ListLayout, delimited_list, hug_last_item, list_items,
 };
-use crate::syntax_utils::is_rustfmt_skip;
+use crate::syntax_utils::has_rustfmt_skip;
 use ra_ap_syntax::ast::{
     Attr, CfgAtom, CfgAttrMeta, CfgPredicate, HasAttrs, KeyValueMeta, Meta, TokenTree,
     TokenTreeMeta, UnsafeMeta,
@@ -66,7 +66,7 @@ pub(super) fn format_skippable_with_attrs(
 
 /// The node with its attributes as in the source, if one of them is `#[rustfmt::skip]`
 pub(super) fn skipped_verbatim(fmt: &Formatter, node: &impl HasAttrs) -> Option<Frag> {
-    if !node.attrs().any(|attr| is_rustfmt_skip(&attr)) {
+    if !has_rustfmt_skip(node) {
         return None;
     }
     let first = node.attrs().next().unwrap().syntax().first_token().unwrap();

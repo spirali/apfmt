@@ -1,7 +1,7 @@
 use crate::comments::{is_code_kind, is_comment_kind};
 use crate::syntax_utils::{
-    MacroRule, Placeholders, Reparsed, is_brace_macro_expr, is_stray_semicolon, line_column,
-    macro_rules_rules, parse_token_tree, parse_transcriber, trailing_jump_stmt,
+    MacroArgs, MacroRule, Placeholders, Reparsed, is_brace_macro, is_stray_semicolon, line_column,
+    macro_rules_rules, parse_macro_args, parse_transcriber, trailing_jump_stmt,
 };
 use ra_ap_syntax::ast::{self, HasAttrs, HasVisibility, Use, UseTree};
 use ra_ap_syntax::{
@@ -87,7 +87,8 @@ fn is_optional_block(node: &SyntaxNode) -> bool {
     node.first_token() == stmt_list.first_token()
         && stmt_list.children().count() == 1
         && stmt_list.children().all(|c| {
-            (ast::Expr::can_cast(c.kind()) && !is_brace_macro_expr(&c)) || is_trailing_jump_stmt(&c)
+            ast::Expr::cast(c.clone()).is_some_and(|e| !is_brace_macro(&e))
+                || is_trailing_jump_stmt(&c)
         })
 }
 
@@ -226,14 +227,7 @@ fn parse_macro_arguments(
     if tree.syntax().parent()?.kind() != SyntaxKind::MACRO_CALL {
         return None;
     }
-    match tree.syntax().first_token()?.kind() {
-        SyntaxKind::L_PAREN => {
-            parse_token_tree::<ast::ArgList>(tree, edition, placeholders).map(Reparsed::into_syntax)
-        }
-        SyntaxKind::L_BRACK => parse_token_tree::<ast::ArrayExpr>(tree, edition, placeholders)
-            .map(Reparsed::into_syntax),
-        _ => None,
-    }
+    parse_macro_args(tree, edition, placeholders).map(|parsed| parsed.map(MacroArgs::into_syntax))
 }
 
 fn macro_rules_tree_rules(tree: &ast::TokenTree) -> Option<Vec<MacroRule>> {

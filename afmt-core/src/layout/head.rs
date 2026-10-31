@@ -21,6 +21,15 @@ impl HeadLayouts {
         }
     }
 
+    /// A head that hangs when broken (`a && b`, `A | B`): `{` follows only its single line, so a
+    /// broken head comes only when it does not fit (`if a && b` / `{`)
+    pub fn hanging_when_broken(fmt: &Formatter, frag: Frag) -> Self {
+        HeadLayouts {
+            hanging: Some(fmt.multi_line(frag.clone())),
+            other: Some(fmt.flat(frag)),
+        }
+    }
+
     pub fn map(self, f: impl Fn(Frag) -> Frag) -> Self {
         HeadLayouts {
             hanging: self.hanging.map(&f),

@@ -12,7 +12,12 @@ pub(crate) fn has_attrs(node: &impl HasAttrs) -> bool {
     node.attrs().next().is_some()
 }
 
-pub(crate) fn is_rustfmt_skip(attr: &ast::Attr) -> bool {
+/// `#[rustfmt::skip]` among its attributes
+pub(crate) fn has_rustfmt_skip(node: &impl HasAttrs) -> bool {
+    node.attrs().any(|attr| is_rustfmt_skip(&attr))
+}
+
+fn is_rustfmt_skip(attr: &ast::Attr) -> bool {
     let Some(ast::Meta::PathMeta(meta)) = attr.meta() else {
         return false;
     };
@@ -23,15 +28,20 @@ pub(crate) fn is_rustfmt_skip(attr: &ast::Attr) -> bool {
 pub(crate) fn is_skipped(node: &SyntaxNode) -> bool {
     node.ancestors()
         .filter_map(ast::AnyHasAttrs::cast)
-        .any(|node| node.attrs().any(|attr| is_rustfmt_skip(&attr)))
+        .any(|node| has_rustfmt_skip(&node))
 }
 
-/// `m! { ... }` as an expression: as the only content of a block it is a statement (it may expand
-/// to statements), so the block cannot be removed
-pub(crate) fn is_brace_macro_expr(node: &SyntaxNode) -> bool {
-    ast::MacroExpr::cast(node.clone())
-        .and_then(|expr| expr.macro_call()?.token_tree()?.l_curly_token())
-        .is_some()
+pub(crate) fn macro_token_tree(expr: &ast::Expr) -> Option<ast::TokenTree> {
+    let ast::Expr::MacroExpr(expr) = expr else {
+        return None;
+    };
+    expr.macro_call()?.token_tree()
+}
+
+/// `m! { ... }`: copied; as the only content of a block it is a statement (it may expand to
+/// statements), so the block cannot be removed
+pub(crate) fn is_brace_macro(expr: &ast::Expr) -> bool {
+    macro_token_tree(expr).is_some_and(|tree| tree.l_curly_token().is_some())
 }
 
 /// Ends its block with `;` (`trailing_semicolon`)
@@ -71,12 +81,48 @@ pub(crate) struct Reparsed<N> {
     pub placeholders: Vec<(SyntaxToken, String)>,
 }
 
-impl<N: AstNode> Reparsed<N> {
-    pub fn into_syntax(self) -> Reparsed<SyntaxNode> {
+impl<N> Reparsed<N> {
+    pub fn map<M>(self, f: impl FnOnce(N) -> M) -> Reparsed<M> {
         Reparsed {
-            node: self.node.syntax().clone(),
+            node: f(self.node),
             placeholders: self.placeholders,
         }
+    }
+}
+
+impl<N: AstNode> Reparsed<N> {
+    pub fn into_syntax(self) -> Reparsed<SyntaxNode> {
+        self.map(|node| node.syntax().clone())
+    }
+}
+
+/// The arguments of a macro call parsed as the formatter lays them out
+pub(crate) enum MacroArgs {
+    List(ast::ArgList),
+    Array(ast::ArrayExpr),
+}
+
+impl MacroArgs {
+    pub fn into_syntax(self) -> SyntaxNode {
+        match self {
+            MacroArgs::List(args) => args.syntax().clone(),
+            MacroArgs::Array(array) => array.syntax().clone(),
+        }
+    }
+}
+
+/// `(...)` as call arguments, `[...]` as an array; `None` for braces or arguments that do not parse
+pub(crate) fn parse_macro_args(
+    tree: &ast::TokenTree,
+    edition: Edition,
+    placeholders: &Placeholders,
+) -> Option<Reparsed<MacroArgs>> {
+    match tree.syntax().first_token()?.kind() {
+        SyntaxKind::L_PAREN => parse_token_tree::<ast::ArgList>(tree, edition, placeholders)
+            .map(|parsed| parsed.map(MacroArgs::List)),
+        SyntaxKind::L_BRACK => parse_token_tree::<ast::ArrayExpr>(tree, edition, placeholders)
+            .map(|parsed| parsed.map(MacroArgs::Array)),
+        _ => None,
     }
 }
 

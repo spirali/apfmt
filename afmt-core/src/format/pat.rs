@@ -5,10 +5,10 @@ use super::expr::format_range;
 use super::expr_list::single_item_separator;
 use super::path::{format_name_ref, format_path};
 use super::{format_unsupported, format_unsupported_kind};
-use crate::comments::{has_comments, is_code_kind, is_comment_kind, trivia_from};
+use crate::comments::{comment_follows, has_comments, is_code_kind};
 use crate::format::common::format_name;
 use crate::formatter::Edge::{Comma, Operator, Tight, Word};
-use crate::formatter::{Builder, Formatter, Frag};
+use crate::formatter::{Builder, Formatter, Frag, NextLine};
 use crate::layout::chain::{operator_chain, unindented_infix_chain, unindented_infix_fill};
 use crate::layout::head::HeadLayouts;
 use crate::layout::list::{
@@ -27,10 +27,7 @@ pub(super) fn pat_layouts(fmt: &Formatter, pat: Pat) -> HeadLayouts {
     let or_pat = matches!(pat, Pat::OrPat(_));
     let frag = fmt.keep_together(format_pat(fmt, pat));
     if or_pat {
-        HeadLayouts {
-            hanging: Some(fmt.multi_line(frag.clone())),
-            other: Some(fmt.flat(frag)),
-        }
+        HeadLayouts::hanging_when_broken(fmt, frag)
     } else {
         HeadLayouts::other(frag)
     }
@@ -138,8 +135,7 @@ fn format_or_pat(fmt: &Formatter, pat: OrPat) -> Frag {
         .syntax()
         .first_token()
         .filter(|t| t.kind() == SyntaxKind::PIPE);
-    if leading.is_some_and(|pipe| trivia_from(pipe.next_token()).any(|t| is_comment_kind(t.kind())))
-    {
+    if leading.is_some_and(|pipe| comment_follows(&pipe)) {
         return format_unsupported(fmt, pat.syntax(), "a comment after a leading `|`");
     }
     let (first, rest) = operator_chain(fmt, pat.syntax(), SyntaxKind::PIPE, |node| {
@@ -187,7 +183,7 @@ fn format_record_pat_field(fmt: &Formatter, field: RecordPatField) -> Frag {
     let mut builder = Builder::new(fmt);
     builder.push(format_name_ref(fmt, name_ref));
     builder.push_token(field.colon_token().unwrap(), Comma);
-    builder.push(fmt.same_or_indented_line(pat));
+    builder.push(fmt.same_or_indented_line(pat, NextLine::InOrder));
     builder.into_frag()
 }
 

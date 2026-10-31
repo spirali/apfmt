@@ -349,80 +349,55 @@ enum DelimiterKind {
     TightBraces,
 }
 
+impl DelimiterKind {
+    fn tokens(self) -> (SyntaxKind, SyntaxKind) {
+        match self {
+            DelimiterKind::Parens => (SyntaxKind::L_PAREN, SyntaxKind::R_PAREN),
+            DelimiterKind::Angles => (SyntaxKind::L_ANGLE, SyntaxKind::R_ANGLE),
+            DelimiterKind::Brackets => (SyntaxKind::L_BRACK, SyntaxKind::R_BRACK),
+            DelimiterKind::Pipes => (SyntaxKind::PIPE, SyntaxKind::PIPE),
+            DelimiterKind::Braces | DelimiterKind::TightBraces => {
+                (SyntaxKind::L_CURLY, SyntaxKind::R_CURLY)
+            }
+        }
+    }
+}
+
 impl Delimiters {
     pub fn parens_of(node: &SyntaxNode) -> Self {
-        Self::of(
-            node,
-            SyntaxKind::L_PAREN,
-            SyntaxKind::R_PAREN,
-            DelimiterKind::Parens,
-        )
+        Self::of(node, DelimiterKind::Parens)
     }
 
     pub fn try_parens_of(node: &SyntaxNode) -> Option<Self> {
-        Self::try_of(
-            node,
-            SyntaxKind::L_PAREN,
-            SyntaxKind::R_PAREN,
-            DelimiterKind::Parens,
-        )
+        Self::try_of(node, DelimiterKind::Parens)
     }
 
     pub fn angles_of(node: &SyntaxNode) -> Self {
-        Self::of(
-            node,
-            SyntaxKind::L_ANGLE,
-            SyntaxKind::R_ANGLE,
-            DelimiterKind::Angles,
-        )
+        Self::of(node, DelimiterKind::Angles)
     }
 
     pub fn brackets_of(node: &SyntaxNode) -> Self {
-        Self::of(
-            node,
-            SyntaxKind::L_BRACK,
-            SyntaxKind::R_BRACK,
-            DelimiterKind::Brackets,
-        )
+        Self::of(node, DelimiterKind::Brackets)
     }
 
     pub fn pipes_of(node: &SyntaxNode) -> Self {
-        Self::of(
-            node,
-            SyntaxKind::PIPE,
-            SyntaxKind::PIPE,
-            DelimiterKind::Pipes,
-        )
+        Self::of(node, DelimiterKind::Pipes)
     }
 
     pub fn braces_of(node: &SyntaxNode) -> Self {
-        Self::of(
-            node,
-            SyntaxKind::L_CURLY,
-            SyntaxKind::R_CURLY,
-            DelimiterKind::Braces,
-        )
+        Self::of(node, DelimiterKind::Braces)
     }
 
     pub fn tight_braces_of(node: &SyntaxNode) -> Self {
-        Self::of(
-            node,
-            SyntaxKind::L_CURLY,
-            SyntaxKind::R_CURLY,
-            DelimiterKind::TightBraces,
-        )
+        Self::of(node, DelimiterKind::TightBraces)
     }
 
-    fn of(node: &SyntaxNode, open: SyntaxKind, close: SyntaxKind, kind: DelimiterKind) -> Self {
-        Self::try_of(node, open, close, kind).unwrap()
+    fn of(node: &SyntaxNode, kind: DelimiterKind) -> Self {
+        Self::try_of(node, kind).unwrap()
     }
 
-    fn try_of(
-        node: &SyntaxNode,
-        open: SyntaxKind,
-        close: SyntaxKind,
-        kind: DelimiterKind,
-    ) -> Option<Self> {
+    fn try_of(node: &SyntaxNode, kind: DelimiterKind) -> Option<Self> {
+        let (open, close) = kind.tokens();
         let token = |kind: SyntaxKind| {
             node.children_with_tokens()
                 .filter_map(SyntaxElement::into_token)
@@ -476,9 +451,7 @@ impl Delimiters {
     /// the delimiters are broken as those of a block: `(` / `    // c` / `    a && b` / `)`.
     pub fn enclose(&self, fmt: &Formatter, inner: Frag) -> Frag {
         let (open_edge, _) = self.edges();
-        let comment_before_close =
-            prev_code_token(&self.close).is_some_and(|t| own_line_comment_follows(&t));
-        if !(comments_break_line_after(&self.open) || comment_before_close) {
+        if !self.comments_break_body() {
             return self.surround(fmt, fmt.token(self.open.clone(), open_edge), inner);
         }
         let mut body = Builder::with_cursor(fmt, Some(self.open.clone()));
@@ -488,6 +461,12 @@ impl Delimiters {
         body.flush_trivia();
         body.push_newline();
         self.wrap_body(fmt, fmt.body_after_opener(line_comments, body.into_frag()))
+    }
+
+    /// Comments put the body on lines of its own: `(` / `    // c` / `    a` / `)`
+    pub fn comments_break_body(&self) -> bool {
+        comments_break_line_after(&self.open)
+            || prev_code_token(&self.close).is_some_and(|t| own_line_comment_follows(&t))
     }
 
     fn format_open(&self, fmt: &Formatter) -> Frag {
@@ -539,7 +518,7 @@ impl Delimiters {
 
     /// As `format_block`, for lines that are items of a list: a block comment followed by the next
     /// item on its line stays in front of it, as in `vertical_list`
-    pub fn format_item_block(
+    pub fn format_list_block(
         &self,
         fmt: &Formatter,
         lines: impl IntoIterator<Item = Frag>,

@@ -9,7 +9,7 @@ use crate::comments::{
     is_comment_kind, is_line_comment, post_comments_end, tokens_between, trivia_end,
 };
 use crate::layout::list::list_items_cast;
-use crate::syntax_utils::{has_attrs, is_rustfmt_skip, is_skipped};
+use crate::syntax_utils::{has_attrs, has_rustfmt_skip, is_skipped};
 use ra_ap_syntax::ast::{HasAttrs, HasName, Path, Use, UseTree, UseTreeList};
 use ra_ap_syntax::{AstNode, SourceFile, SyntaxKind, SyntaxNode, SyntaxToken, TextRange, TextSize};
 use std::cmp::Ordering;
@@ -24,7 +24,7 @@ pub(super) fn import_edits(file: &SourceFile, source: &str) -> Vec<(TextRange, S
         ) && !is_skipped(&node)
         {
             for group in use_groups(&node) {
-                if group.iter().any(has_skip) {
+                if group.iter().any(has_rustfmt_skip) {
                     continue;
                 }
                 let (range, text) = group_text(source, &group);
@@ -269,13 +269,8 @@ fn sortable_use(node: &SyntaxNode) -> Option<Use> {
 /// `#[macro_use]` prevents sorting, as in rustfmt, and `#[rustfmt::skip]` keeps the item as it is;
 /// other attributes and doc comments move with their item
 fn is_sortable(item: &Use) -> bool {
-    !item.attrs().any(|attr| {
-        attr.simple_name().is_some_and(|name| name == "macro_use") || is_rustfmt_skip(&attr)
-    })
-}
-
-fn has_skip(item: &Use) -> bool {
-    item.attrs().any(|attr| is_rustfmt_skip(&attr))
+    !has_rustfmt_skip(item)
+        && !item.attrs().any(|attr| attr.simple_name().is_some_and(|name| name == "macro_use"))
 }
 
 fn is_in_doc_comment(token: &SyntaxToken) -> bool {

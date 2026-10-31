@@ -1,6 +1,6 @@
 //! Fragments: alternatives of a doc together with their edges, and the spacing between edges
 
-use crate::comments::{is_comment_kind, trivia_from};
+use crate::comments::comment_follows;
 use crate::doc::{DocId, EMPTY_DOC, NEWLINE_DOC, SPACE_DOC};
 use crate::formatter::Edge::Nothing;
 use ra_ap_syntax::SyntaxToken;
@@ -76,8 +76,7 @@ impl Frag {
     }
 
     pub fn comment_follows(&self) -> bool {
-        let next = self.cursor.as_ref().and_then(|c| c.next_token());
-        trivia_from(next).any(|t| is_comment_kind(t.kind()))
+        self.cursor.as_ref().is_some_and(comment_follows)
     }
 
     #[inline]

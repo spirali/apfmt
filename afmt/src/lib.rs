@@ -68,6 +68,15 @@ impl FormatOptions {
 
 /// `code` formatted, ending with a line break unless empty, and the warnings about unsupported
 /// syntax; with `disable_all_formatting`, `code` unchanged
+/// The directory whose config file applies to `file`
+pub fn source_dir(file: &Path) -> &Path {
+    match file.parent() {
+        // `Path::parent` of a file name without a directory is ""
+        Some(dir) if !dir.as_os_str().is_empty() => dir,
+        _ => Path::new("."),
+    }
+}
+
 pub fn format_code(
     config: &Config,
     code: &str,

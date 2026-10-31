@@ -14,10 +14,10 @@ use super::path::format_path;
 use super::stmt::format_block_expr;
 use super::ty::{format_ret_type, format_type, format_type_annotation};
 use super::{format_unsupported, format_unsupported_kind};
-use crate::comments::{is_code_kind, is_comment_kind};
+use crate::comments::{has_comments, is_code_kind};
 use crate::format::common::{format_lifetime, format_name};
 use crate::formatter::Edge::{Comma, Operator, Tight, Word};
-use crate::formatter::{Builder, Formatter, Frag};
+use crate::formatter::{Builder, Formatter, Frag, NextLine};
 use crate::layout::list::{
     Delimiters, FlatLimit, Hug, ListItem, ListLayout, Overflow, TrailingSeparator,
     aligned_list_with_tail, delimited_list, flat_layout, list_items, list_items_cast,
@@ -336,7 +336,8 @@ fn format_record_field_body(fmt: &Formatter, field: &RecordField) -> Frag {
     }
     builder.push(format_name(fmt, field.name().unwrap()));
     builder.push_token(field.colon_token().unwrap(), Comma);
-    builder.push(fmt.same_or_indented_line(format_type(fmt, field.ty().unwrap())));
+    let ty = format_type(fmt, field.ty().unwrap());
+    builder.push(fmt.same_or_indented_line(ty, NextLine::InOrder));
     builder.into_frag()
 }
 
@@ -429,12 +430,7 @@ fn struct_variant_fields(fmt: &Formatter, list: RecordFieldList) -> StructVarian
 fn struct_variant_single_line(fmt: &Formatter, s: &StructVariantFields) -> Option<Frag> {
     if s.fields.is_empty() {
         // `{}`, unless it contains comments
-        let has_comment = s
-            .list
-            .syntax()
-            .children_with_tokens()
-            .any(|e| is_comment_kind(e.kind()));
-        return (!has_comment).then(Frag::empty);
+        return (!has_comments(s.list.syntax())).then(Frag::empty);
     }
     let limit = FlatLimit::Within(fmt.config().struct_variant_width);
     flat_layout(
@@ -820,7 +816,7 @@ fn push_typed_value(
     }
     if let Some(value) = value {
         builder.push_token(eq.unwrap(), Operator);
-        builder.push(fmt.same_or_indented_line(format_expr(fmt, value)));
+        builder.push(fmt.same_or_indented_line(format_expr(fmt, value), NextLine::InOrder));
     }
     builder.push_separator(SyntaxKind::SEMICOLON);
 }
@@ -910,7 +906,7 @@ fn format_type_alias(fmt: &Formatter, item: TypeAlias) -> Frag {
             builder.push(fmt.indented_line(rhs.into_frag()));
         } else {
             builder.push(eq);
-            builder.push(fmt.same_or_indented_line(ty));
+            builder.push(fmt.same_or_indented_line(ty, NextLine::InOrder));
         }
     }
     if !where_first {

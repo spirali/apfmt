@@ -13,7 +13,7 @@ use crate::comments::comments_break_line_after;
 use crate::doc::SEMICOLON_DOC;
 use crate::format::common::{push_label, push_modifiers};
 use crate::formatter::Edge::{Comma, Operator, Word};
-use crate::formatter::{Builder, Formatter, Frag};
+use crate::formatter::{Builder, Formatter, Frag, NextLine};
 use crate::layout::head::HeadLayouts;
 use crate::layout::list::Delimiters;
 use crate::syntax_utils::{is_jump_expr, trailing_jump_stmt};
@@ -100,12 +100,13 @@ fn format_let_else(
 ) -> Frag {
     let (same_line, next_line) = match init.other {
         Some(other) => {
-            let (same_line, next_line) = fmt.same_and_indented_line_saving_lines(other);
+            let (same_line, next_line) =
+                fmt.same_and_indented_line(other, NextLine::SavingTwoLines);
             (Some(same_line), Some(next_line))
         }
         None => (None, None),
     };
-    let hanging = init.hanging.map(|h| fmt.same_or_indented_line_saving_lines(h));
+    let hanging = (init.hanging).map(|h| fmt.same_or_indented_line(h, NextLine::SavingTwoLines));
     let flat = same_line.clone().map(|same_line| fmt.flat(same_line));
     let hanging = [hanging, next_line, flat]
         .into_iter()
@@ -144,11 +145,7 @@ fn format_expr_stmt(fmt: &Formatter, stmt: ExprStmt, semicolon: bool) -> Frag {
     ));
     // Block-like expressions may stand without `;`
     if stmt.semicolon_token().is_some() {
-        if semicolon {
-            builder.push_separator(SyntaxKind::SEMICOLON);
-        } else {
-            builder.skip_separator(SyntaxKind::SEMICOLON);
-        }
+        builder.push_or_skip_separator(SyntaxKind::SEMICOLON, semicolon);
     }
     builder.into_frag()
 }

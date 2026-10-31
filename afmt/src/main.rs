@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use afmt::report::ColorWhen;
-use afmt::{FormatOptions, error_messages, format_code, report};
+use afmt::{FormatOptions, error_messages, format_code, report, source_dir};
 use afmt_core::Edition;
 use clap::Parser;
 
@@ -45,19 +45,6 @@ fn exit_with_error(message: &str) -> ! {
     std::process::exit(1);
 }
 
-fn source_dir(cli: &Cli) -> &Path {
-    let dir = match &cli.file {
-        Some(file) => file.parent().unwrap_or(Path::new(".")),
-        None => Path::new("."),
-    };
-    // `Path::parent` of a file name without a directory is ""
-    if dir.as_os_str().is_empty() {
-        Path::new(".")
-    } else {
-        dir
-    }
-}
-
 fn write_output(out: &str) {
     // Not `print!`, which panics when stdout is closed
     if let Err(error) = std::io::stdout().write_all(out.as_bytes())
@@ -71,9 +58,10 @@ fn main() {
     let cli = Cli::parse();
     report::set_color(cli.color);
 
+    let dir = cli.file.as_deref().map_or(Path::new("."), source_dir);
     let (mut cfg, config_warnings) = cli
         .format
-        .config_for_source(source_dir(&cli), cli.edition)
+        .config_for_source(dir, cli.edition)
         .unwrap_or_else(|error| exit_with_error(&error.to_string()));
     for warning in config_warnings {
         report::warning(&warning);

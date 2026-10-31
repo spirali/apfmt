@@ -3,7 +3,7 @@ use super::{Builder, Formatter};
 use crate::comments::{
     TriviaStop, comments_ending_line_end, count_newlines, is_comment_kind, is_leading_block_comment, is_line_comment,
     is_outer_doc_comment,
-    line_ends_after, line_indentation, next_code_token, post_comments_stop,
+    line_ends_after, line_indentation, newlines_after, next_code_token, post_comments_stop,
     rest_of_line_is_comments, tokens_between, trivia_end, trivia_from,
 };
 use crate::doc::{COMMA_DOC, DocId, EMPTY_DOC, EMPTYLINE_DOC, NEWLINE_DOC, SEMICOLON_DOC};
@@ -118,11 +118,6 @@ impl<'a> Builder<'a> {
             self.push_line_break_if(NEWLINE_DOC, |end| end != Nothing);
         }
     }
-
-    /*fn push_emptyline(&mut self) {
-        self.push_line_break_if(EMPTYLINE_DOC, |_| true);
-        //self.frag.empty_lines = 0;
-    }*/
 
     /// At most `blank_lines_upper_bound`; a single newline only ends a line comment
     fn push_blank_lines(&mut self, newlines: u32) {
@@ -254,10 +249,7 @@ impl<'a> Builder<'a> {
         let Some(cursor) = self.frag.cursor.take() else {
             return;
         };
-        let newlines: u32 = trivia_from(cursor.next_token())
-            .take_while(|t| t.kind() == SyntaxKind::WHITESPACE)
-            .map(|t| count_newlines(&t))
-            .sum();
+        let newlines = newlines_after(&cursor);
         if newlines > 1 {
             self.push_blank_lines(newlines);
         }

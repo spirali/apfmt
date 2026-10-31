@@ -4,7 +4,6 @@ use super::attr::debug_assert_attrs_placed;
 use super::expr::{cast_type_parts, format_expr, prefix_op_token, push_ref_operator};
 use super::expr_list::format_arg_list;
 use super::path::{format_generic_arg_list, format_name_ref};
-use crate::comments::{comments_break_line_after, own_line_comment_follows, prev_code_token};
 use crate::formatter::Edge::{Close, Open, Tight, Word};
 use crate::formatter::{Builder, Formatter, Frag};
 use crate::layout::chain::{ChainElement, ChainLayouts, postfix_chain_layouts};
@@ -28,7 +27,12 @@ pub(super) fn operand_chain_in_parens(expr: &Expr) -> Option<Expr> {
 
 fn operand_chain_through(expr: &Expr, parens: bool) -> Option<Expr> {
     match expr {
-        Expr::ParenExpr(e) if parens && !has_attrs(&e.expr()?) && !has_line_comments_inside(e) => {
+        Expr::ParenExpr(e)
+            if parens
+                && !has_attrs(&e.expr()?)
+                && Delimiters::try_parens_of(e.syntax())
+                    .is_some_and(|d| !d.comments_break_body()) =>
+        {
             operand_chain_through(&e.expr()?, parens)
         }
         Expr::RefExpr(e) => operand_chain_through(&e.expr()?, parens),
@@ -37,14 +41,6 @@ fn operand_chain_through(expr: &Expr, parens: bool) -> Option<Expr> {
         expr if is_postfix_expr(expr) && !has_attrs(expr) => Some(expr.clone()),
         _ => None,
     }
-}
-
-fn has_line_comments_inside(expr: &ParenExpr) -> bool {
-    let (Some(open), Some(close)) = (expr.l_paren_token(), expr.r_paren_token()) else {
-        return true;
-    };
-    comments_break_line_after(&open)
-        || prev_code_token(&close).is_some_and(|t| own_line_comment_follows(&t))
 }
 
 /// The chain layouts with the operators of `expr` around them, applying to the chain as a whole

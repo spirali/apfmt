@@ -5,7 +5,7 @@ use super::path::format_name_ref;
 use super::ty::format_type;
 use crate::format::common::{format_lifetime, format_name};
 use crate::formatter::Edge::{Comma, Keyword, Operator, Tight, Word};
-use crate::formatter::{Builder, Formatter, Frag};
+use crate::formatter::{Builder, Formatter, Frag, NextLine};
 use crate::layout::chain::{infix_chain, operator_chain, unindented_infix_chain};
 use crate::layout::list::{
     Delimiters, FlatLimit, ListItem, ListLayout, TrailingSeparator, delimited_list, keyword_list,
@@ -204,7 +204,7 @@ fn format_where_pred(fmt: &Formatter, pred: WherePred) -> Frag {
     }
     // Bounds that do not fit move to the next line (as rustfmt): `F:` / `    Fn(&'a u8) -> u8,`
     push_bounds(fmt, &mut builder, &pred, |bounds| {
-        fmt.same_or_indented_line(bounds)
+        fmt.same_or_indented_line(bounds, NextLine::InOrder)
     });
     builder.into_frag()
 }
