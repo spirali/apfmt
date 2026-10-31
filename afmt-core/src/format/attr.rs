@@ -8,6 +8,7 @@ use crate::formatter::{Builder, Formatter, Frag};
 use crate::layout::list::{
     Delimiters, FlatLimit, Hug, ListItem, ListLayout, delimited_list, hug_last_item, list_items,
 };
+use crate::syntax_utils::is_rustfmt_skip;
 use ra_ap_syntax::ast::{
     Attr, CfgAtom, CfgAttrMeta, CfgPredicate, HasAttrs, KeyValueMeta, Meta, TokenTree,
     TokenTreeMeta, UnsafeMeta,
@@ -53,25 +54,24 @@ pub(super) fn debug_assert_attrs_placed(fmt: &Formatter, node: &impl HasAttrs) {
     );
 }
 
-fn is_rustfmt_skip(attr: &Attr) -> bool {
-    matches!(attr.meta(), Some(Meta::PathMeta(meta)) if meta.path().is_some_and(|p| p.syntax().text() == "rustfmt::skip"))
-}
-
-/// For a node that `#[rustfmt::skip]` keeps as in the source (an item, a statement)
+/// For a node that `#[rustfmt::skip]` keeps as in the source (an item, a statement, a field, a
+/// match arm)
 pub(super) fn format_skippable_with_attrs(
     fmt: &Formatter,
     node: &impl HasAttrs,
     format: impl FnOnce() -> Frag,
 ) -> Frag {
-    let Some(first_attr) = node.attrs().next() else {
-        return format();
-    };
-    if node.attrs().any(|attr| is_rustfmt_skip(&attr)) {
-        let first = first_attr.syntax().first_token().unwrap();
-        let last = node.syntax().last_token().unwrap();
-        return fmt.verbatim_range(&first, &last, Word, Word);
+    skipped_verbatim(fmt, node).unwrap_or_else(|| format_with_attrs(fmt, node, false, format))
+}
+
+/// The node with its attributes as in the source, if one of them is `#[rustfmt::skip]`
+pub(super) fn skipped_verbatim(fmt: &Formatter, node: &impl HasAttrs) -> Option<Frag> {
+    if !node.attrs().any(|attr| is_rustfmt_skip(&attr)) {
+        return None;
     }
-    format_with_attrs(fmt, node, false, format)
+    let first = node.attrs().next().unwrap().syntax().first_token().unwrap();
+    let last = node.syntax().last_token().unwrap();
+    Some(fmt.verbatim_range(&first, &last, Word, Word))
 }
 
 pub(super) fn attach_attrs(

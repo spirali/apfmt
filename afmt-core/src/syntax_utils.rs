@@ -12,6 +12,20 @@ pub(crate) fn has_attrs(node: &impl HasAttrs) -> bool {
     node.attrs().next().is_some()
 }
 
+pub(crate) fn is_rustfmt_skip(attr: &ast::Attr) -> bool {
+    let Some(ast::Meta::PathMeta(meta)) = attr.meta() else {
+        return false;
+    };
+    meta.path().is_some_and(|path| path.syntax().text() == "rustfmt::skip")
+}
+
+/// `#[rustfmt::skip]` on it or on a node containing it: its source is not to be changed
+pub(crate) fn is_skipped(node: &SyntaxNode) -> bool {
+    node.ancestors()
+        .filter_map(ast::AnyHasAttrs::cast)
+        .any(|node| node.attrs().any(|attr| is_rustfmt_skip(&attr)))
+}
+
 /// `m! { ... }` as an expression: as the only content of a block it is a statement (it may expand
 /// to statements), so the block cannot be removed
 pub(crate) fn is_brace_macro_expr(node: &SyntaxNode) -> bool {

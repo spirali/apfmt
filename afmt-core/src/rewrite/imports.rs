@@ -9,7 +9,7 @@ use crate::comments::{
     is_comment_kind, is_line_comment, post_comments_end, tokens_between, trivia_end,
 };
 use crate::layout::list::list_items_cast;
-use crate::syntax_utils::has_attrs;
+use crate::syntax_utils::{has_attrs, is_rustfmt_skip, is_skipped};
 use ra_ap_syntax::ast::{HasAttrs, HasName, Path, Use, UseTree, UseTreeList};
 use ra_ap_syntax::{AstNode, SourceFile, SyntaxKind, SyntaxNode, SyntaxToken, TextRange, TextSize};
 use std::cmp::Ordering;
@@ -21,8 +21,12 @@ pub(super) fn import_edits(file: &SourceFile, source: &str) -> Vec<(TextRange, S
         if matches!(
             node.kind(),
             SyntaxKind::SOURCE_FILE | SyntaxKind::STMT_LIST | SyntaxKind::ITEM_LIST
-        ) {
+        ) && !is_skipped(&node)
+        {
             for group in use_groups(&node) {
+                if group.iter().any(has_skip) {
+                    continue;
+                }
                 let (range, text) = group_text(source, &group);
                 if source[range] != text {
                     edits.push((range, text));
@@ -259,14 +263,19 @@ fn push_after(out: &mut String, text: &str, line_comment: bool) {
 }
 
 fn sortable_use(node: &SyntaxNode) -> Option<Use> {
-    Use::cast(node.clone()).filter(|item| !has_macro_use(item))
+    Use::cast(node.clone()).filter(is_sortable)
 }
 
-/// `#[macro_use]` prevents sorting, as in rustfmt; other attributes and doc comments move with
-/// their item
-fn has_macro_use(item: &Use) -> bool {
-    item.attrs()
-        .any(|attr| attr.simple_name().is_some_and(|name| name == "macro_use"))
+/// `#[macro_use]` prevents sorting, as in rustfmt, and `#[rustfmt::skip]` keeps the item as it is;
+/// other attributes and doc comments move with their item
+fn is_sortable(item: &Use) -> bool {
+    !item.attrs().any(|attr| {
+        attr.simple_name().is_some_and(|name| name == "macro_use") || is_rustfmt_skip(&attr)
+    })
+}
+
+fn has_skip(item: &Use) -> bool {
+    item.attrs().any(|attr| is_rustfmt_skip(&attr))
 }
 
 fn is_in_doc_comment(token: &SyntaxToken) -> bool {
@@ -309,7 +318,7 @@ fn use_groups(node: &SyntaxNode) -> Vec<Vec<Use>> {
         let Some(item) = Use::cast(child) else {
             continue;
         };
-        let sortable = !has_macro_use(&item);
+        let sortable = is_sortable(&item);
         let mut group = vec![item];
         while sortable
             && let Some(next) = children.peek().and_then(sortable_use)
@@ -466,5 +475,14 @@ mod tests {
             rewrite("fn f() {\n    g(); use a::{};\n    // c\n}\n").unwrap(),
             "fn f() {\n    g(); \n    // c\n}\n"
         );
+    }
+
+    #[test]
+    fn skipped_code_unchanged() {
+        assert_eq!(rewrite("#[rustfmt::skip]\nuse a::{c, b};\n"), None);
+        assert_eq!(rewrite("#[rustfmt::skip]\nfn f() {\n    use b;\n    use a;;\n}\n"), None);
+        assert_eq!(rewrite("#[rustfmt::skip]\nmod m {\n    use b;\n    use a::{};\n}\n"), None);
+        // A skipped item ends a group, as `#[macro_use]` does
+        assert_eq!(rewrite("use c;\n#[rustfmt::skip]\nuse b;\nuse a;\n"), None);
     }
 }

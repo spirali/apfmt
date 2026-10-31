@@ -1,6 +1,6 @@
 //! Expressions
 
-use super::attr::{debug_assert_attrs_placed, format_skippable_with_attrs, format_with_attrs};
+use super::attr::{debug_assert_attrs_placed, format_skippable_with_attrs};
 use super::chain::{
     format_postfix_chain, is_postfix_expr, operand_chain_in_parens, operator_chain_parts,
     postfix_chain_parts,
@@ -558,7 +558,7 @@ fn format_record_expr(fmt: &Formatter, expr: RecordExpr) -> Frag {
     builder.push(format_path(fmt, expr.path().unwrap()));
     let list = expr.record_expr_field_list().unwrap();
     let mut fields = list_items_cast::<RecordExprField, _>(list.syntax(), |field| {
-        format_with_attrs(fmt, &field, false, || format_record_expr_field(fmt, &field))
+        format_skippable_with_attrs(fmt, &field, || format_record_expr_field(fmt, &field))
     });
     let trailing = match list.dotdot_token() {
         Some(dotdot) => {

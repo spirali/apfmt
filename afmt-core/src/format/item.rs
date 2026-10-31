@@ -1,6 +1,8 @@
 //! Items: functions, structs, enums, use declarations, impls, traits, modules, constants, type aliases
 
-use super::attr::{attach_attrs, format_attr, format_skippable_with_attrs, format_with_attrs};
+use super::attr::{
+    attach_attrs, format_attr, format_skippable_with_attrs, format_with_attrs, skipped_verbatim,
+};
 use super::expr::format_expr;
 use super::generics::{
     format_generic_param_list, format_type_bound_list, format_unindented_type_bound_list,
@@ -324,7 +326,7 @@ fn format_visibility(fmt: &Formatter, visibility: Visibility) -> Frag {
 
 /// The type moves to the next line if it does not fit (RhsBreak)
 fn format_record_field(fmt: &Formatter, field: RecordField) -> Frag {
-    format_with_attrs(fmt, &field, false, || format_record_field_body(fmt, &field))
+    format_skippable_with_attrs(fmt, &field, || format_record_field_body(fmt, &field))
 }
 
 fn format_record_field_body(fmt: &Formatter, field: &RecordField) -> Frag {
@@ -445,6 +447,15 @@ fn struct_variant_single_line(fmt: &Formatter, s: &StructVariantFields) -> Optio
 }
 
 fn variant_parts(fmt: &Formatter, variant: Variant) -> VariantParts {
+    // Copied whole as a unit variant without attributes, so it is a line of its own
+    if let Some(copied) = skipped_verbatim(fmt, &variant) {
+        return VariantParts {
+            attrs: Vec::new(),
+            name: copied,
+            fields: VariantFields::Unit,
+            discriminant: None,
+        };
+    }
     let attrs = variant.attrs().map(|attr| format_attr(fmt, attr)).collect();
     let fields = match variant.field_list() {
         Some(FieldList::RecordFieldList(list)) => {

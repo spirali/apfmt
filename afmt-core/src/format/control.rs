@@ -1,6 +1,6 @@
 //! `match` and loops
 
-use super::attr::{format_attr, format_with_attrs};
+use super::attr::{format_attr, format_skippable_with_attrs};
 use super::chain::operand_chain;
 use super::common::push_label;
 use super::expr::{
@@ -102,10 +102,10 @@ fn match_expr_parts(fmt: &Formatter, expr: &MatchExpr) -> (HeadLayouts, Frag) {
     let head = format_head_expr(fmt, expr.expr().unwrap());
     let list = expr.match_arm_list().unwrap();
     let group = fmt.align_group();
-    let lines = list.attrs().map(|attr| format_attr(fmt, attr)).chain(
-        list.arms()
-            .map(|arm| format_with_attrs(fmt, &arm, false, || format_match_arm(fmt, &arm, group))),
-    );
+    let arms = list.arms().map(|arm| {
+        format_skippable_with_attrs(fmt, &arm, || format_match_arm(fmt, &arm, group))
+    });
+    let lines = list.attrs().map(|attr| format_attr(fmt, attr)).chain(arms);
     let arms = Delimiters::braces_of(list.syntax()).format_item_block(fmt, lines);
     (head, arms)
 }
