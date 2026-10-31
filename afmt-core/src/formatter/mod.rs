@@ -115,6 +115,13 @@ impl<'a> Formatter<'a> {
         Some(frag)
     }
 
+    pub fn can_reparse<N>(
+        &self,
+        reparse: impl FnOnce(&Placeholders) -> Option<Reparsed<N>>,
+    ) -> bool {
+        reparse(&self.placeholders.borrow()).is_some()
+    }
+
     fn token_text<'t>(&self, token: &'t SyntaxToken) -> Cow<'t, str> {
         match self.placeholders.borrow().get(token) {
             Some(text) => Cow::Owned(text.clone()),
@@ -297,6 +304,14 @@ impl<'a> Formatter<'a> {
 
     const SAVING_LINES_NEXT_COST: i32 = SPLIT_COST + LINE_COST * 3 / 2;
 
+    /// As `same_or_indented_line_saving_lines`, but broken on the next line wins when it saves one
+    /// line
+    pub fn same_or_indented_line_saving_one_line(&self, frag: Frag) -> Frag {
+        let next = Cost::new(Self::SAVING_LINES_NEXT_COST - LINE_COST);
+        let (same, next) = self.same_and_indented_line_with(frag, next);
+        self.alt_frag(same, next)
+    }
+
     /// As `same_or_indented_line_saving_lines`, but `preferred` on the next line wins when it saves
     /// one line, as in rustfmt (`x =` / `a.b().c(|y| {` against `x = a` / `.b()` / `.c(|y| {`)
     pub fn same_or_indented_line_saving_lines_preferring(
@@ -310,6 +325,12 @@ impl<'a> Formatter<'a> {
         let preferred_cost = Cost::new(Self::SAVING_LINES_NEXT_COST - LINE_COST);
         let preferred = self.keep_together_with(preferred, preferred_cost);
         self.alt_frag(same, self.indented_line(self.alt_frag(other, preferred)))
+    }
+
+    /// As `same_and_indented_line`, broken on the next line costing as in
+    /// `same_or_indented_line_saving_lines`
+    pub fn same_and_indented_line_saving_lines(&self, frag: Frag) -> (Frag, Frag) {
+        self.same_and_indented_line_with(frag, Cost::new(Self::SAVING_LINES_NEXT_COST))
     }
 
     pub fn same_and_indented_line(&self, frag: Frag) -> (Frag, Frag) {

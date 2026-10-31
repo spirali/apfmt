@@ -265,6 +265,27 @@ pub(super) fn is_brace_macro(expr: &Expr) -> bool {
     macro_delimiter(expr) == Some(SyntaxKind::L_CURLY)
 }
 
+/// Its token tree is copied (reindented) rather than formatted: braces, or arguments that do not
+/// parse
+pub(super) fn is_copied_macro(fmt: &Formatter, expr: &Expr) -> bool {
+    let Expr::MacroExpr(expr) = expr else {
+        return false;
+    };
+    let Some(tree) = expr.macro_call().and_then(|call| call.token_tree()) else {
+        return false;
+    };
+    let edition = fmt.config().edition;
+    match tree.syntax().first_token().unwrap().kind() {
+        SyntaxKind::L_PAREN => {
+            !fmt.can_reparse(|p| parse_token_tree::<ArgList>(&tree, edition, p))
+        }
+        SyntaxKind::L_BRACK => {
+            !fmt.can_reparse(|p| parse_token_tree::<ArrayExpr>(&tree, edition, p))
+        }
+        _ => true,
+    }
+}
+
 /// `vec![a, b]`
 pub(super) fn is_array_macro(expr: &Expr) -> bool {
     macro_delimiter(expr) == Some(SyntaxKind::L_BRACK)

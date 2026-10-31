@@ -3,7 +3,9 @@
 use super::chain::{is_chain_call, operand_chain, operator_chain_parts};
 use super::closure::closure_layouts;
 use super::expr::format_expr;
-use super::macros::{is_array_macro, is_brace_macro, is_list_macro, macro_argument_count};
+use super::macros::{
+    is_array_macro, is_brace_macro, is_copied_macro, is_list_macro, macro_argument_count,
+};
 use crate::comments::{prev_code_token, trivia_from};
 use crate::doc::WeakPreference;
 use crate::format::common::format_repeat;
@@ -172,12 +174,26 @@ fn is_hugging_string(expr: &Expr) -> bool {
         literal.kind(),
         LiteralKind::String(_) | LiteralKind::ByteString(_) | LiteralKind::CString(_)
     );
-    if !is_string || !literal.token().text().contains('\n') {
-        return false;
-    }
-    let open = (expr.syntax().first_token()).and_then(|t| prev_code_token(&t));
-    trivia_from(open.and_then(|t| t.next_token()))
+    is_string && literal.token().text().contains('\n') && starts_on_line_of_previous_token(expr)
+}
+
+/// Only spaces between it and the code token before it
+fn starts_on_line_of_previous_token(expr: &Expr) -> bool {
+    let previous = (expr.syntax().first_token()).and_then(|t| prev_code_token(&t));
+    trivia_from(previous.and_then(|t| t.next_token()))
         .all(|t| t.kind() == SyntaxKind::WHITESPACE && !t.text().contains('\n'))
+}
+
+/// A multi-line copied macro call as the last of more items, hugging the list in the source
+/// (`f(a, json!({` / `...` / `}))`): its lines cannot be broken, so it hugs if breaking overflows
+fn is_hugging_copied_macro(fmt: &Formatter, exprs: &[Expr]) -> bool {
+    let [rest @ .., last] = exprs else {
+        return false;
+    };
+    !rest.is_empty()
+        && last.syntax().text().contains_char('\n')
+        && starts_on_line_of_previous_token(last)
+        && is_copied_macro(fmt, &without_refs(last))
 }
 
 /// E.g. `|x| x` of `&&mut |x| x`
@@ -236,6 +252,17 @@ fn last_item_hug(node: &SyntaxNode, exprs: &[Expr]) -> Hug {
         _ if is_overflowing_last(exprs) => Hug::Allowed,
         _ => Hug::Never,
     }
+}
+
+/// `f(g(a, b))`: a call with a single argument that may hug its list; not one with attributes,
+/// which are copied with it
+pub(super) fn has_single_hugging_argument(call: &CallExpr) -> bool {
+    let Some(args) = call.arg_list() else {
+        return false;
+    };
+    let exprs = args.args().collect::<Vec<_>>();
+    matches!(exprs.as_slice(), [arg] if !has_attrs(arg))
+        && last_item_hug(args.syntax(), &exprs) != Hug::Never
 }
 
 /// All items simple and at most `short_array_element_width_threshold` wide: filled as in rustfmt,
@@ -345,6 +372,7 @@ pub(super) fn format_expr_list(
 ) -> Frag {
     let exprs = node.children().filter_map(Expr::cast).collect::<Vec<_>>();
     let hug = last_item_hug(node, &exprs);
+    let hugging_copied_macro = hug == Hug::Never && is_hugging_copied_macro(fmt, &exprs);
     let items = list_items_cast(node, |e| format_expr_item(fmt, e));
     let own_width = matches!(items.as_slice(), [item] if item.frag.own_width);
     let mut items = with_is_last(&items)
@@ -352,10 +380,12 @@ pub(super) fn format_expr_list(
             let ExprItem { frag, overflow, .. } = &item.frag;
             // Style Guide: a single multi-line argument is hugged (`Err(anyhow!(` / `...` / `))`)
             // unless the broken call takes fewer lines, except where `is_preferred_hug`
-            let overflow = if is_last {
-                hug.overflow(overflow)
-            } else {
+            let overflow = if !is_last {
                 Overflow::Never
+            } else if hugging_copied_macro {
+                Overflow::With(fmt.dispreferred(frag.clone()))
+            } else {
+                hug.overflow(overflow)
             };
             item.map(|_| frag.clone()).with_overflow(overflow)
         })

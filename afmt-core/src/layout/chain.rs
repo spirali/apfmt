@@ -74,6 +74,25 @@ pub(crate) fn short_first_operand(
     Some(Builder::concat(fmt, [first, op.clone(), fmt.multi_line(operand.clone())]))
 }
 
+/// The operands but the last on a single line, the last one broken on it after its operator, as
+/// rustfmt does with a block: `a && b && {` / `    ...` / `}`
+pub(crate) fn flat_operands_then_last(
+    fmt: &Formatter,
+    first: &Frag,
+    rest: &[(Frag, Frag)],
+) -> Option<Frag> {
+    let ((op, last), front) = rest.split_last()?;
+    let front = Builder::concat(
+        fmt,
+        std::iter::once(first.clone()).chain(operator_lines(fmt, front)),
+    );
+    if front.comment_follows() || op.comment_follows() {
+        return None;
+    }
+    let front = fmt.flat_if_possible(front)?;
+    Some(Builder::concat(fmt, [front, op.clone(), fmt.multi_line(last.clone())]))
+}
+
 /// The broken layout of `infix_chain`
 pub(crate) fn broken_infix_chain(fmt: &Formatter, first: Frag, rest: &[(Frag, Frag)]) -> Frag {
     vertical_lines(fmt, &first, &operator_lines(fmt, rest))

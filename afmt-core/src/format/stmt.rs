@@ -100,12 +100,12 @@ fn format_let_else(
 ) -> Frag {
     let (same_line, next_line) = match init.other {
         Some(other) => {
-            let (same_line, next_line) = fmt.same_and_indented_line(other);
+            let (same_line, next_line) = fmt.same_and_indented_line_saving_lines(other);
             (Some(same_line), Some(next_line))
         }
         None => (None, None),
     };
-    let hanging = init.hanging.map(|h| fmt.same_or_indented_line(h));
+    let hanging = init.hanging.map(|h| fmt.same_or_indented_line_saving_lines(h));
     let flat = same_line.clone().map(|same_line| fmt.flat(same_line));
     let hanging = [hanging, next_line, flat]
         .into_iter()

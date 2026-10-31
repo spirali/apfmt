@@ -7,7 +7,10 @@ use super::chain::{
 };
 use super::closure::format_closure_expr;
 use super::control::{format_for_expr, format_loop_expr, format_match_expr, format_while_expr};
-use super::expr_list::{format_arg_list, format_array_expr, format_tuple_expr, is_literal_or_name};
+use super::expr_list::{
+    format_arg_list, format_array_expr, format_tuple_expr, has_single_hugging_argument,
+    is_literal_or_name,
+};
 use super::macros::format_macro_call;
 use super::pat::pat_layouts;
 use super::path::{format_name_ref, format_path};
@@ -21,7 +24,9 @@ use crate::doc::{CLOSE_BRACE_DOC, OPEN_BRACE_DOC};
 use crate::format::common::format_lifetime;
 use crate::formatter::Edge::{BraceClose, BraceOpen, Comma, Operator, Tight, Word};
 use crate::formatter::{Builder, Formatter, Frag};
-use crate::layout::chain::{broken_infix_chain, infix_chain, short_first_operand};
+use crate::layout::chain::{
+    broken_infix_chain, flat_operands_then_last, infix_chain, short_first_operand,
+};
 use crate::layout::head::{HeadLayouts, pattern_head};
 use crate::layout::list::TrailingSeparator;
 use crate::layout::list::{
@@ -69,16 +74,37 @@ fn format_bin_expr(fmt: &Formatter, expr: BinExpr) -> Frag {
     if let Some(BinaryOp::Assignment { .. }) = expr.op_kind() {
         return format_assignment(fmt, expr);
     }
+    let (chain, block_last) = bin_expr_layouts(fmt, expr);
+    fmt.alt_opt(chain, block_last)
+}
+
+/// The layouts of `a op b op c`, and apart from them the operands on one line followed by a block
+/// as the last operand, which `{` of a control-flow head may follow (`if a && {` / `...` / `} {`)
+fn bin_expr_layouts(fmt: &Formatter, expr: BinExpr) -> (Frag, Option<Frag>) {
+    let block_last = expr.rhs().is_some_and(|rhs| is_plain_block(&rhs));
     let (first, rest) = bin_chain_operands(fmt, expr);
-    let chain = infix_chain(fmt, first.clone(), &rest);
-    let [(op, operand)] = rest.as_slice() else {
-        return chain;
+    let mut chain = infix_chain(fmt, first.clone(), &rest);
+    if let [(op, operand)] = rest.as_slice() {
+        // As rustfmt: the right operand stays on the line when `first op ` is at most `tab_spaces`
+        // wide
+        let op_width = fmt.min_flat_width(op).unwrap_or(0) + 2;
+        let max_width = fmt.config().tab_spaces.saturating_sub(op_width);
+        chain = fmt.alt_opt(chain, short_first_operand(fmt, &first, op, operand, max_width));
+    }
+    // As rustfmt; the Style Guide has no rule for a block operand
+    let block_last = block_last
+        .then(|| flat_operands_then_last(fmt, &first, &rest))
+        .flatten();
+    (chain, block_last)
+}
+
+/// `{ ... }` without a label, a modifier (`unsafe`, `async`, ...) or attributes
+fn is_plain_block(expr: &Expr) -> bool {
+    let Expr::BlockExpr(block) = expr else {
+        return false;
     };
-    // As rustfmt: the right operand stays on the line when `first op ` is at most `tab_spaces` wide
-    let op_width = fmt.min_flat_width(op).unwrap_or(0) + 2;
-    let max_width = fmt.config().tab_spaces.saturating_sub(op_width);
-    let short_first = short_first_operand(fmt, &first, op, operand, max_width);
-    fmt.alt_opt(chain, short_first)
+    let l_curly = block.stmt_list().and_then(|list| list.l_curly_token());
+    l_curly.is_some() && l_curly == block.syntax().first_token()
 }
 
 fn bin_chain_operands(fmt: &Formatter, expr: BinExpr) -> (Frag, Vec<(Frag, Frag)>) {
@@ -102,8 +128,15 @@ fn format_assignment(fmt: &Formatter, expr: BinExpr) -> Frag {
 }
 
 /// The right side of `let` or an assignment: on the next line when that saves at least two lines;
-/// a chain broken only in its last arguments already when it saves one, as in rustfmt
+/// a chain broken only in its last arguments, or a call whose single argument hugs it (`x =` /
+/// `Rc::new(X {`), already when it saves one, as in rustfmt
 pub(super) fn format_rhs(fmt: &Formatter, expr: Expr) -> Frag {
+    if let Expr::CallExpr(call) = without_try(&expr)
+        && !has_attrs(&expr)
+        && has_single_hugging_argument(&call)
+    {
+        return fmt.same_or_indented_line_saving_one_line(format_expr(fmt, expr));
+    }
     if !has_attrs(&expr) && is_postfix_expr(&expr) {
         return match postfix_chain_parts(fmt, expr).layouts {
             HeadLayouts {
@@ -114,6 +147,14 @@ pub(super) fn format_rhs(fmt: &Formatter, expr: Expr) -> Frag {
         };
     }
     fmt.same_or_indented_line_saving_lines(format_expr(fmt, expr))
+}
+
+/// E.g. `f(x)` of `f(x)??`
+fn without_try(expr: &Expr) -> Expr {
+    match expr {
+        Expr::TryExpr(e) => e.expr().map_or_else(|| expr.clone(), |e| without_try(&e)),
+        _ => expr.clone(),
+    }
 }
 
 /// Its first token child; not `PrefixExpr::op_token`, which is an attribute in `#[cfg(x)] -1`
@@ -616,6 +657,16 @@ pub(super) fn format_head_expr(fmt: &Formatter, expr: Expr) -> HeadLayouts {
         return HeadLayouts {
             hanging: Some(broken_infix_chain(fmt, first, &rest)),
             other: None,
+        };
+    }
+    if let Expr::BinExpr(bin) = &expr
+        && !matches!(bin.op_kind(), Some(BinaryOp::Assignment { .. }))
+    {
+        let (chain, block_last) = bin_expr_layouts(fmt, bin.clone());
+        return HeadLayouts {
+            // Broken only when the head does not fit: `if a && b` / `{` comes first
+            hanging: Some(fmt.multi_line(chain.clone())),
+            other: fmt.alt_some(Some(fmt.flat(chain)), block_last),
         };
     }
     let hanging = is_hanging_expr(&expr);

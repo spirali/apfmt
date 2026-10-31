@@ -52,7 +52,7 @@ SELECT * FROM t
 
 fn not_hugged() {
     // The first line does not fit
-    let s = some_function_with_a_long_name_that_fills_the_line_almost_completely_aaaaaaaaaaaaaaaa(r#"
+    some_function_with_a_long_name_that_fills_the_line_almost_completely_aaaaaaaaaaaaaaaaaaaaaaaa(r#"
 x
 "#);
     // More items, or a tuple, whose comma would follow the string
