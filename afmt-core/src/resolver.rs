@@ -386,7 +386,11 @@ impl<'a> Resolver<'a> {
             resolver: self,
             out: std::mem::take(out),
             fresh: true,
-            paddings: align_marks(self, best.content),
+            paddings: if self.doc_arena.has_align_marks() {
+                align_marks(self, best.content)
+            } else {
+                Vec::new()
+            },
             marks: 0,
         };
         renderer.render(best.content);
@@ -513,7 +517,12 @@ impl<'a> Resolver<'a> {
                             layout2.content = Content::Concat(c1, c2);
                         }
                     }
-                    *out = merge_layout_sets(std::mem::replace(out, LayoutSet::empty()), sub);
+                    // `sub` stays a frontier: `layout1` adds the same to each of its layouts
+                    if out.layouts.is_empty() {
+                        *out = sub;
+                    } else {
+                        *out = merge_layout_sets(std::mem::replace(out, LayoutSet::empty()), sub);
+                    }
                     match la.layouts.get(i as usize + 1) {
                         Some(layout1) => {
                             let ctx2 = ctx.after(&layout1.measure);

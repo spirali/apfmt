@@ -159,6 +159,7 @@ pub(crate) struct DocArena {
     nodes: Vec<DocNode>,
     strings: Vec<Box<str>>,
     alt_infos: FxHashMap<DocId, AltInfo>,
+    has_align_marks: bool,
 }
 
 /// The narrowest lines of a doc in its layouts that take no dispreferred choice on them
@@ -206,6 +207,7 @@ impl DocArena {
             nodes: Vec::new(),
             strings: Vec::new(),
             alt_infos: FxHashMap::default(),
+            has_align_marks: false,
         };
         let preallocated = [
             arena.make(DocNode::Newline),
@@ -244,11 +246,17 @@ impl DocArena {
         self.nodes.truncate(PREALLOCATED_NODES);
         self.strings.truncate(PREALLOCATED_STRINGS);
         self.alt_infos.clear();
+        self.has_align_marks = false;
+    }
+
+    pub fn has_align_marks(&self) -> bool {
+        self.has_align_marks
     }
 
     #[inline]
     pub fn make(&mut self, kind: DocNode) -> DocId {
         let id = DocId(self.nodes.len() as u32);
+        self.has_align_marks |= matches!(kind, DocNode::AlignMark(_));
         self.nodes.push(kind);
         id
     }
