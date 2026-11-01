@@ -221,8 +221,24 @@ fn format_rest_pat(fmt: &Formatter, pat: RestPat) -> Frag {
     fmt.token(pat.dotdot_token().unwrap(), Word)
 }
 
+/// Also the edition 2015 `a...b`, kept as it is (as rustfmt): ra_ap_syntax sees neither its `...`
+/// nor its end
 fn format_range_pat(fmt: &Formatter, pat: RangePat) -> Frag {
-    format_range(fmt, &pat, |p| format_pat(fmt, p))
+    let dots = pat.syntax().children_with_tokens().find(|it| it.kind() == SyntaxKind::DOT3);
+    let Some(dots) = dots.and_then(|it| it.into_token()) else {
+        return format_range(fmt, &pat, |p| format_pat(fmt, p));
+    };
+    let mut bounds = pat.syntax().children().filter_map(Pat::cast);
+    let mut builder = Builder::new(fmt);
+    builder.push(format_pat(fmt, bounds.next().unwrap()));
+    match bounds.next() {
+        Some(end) => {
+            builder.push_token(dots, Tight);
+            builder.push(format_pat(fmt, end));
+        }
+        None => builder.push(fmt.postfix_token(dots)),
+    }
+    builder.into_frag()
 }
 
 pub(super) fn format_pat(fmt: &Formatter, pat: Pat) -> Frag {
