@@ -15,6 +15,7 @@ use super::stmt::format_block_expr;
 use super::ty::{format_ret_type, format_type, format_type_annotation};
 use super::{format_unsupported, format_unsupported_kind};
 use crate::comments::{has_comments, is_code_kind};
+use crate::doc::Cost;
 use crate::format::common::{format_lifetime, format_name};
 use crate::formatter::Edge::{Comma, Operator, Tight, Word};
 use crate::formatter::{Builder, Formatter, Frag, NextLine};
@@ -186,7 +187,7 @@ pub(super) fn push_qualifiers(
                 | SyntaxKind::UNSAFE_KW
                 | SyntaxKind::SAFE_KW
                 | SyntaxKind::AUTO_KW => builder.push_token(token, Word),
-                _ => panic!("not supported yet: {token:?}"),
+                _ => builder.push(fmt.unsupported(&token, &token, "a qualifier".into())),
             },
             NodeOrToken::Node(node) => match node.kind() {
                 // Placed with the attributes and comments in front of the item
@@ -195,7 +196,11 @@ pub(super) fn push_qualifiers(
                     builder.push(format_visibility(fmt, Visibility::cast(node).unwrap()))
                 }
                 SyntaxKind::ABI => builder.push(format_abi(fmt, Abi::cast(node).unwrap())),
-                _ => panic!("not supported yet: {node:?}"),
+                _ => builder.push(fmt.unsupported(
+                    &node.first_token().unwrap(),
+                    &node.last_token().unwrap(),
+                    "a qualifier".into(),
+                )),
             },
         }
     }
@@ -760,8 +765,10 @@ fn impl_header(
 ) -> Frag {
     let rest = Builder::concat(fmt, trait_.clone().into_iter().chain([self_ty.clone()]));
     let joined = Builder::concat(fmt, [head.clone(), rest.clone()]);
-    let joined =
-        fmt.ends_line_if_broken(fmt.keep_together(fmt.keep_together(joined)), block_follows);
+    // Broken inside its parts or at both places costs two splits, after the generics one, before
+    // `for` none (rustfmt's order)
+    let joined = fmt.keep_together_with(joined, Cost::splits(2));
+    let joined = fmt.ends_line_if_broken(joined, block_follows);
     let broken = |first: Frag, lines: &[Frag]| {
         let mut builder = Builder::new(fmt);
         builder.push(fmt.flat(first));
@@ -778,7 +785,7 @@ fn impl_header(
         Some(trait_) => {
             let head_and_trait = Builder::concat(fmt, [head.clone(), trait_.clone()]);
             let before_for = broken(head_and_trait, std::slice::from_ref(&self_ty));
-            let both = fmt.dispreferred(fmt.dispreferred(broken(head, &[trait_, self_ty])));
+            let both = fmt.cost(broken(head, &[trait_, self_ty]), Cost::splits(2));
             fmt.alt_frag(before_for, fmt.alt_frag(after_generics, both))
         }
         None => after_generics,

@@ -394,7 +394,7 @@ impl<'a> Formatter<'a> {
         self.keep_together_with(frag, Cost::SPLIT)
     }
 
-    fn keep_together_with(&self, frag: Frag, cost: Cost) -> Frag {
+    pub fn keep_together_with(&self, frag: Frag, cost: Cost) -> Frag {
         self.wrap(frag, |d| DocNode::KeepTogether(d, cost))
     }
 
