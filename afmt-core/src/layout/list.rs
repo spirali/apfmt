@@ -102,6 +102,8 @@ pub(crate) enum Hug {
     Allowed,
     WeakPreference,
     Preferred,
+    /// The only broken layout of the list (`|(` / `    a,` / `)|`)
+    Only,
 }
 
 impl Hug {
@@ -110,6 +112,7 @@ impl Hug {
             (Hug::Never, _) => Overflow::Never,
             (Hug::Preferred, Overflow::With(frag)) => Overflow::Preferred(frag.clone()),
             (Hug::WeakPreference, Overflow::With(frag)) => Overflow::WeakPreference(frag.clone()),
+            (Hug::Only, Overflow::With(frag)) => Overflow::Only(frag.clone()),
             (_, overflow) => overflow.clone(),
         }
     }
@@ -800,6 +803,8 @@ pub(crate) fn delimited_list(
     if items.is_empty() {
         return delims.format_empty(fmt);
     }
+    // A string spanning lines is not on a single line (Style Guide, as in rustfmt)
+    let layout = layout.broken_if(items.iter().any(|item| fmt.has_multi_line_text(&item.frag)));
     let open = Some(delims.open.clone());
     let last_overflow = &items.last().unwrap().overflow;
     // A line comment after the last item would end the line in front of the closing delimiter

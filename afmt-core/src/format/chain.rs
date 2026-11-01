@@ -1,7 +1,9 @@
 //! Chains of postfix expressions (`a.b()?.c`, `a[i]`) and the operators around them
 
 use super::attr::debug_assert_attrs_placed;
-use super::expr::{cast_type_parts, format_expr, prefix_op_token, push_ref_operator};
+use super::expr::{
+    cast_type_parts, format_expr, prefix_op_token, push_ref_operator, unary_operand,
+};
 use super::expr_list::format_arg_list;
 use super::path::{format_generic_arg_list, format_name_ref};
 use crate::formatter::Edge::{Close, Open, Tight, Word};
@@ -35,11 +37,8 @@ fn operand_chain_through(expr: &Expr, parens: bool) -> Option<Expr> {
         {
             operand_chain_through(&e.expr()?, parens)
         }
-        Expr::RefExpr(e) => operand_chain_through(&e.expr()?, parens),
-        Expr::PrefixExpr(e) => operand_chain_through(&e.expr()?, parens),
-        Expr::CastExpr(e) => operand_chain_through(&e.expr()?, parens),
         expr if is_postfix_expr(expr) && !has_attrs(expr) => Some(expr.clone()),
-        _ => None,
+        expr => operand_chain_through(&unary_operand(expr)?, parens),
     }
 }
 
@@ -53,7 +52,7 @@ pub(super) fn operator_chain_parts(fmt: &Formatter, expr: &Expr, chain: Expr) ->
         .map(|chain| Builder::concat(fmt, [prefix.clone(), chain, suffix.clone()]))
 }
 
-/// E.g. `&mut *(` and `as T)` of `&mut *(a.b() as T)`
+/// E.g. `&mut *(` and `as T)` of `&mut *(a.b() as T)`: what `operand_chain_in_parens` strips
 fn format_operators_around_chain(fmt: &Formatter, expr: &Expr) -> (Frag, Frag) {
     let mut prefix = Builder::new(fmt);
     let mut suffixes = Vec::new();

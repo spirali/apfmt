@@ -2,7 +2,7 @@
 
 use super::chain::{is_chain_call, operand_chain, operator_chain_parts};
 use super::closure::closure_layouts;
-use super::expr::format_expr;
+use super::expr::{format_expr, unary_operand};
 use super::macros::{
     is_array_macro, is_copied_macro, is_list_macro, macro_argument_count,
 };
@@ -155,11 +155,8 @@ fn is_preferred_hug(node: &SyntaxNode, expr: &Expr) -> bool {
 /// E.g. `a.b()` of `&*a.b()? as T`
 fn without_operators(expr: &Expr) -> Expr {
     let operand = match expr {
-        Expr::PrefixExpr(e) => e.expr(),
-        Expr::RefExpr(e) => e.expr(),
-        Expr::CastExpr(e) => e.expr(),
         Expr::TryExpr(e) => e.expr(),
-        _ => None,
+        expr => unary_operand(expr),
     };
     operand.map_or_else(|| expr.clone(), |e| without_operators(&e))
 }
@@ -365,7 +362,7 @@ pub(super) fn format_expr_item(fmt: &Formatter, expr: Expr) -> ExprItem {
 }
 
 /// Call arguments, tuple fields or array elements: flat within `width`, otherwise one per line or
-/// filled; a multi-line string literal always breaks the list
+/// filled
 pub(super) fn format_expr_list(
     fmt: &Formatter,
     node: &SyntaxNode,
@@ -418,12 +415,7 @@ pub(super) fn format_expr_list(
             }
         });
     }
-    // A multi-line string, also behind an operator, is not hugged (Style Guide, as in rustfmt),
-    // unless it hugs the list in the source
-    let multi_line = items.iter().any(|item| fmt.has_multi_line_text(&item.frag));
-    let layout = ListLayout::tall(flat)
-        .fill_if(is_fillable_list(fmt, &exprs, &items))
-        .broken_if(multi_line);
+    let layout = ListLayout::tall(flat).fill_if(is_fillable_list(fmt, &exprs, &items));
     delimited_list(fmt, delims, &items, refine(layout))
 }
 

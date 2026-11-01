@@ -136,9 +136,7 @@ fn format_meta_list(
     } else {
         FlatLimit::of_arguments(fmt, &items, hug, fmt.config().attr_fn_like_width)
     };
-    // A string spanning lines is not on the line of `(`, as in a call
-    let multi_line = items.iter().any(|item| fmt.has_multi_line_text(&item.frag));
-    let layout = ListLayout::tall(limit).fill_if(fill).broken_if(multi_line);
+    let layout = ListLayout::tall(limit).fill_if(fill);
     delimited_list(fmt, &delims, &items, layout)
 }
 

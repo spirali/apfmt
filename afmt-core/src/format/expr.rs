@@ -142,6 +142,16 @@ pub(super) fn format_rhs(fmt: &Formatter, expr: Expr) -> Frag {
     fmt.same_or_indented_line(format_expr(fmt, expr), NextLine::SavingTwoLines)
 }
 
+/// The operand of a prefix operator, `&` / `&mut` or a cast: `x` of `-x`, `&x`, `x as T`
+pub(super) fn unary_operand(expr: &Expr) -> Option<Expr> {
+    match expr {
+        Expr::PrefixExpr(e) => e.expr(),
+        Expr::RefExpr(e) => e.expr(),
+        Expr::CastExpr(e) => e.expr(),
+        _ => None,
+    }
+}
+
 /// E.g. `f(x)` of `f(x)??`
 fn without_try(expr: &Expr) -> Expr {
     match expr {
@@ -305,10 +315,7 @@ fn is_hanging_expr(expr: &Expr) -> bool {
     match expr {
         Expr::BinExpr(_) | Expr::RangeExpr(_) => true,
         Expr::ParenExpr(e) => e.expr().is_some_and(|e| is_hanging_expr(&e)),
-        Expr::PrefixExpr(e) => e.expr().is_some_and(|e| is_hanging_expr(&e)),
-        Expr::RefExpr(e) => e.expr().is_some_and(|e| is_hanging_expr(&e)),
-        Expr::CastExpr(e) => e.expr().is_some_and(|e| is_hanging_expr(&e)),
-        _ => false,
+        expr => unary_operand(expr).is_some_and(|e| is_hanging_expr(&e)),
     }
 }
 
@@ -410,6 +417,12 @@ impl NestedPlainBlocks {
 
     pub fn skip_braces(&self, fmt: &Formatter, frag: Frag) -> Frag {
         Builder::skip_to_token_after(fmt, frag, self.close.clone())
+    }
+
+    /// The innermost block broken, with `tail` as its formatted expression
+    pub fn format_with_tail(&self, fmt: &Formatter, tail: Frag) -> Frag {
+        let block = format_block_expr_with_tail(fmt, self.inner.clone(), Some(tail));
+        self.skip_outer_braces(fmt, block)
     }
 }
 

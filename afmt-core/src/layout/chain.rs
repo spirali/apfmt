@@ -278,22 +278,14 @@ fn lines_after_head(fmt: &Formatter, head: &Frag, lines: &[Frag]) -> (Frag, Opti
     }
     let chain_width = fmt.config().chain_width;
     let short = fmt.min_flat_width(head).is_some_and(|w| w <= chain_width);
-    let first_head = if short {
-        head.clone()
-    } else {
-        fmt.flat(head.clone())
-    };
-    let mut layout = Builder::head_then_lines(fmt, first_head, lines.iter().cloned(), true);
+    let mut layout = Builder::head_then_lines(fmt, head.clone(), lines.iter().cloned(), true);
     let broken_head = fmt.multi_line(head.clone());
     if !short {
         // At the indentation of the head only after a closing delimiter; after a continuation line,
         // they would be left of it (`(a` / `    + b)` / `    .c()`)
         let short_last = fmt.short_last_line(broken_head.clone());
         let unindented = Builder::head_then_lines(fmt, short_last, lines.iter().cloned(), false);
-        let unindented = fmt.weak_preference(unindented, WeakPreference::PREFERRED);
-        let indented =
-            Builder::head_then_lines(fmt, broken_head.clone(), lines.iter().cloned(), true);
-        layout = fmt.alt_frag(fmt.alt_frag(layout, indented), unindented);
+        layout = fmt.alt_frag(layout, fmt.weak_preference(unindented, WeakPreference::PREFERRED));
     }
     let joined = match lines {
         [line] if broken_head.may_end_with_delimiter() => Some(line_after(fmt, broken_head, line)),

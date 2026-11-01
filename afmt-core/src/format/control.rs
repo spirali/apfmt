@@ -9,7 +9,7 @@ use super::expr::{
 };
 use super::expr_list::{ExprItem, format_expr_item};
 use super::pat::pat_layouts;
-use super::stmt::{format_block_expr, format_block_expr_with_tail};
+use super::stmt::format_block_expr;
 use crate::comments::{comments_break_line_after, has_comments};
 use crate::doc::AlignGroup;
 use crate::formatter::Edge::{Operator, Word};
@@ -206,10 +206,7 @@ fn arm_body_layouts(fmt: &Formatter, body: Expr) -> ArmBodyLayouts {
         }
     };
     let block = match &blocks {
-        Some(blocks) => {
-            let block = format_block_expr_with_tail(fmt, blocks.inner.clone(), Some(inner.clone()));
-            blocks.skip_outer_braces(fmt, block)
-        }
+        Some(blocks) => blocks.format_with_tail(fmt, inner.clone()),
         None => format_added_braces(fmt, &node, fmt.keep_together(inner)),
     };
     let same_line = same_line_inner

@@ -7,29 +7,39 @@ use super::expr::{
 };
 use super::generics::format_for_binder;
 use super::item::closure_header_layouts;
-use super::stmt::format_block_expr_with_tail;
 use super::ty::format_ret_type;
 use crate::format::common::push_modifiers;
 use crate::formatter::{Builder, Formatter, Frag};
 use crate::syntax_utils::has_attrs;
 use ra_ap_syntax::AstNode;
-use ra_ap_syntax::ast::{ClosureExpr, Expr};
+use ra_ap_syntax::ast::{BlockExpr, ClosureExpr, Expr};
 
-/// The body without braces: the expression of `{ expr }` (no statements, comments, label or return
-/// type), or a body that is not a plain block; of nested blocks, the innermost
-fn unbraced_closure_body(expr: &ClosureExpr) -> Option<Expr> {
-    let body = expr.body()?;
-    let Expr::BlockExpr(block) = &body else {
-        return Some(body);
+/// The body of a closure, with the plain blocks around it (`{ { ... } }`, see `NestedPlainBlocks`)
+enum ClosureBody {
+    /// Formatted as it is: `unsafe {`, statements, a block after a return type
+    Block(BlockExpr),
+    /// Nested plain blocks around a block with statements: the outer braces are removed
+    InnerBlock(NestedPlainBlocks),
+    /// `{ expr }`, possibly nested: `expr` without braces, or in the innermost braces
+    InBraces(NestedPlainBlocks, Expr),
+    /// Not a block: braces are added if it needs them
+    Expr(Expr),
+}
+
+fn closure_body(expr: &ClosureExpr) -> ClosureBody {
+    let body = expr.body().unwrap();
+    let Expr::BlockExpr(block) = body else {
+        return ClosureBody::Expr(body);
     };
-    if plain_stmt_list(block).is_none() {
-        return Some(body);
+    if plain_stmt_list(&block).is_none() || expr.ret_type().is_some() {
+        return ClosureBody::Block(block);
     }
-    if expr.ret_type().is_some() {
-        return None;
+    let blocks = NestedPlainBlocks::of(block.clone());
+    match single_line_block_expr(&blocks.inner) {
+        Some(inner) => ClosureBody::InBraces(blocks, inner),
+        None if blocks.inner != block => ClosureBody::InnerBlock(blocks),
+        None => ClosureBody::Block(block),
     }
-    let inner = NestedPlainBlocks::of(block.clone()).inner;
-    single_line_block_expr(&inner).or_else(|| (inner != *block).then_some(Expr::BlockExpr(inner)))
 }
 
 /// A body without braces that may span more lines: `|x| unsafe {`, `|x| match x {`, `|| Foo {`;
@@ -102,56 +112,50 @@ fn closure_body_layouts(
         let body = format_expr(fmt, body);
         return (body.clone(), Some(body));
     }
-    let inner = match unbraced_closure_body(expr) {
-        // Braces required, or the body is a block itself: `unsafe {`
-        Some(inner) if inner.syntax() != body.syntax() || !matches!(inner, Expr::BlockExpr(_)) => {
+    let unbraced = |inner: Frag, may_break: bool| {
+        if may_break {
             inner
+        } else {
+            fmt.flat(inner)
         }
-        _ => {
-            let Expr::BlockExpr(block) = body else {
-                unreachable!("checked by `unbraced_closure_body` and above");
-            };
+    };
+    match closure_body(expr) {
+        ClosureBody::Block(block) => {
             let block = format_block_or_inline(fmt, block);
-            return (block.clone(), Some(block));
+            (block.clone(), Some(block))
         }
-    };
-    let may_break = may_break_unbraced(&inner);
-    let inner_node = inner.syntax().clone();
-    let inner_frag = format_expr(fmt, inner);
-    let unbraced = if may_break {
-        inner_frag.clone()
-    } else {
-        fmt.flat(inner_frag.clone())
-    };
-    match body {
-        Expr::BlockExpr(block) => {
-            let blocks = NestedPlainBlocks::of(block);
-            let unbraced = blocks.skip_braces(fmt, unbraced);
-            if blocks.inner.syntax() == &inner_node {
-                return (unbraced.clone(), Some(unbraced));
-            }
+        ClosureBody::InnerBlock(blocks) => {
+            let inner = format_expr(fmt, Expr::BlockExpr(blocks.inner.clone()));
+            let body = blocks.skip_braces(fmt, inner);
+            (body.clone(), Some(body))
+        }
+        ClosureBody::InBraces(blocks, inner) => {
+            let may_break = may_break_unbraced(&inner);
+            let inner = format_expr(fmt, inner);
+            let unbraced = blocks.skip_braces(fmt, unbraced(inner.clone(), may_break));
             if !keep_braces {
-                let braced =
-                    format_block_expr_with_tail(fmt, blocks.inner.clone(), Some(inner_frag));
-                let braced = blocks.skip_outer_braces(fmt, braced);
+                let braced = blocks.format_with_tail(fmt, inner);
                 return (fmt.alt_frag(unbraced, braced), None);
             }
-            let (inline, braced) = inline_and_broken_block(fmt, blocks.inner.clone(), inner_frag);
+            let (inline, braced) = inline_and_broken_block(fmt, blocks.inner.clone(), inner);
             let inline = blocks.skip_outer_braces(fmt, inline);
             let braced = blocks.skip_outer_braces(fmt, braced);
             let all = fmt.alt_frag(unbraced, braced.clone());
             (all, Some(fmt.alt_frag(inline, braced)))
         }
-        _ => {
+        ClosureBody::Expr(inner) => {
+            let may_break = may_break_unbraced(&inner);
+            let node = inner.syntax().clone();
+            let inner = format_expr(fmt, inner);
             // Braces around a body that may break without them cost a split, as in a match arm:
             // `|x| Foo {` rather than `|x| {` / `Foo {`
-            let braced = format_added_braces(fmt, &inner_node, inner_frag);
+            let braced = format_added_braces(fmt, &node, inner.clone());
             let braced = if may_break {
                 fmt.dispreferred(braced)
             } else {
                 braced
             };
-            let all = fmt.alt_frag(unbraced, braced);
+            let all = fmt.alt_frag(unbraced(inner, may_break), braced);
             (all.clone(), Some(all))
         }
     }

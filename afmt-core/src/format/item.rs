@@ -20,8 +20,8 @@ use crate::format::common::{format_lifetime, format_name};
 use crate::formatter::Edge::{Comma, Operator, Tight, Word};
 use crate::formatter::{Builder, Formatter, Frag, NextLine};
 use crate::layout::list::{
-    Delimiters, FlatLimit, Hug, ListItem, ListLayout, Overflow, TrailingSeparator,
-    aligned_list_with_tail, delimited_list, flat_layout, list_items, list_items_cast,
+    Delimiters, FlatLimit, Hug, ListItem, ListLayout, TrailingSeparator, aligned_list_with_tail,
+    delimited_list, flat_layout, hug_last_item, list_items, list_items_cast,
 };
 use crate::syntax_utils::has_attrs;
 use ra_ap_syntax::ast::{
@@ -86,10 +86,10 @@ pub(super) fn closure_header_layouts(
     param_list: ParamList,
     ret_type: Option<Frag>,
 ) -> (Option<Frag>, Option<Frag>) {
-    let mut param_nodes = param_list.params();
-    let single = param_nodes.next().filter(|_| param_nodes.next().is_none());
-    let hugged = single.as_ref().is_some_and(is_hugged_closure_param);
+    let hug = closure_param_hug(&param_list.params().collect::<Vec<_>>());
+    let hugged = hug == Hug::Only;
     let mut params = param_items(fmt, &param_list);
+    hug_last_item(&mut params, hug);
     let delims = Delimiters::pipes_of(param_list.syntax());
     let with_ret_type = |params: Frag| match &ret_type {
         Some(ret_type) => {
@@ -103,9 +103,6 @@ pub(super) fn closure_header_layouts(
     if params.is_empty() {
         return (Some(with_ret_type(delims.format_empty(fmt))), None);
     }
-    if hugged {
-        params[0].overflow = Overflow::Only(params[0].frag.clone());
-    }
     let flat = flat_layout(
         fmt,
         &delims,
@@ -116,7 +113,7 @@ pub(super) fn closure_header_layouts(
     .map(|flat| with_ret_type(delims.wrap_body(fmt, flat)));
     // A single flat parameter is the same broken, unless hugged; one that cannot be flat has only
     // broken layouts
-    if single.is_some() && !hugged && flat.is_some() {
+    if params.len() == 1 && !hugged && flat.is_some() {
         return (flat, None);
     }
     let broken = match &ret_type {
@@ -134,8 +131,16 @@ pub(super) fn closure_header_layouts(
     (flat, Some(broken))
 }
 
-/// A single closure parameter hugged by the pipes, as rustfmt: a tuple-like pattern (`|(` / `
-/// a,` / `)|`) or a typed one (`|res: Result<` / `    Vec<u8>,` / `>|`); not a struct pattern
+/// A single closure parameter hugged by the pipes (see `is_hugged_closure_param`)
+fn closure_param_hug(params: &[Param]) -> Hug {
+    match params {
+        [param] if is_hugged_closure_param(param) => Hug::Only,
+        _ => Hug::Never,
+    }
+}
+
+/// As rustfmt: a tuple-like pattern (`|(` / `    a,` / `)|`) or a typed one (`|res: Result<` /
+/// `    Vec<u8>,` / `>|`); not a struct pattern
 fn is_hugged_closure_param(param: &Param) -> bool {
     let mut pat = param.pat();
     while let Some(Pat::RefPat(ref_pat)) = &pat {
@@ -652,16 +657,23 @@ fn trait_header(
     head_colon.push_token(colon, Comma);
     let head_colon = head_colon.into_frag();
     let flat_bounds = Builder::concat(fmt, [head_colon.clone(), fmt.flat(bounds.clone())]);
-    let mut broken = Builder::new(fmt);
-    broken.push(head_colon);
-    broken.push(fmt.indented_line(bounds));
-    if block_follows {
-        broken.push_newline();
-    }
     fmt.alt_frag(
         fmt.ends_line_if_broken(flat_bounds, block_follows),
-        broken.into_frag(),
+        broken_header(fmt, head_colon, &[bounds], block_follows),
     )
+}
+
+/// `first`, then each of `lines` on an indented line; `{` of `block_follows` on its own line
+fn broken_header(fmt: &Formatter, first: Frag, lines: &[Frag], block_follows: bool) -> Frag {
+    let mut builder = Builder::new(fmt);
+    builder.push(first);
+    for line in lines {
+        builder.push(fmt.indented_line(line.clone()));
+    }
+    if block_follows {
+        builder.push_newline();
+    }
+    builder.into_frag()
 }
 
 /// `{ items }` of a module, an impl, a trait or an extern block, with the inner attributes
@@ -769,17 +781,8 @@ fn impl_header(
     // `for` none (rustfmt's order)
     let joined = fmt.keep_together_with(joined, Cost::splits(2));
     let joined = fmt.ends_line_if_broken(joined, block_follows);
-    let broken = |first: Frag, lines: &[Frag]| {
-        let mut builder = Builder::new(fmt);
-        builder.push(fmt.flat(first));
-        for line in lines {
-            builder.push(fmt.indented_line(line.clone()));
-        }
-        if block_follows {
-            builder.push_newline();
-        }
-        builder.into_frag()
-    };
+    let broken =
+        |first: Frag, lines: &[Frag]| broken_header(fmt, fmt.flat(first), lines, block_follows);
     let after_generics = fmt.dispreferred(broken(head.clone(), &[rest]));
     let layouts = match trait_ {
         Some(trait_) => {
@@ -940,4 +943,38 @@ pub(super) fn format_item(fmt: &Formatter, item: Item) -> Frag {
         Item::MacroRules(item) => format_macro_rules(fmt, &item),
         item => format_unsupported_kind(fmt, item.syntax()),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Hug, closure_param_hug};
+    use ra_ap_syntax::ast::ClosureExpr;
+    use ra_ap_syntax::{AstNode, Edition, SourceFile};
+
+    fn hug(header: &str) -> Hug {
+        let source = format!("fn f() {{ let _ = {header} x; }}");
+        let parse = SourceFile::parse(&source, Edition::Edition2024);
+        let closure = (parse.syntax_node().descendants())
+            .find_map(ClosureExpr::cast)
+            .unwrap();
+        closure_param_hug(&closure.param_list().unwrap().params().collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn closure_param_hugs() {
+        use Hug::{Never, Only};
+        for (header, expected) in [
+            ("|a|", Never),
+            ("|(a, b)|", Only),
+            ("|&(a, b)|", Only),
+            ("|[a, b]|", Only),
+            ("|Foo(a)|", Only),
+            ("|a: T|", Only),
+            ("|Foo { a }|", Never),
+            ("|a, (b, c)|", Never),
+            ("|#[attr] (a, b)|", Never),
+        ] {
+            assert_eq!(hug(header), expected, "{header}");
+        }
+    }
 }
