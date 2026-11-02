@@ -30,6 +30,17 @@ impl HeadLayouts {
         }
     }
 
+    /// What may follow only the single line of `other`, e.g. `else {` after `f(` / `    a,` / `)?`
+    pub fn other_hanging_when_broken(self, fmt: &Formatter) -> Self {
+        let Some(other) = self.other else {
+            return self;
+        };
+        HeadLayouts {
+            hanging: fmt.alt_some(self.hanging, Some(fmt.multi_line(other.clone()))),
+            other: Some(fmt.flat(other)),
+        }
+    }
+
     pub fn map(self, f: impl Fn(Frag) -> Frag) -> Self {
         HeadLayouts {
             hanging: self.hanging.map(&f),

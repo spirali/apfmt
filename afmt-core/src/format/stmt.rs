@@ -49,7 +49,16 @@ fn format_let_stmt(fmt: &Formatter, stmt: LetStmt) -> Frag {
                 .flatten();
             let else_keyword = fmt.token(let_else.else_token().unwrap(), Word);
             let eq = fmt.token(eq_token, Operator);
-            let init = format_head_expr(fmt, init);
+            // `else {` follows only closing delimiters (Style Guide), unlike `{` of a control flow
+            // head after `)?`
+            let ends_with_try = init
+                .syntax()
+                .last_token()
+                .is_some_and(|token| token.kind() == SyntaxKind::QUESTION);
+            let mut init = format_head_expr(fmt, init);
+            if ends_with_try {
+                init = init.other_hanging_when_broken(fmt);
+            }
             if let (Some(tail), Some(init)) = (tail.clone(), init.other.clone()) {
                 let mut flat = builder.clone();
                 flat.push(lhs.clone());
