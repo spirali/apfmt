@@ -326,7 +326,16 @@ impl<'a> Builder<'a> {
         self.flush_trivia();
         self.frag.cursor = Some(token.clone());
         self.push_trivia(None, TriviaStop::OwnLine);
+        self.frag.cursor = None;
         Some(end)
+    }
+
+    /// Pushes the comments ending their lines after `token`, a source token placed after them
+    /// (`a &&` / `// c` / `b` as `// c` / `&& b`); returns the last one, the cursor `token` then takes
+    pub fn push_comments_ending_lines_after(&mut self, token: &SyntaxToken) -> Option<SyntaxToken> {
+        self.frag.cursor = Some(token.clone());
+        self.push_trivia(None, TriviaStop::EndingLine);
+        self.frag.cursor.take().filter(|end| end != token)
     }
 
     /// Pushes the comments after the cursor if nothing else follows on its line (`( // c`); returns

@@ -211,6 +211,8 @@ pub(crate) fn starts_on_line_of_previous_token(token: &SyntaxToken) -> bool {
 pub(crate) enum TriviaStop {
     Code,
     OwnLine,
+    /// In front of a comment followed by code on its line (`/* c */ b`)
+    EndingLine,
     /// Right after the separator; comments behind it, or behind its place if the source has none,
     /// are left
     Separator,
@@ -245,7 +247,12 @@ pub(crate) fn trivia_end(
                     break;
                 }
                 let starts_line = newlines > 0 || (is_outer_doc_comment(&t) && separator.is_none());
-                if starts_line && stop != TriviaStop::Code {
+                let stops = match stop {
+                    TriviaStop::Code => false,
+                    TriviaStop::EndingLine => !rest_of_line_is_comments(&t, None),
+                    TriviaStop::OwnLine | TriviaStop::Separator => starts_line,
+                };
+                if stops {
                     break;
                 }
                 newlines = 0;

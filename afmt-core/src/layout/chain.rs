@@ -48,8 +48,9 @@ pub(crate) fn operator_chain(
     operator_operands(fmt, first.expect("an operand"), rest)
 }
 
-/// The operands with their operators for `infix_chain`. Comments ending the line of an operator end
-/// the operand in front of it, since a broken chain starts the next line with the operator.
+/// The operands with their operators for `infix_chain`; a broken chain starts a line with the
+/// operator, so comments behind it move in front of it: those ending its line end the operand before
+/// it, later ones get their own lines.
 pub(crate) fn operator_operands(
     fmt: &Formatter,
     first: Frag,
@@ -59,14 +60,20 @@ pub(crate) fn operator_operands(
     let mut operators = Vec::new();
     for (op, operand) in rest {
         let mut operator = fmt.token(op.clone(), Operator);
+        let mut last_comment = op.clone();
         if comments_ending_line_end(&op) != op {
             let mut previous = Builder::new(fmt);
             previous.push(operands.pop().unwrap());
-            let last_comment = previous.push_comments_ending_line_of(&op).unwrap();
+            last_comment = previous.push_comments_ending_line_of(&op).unwrap();
             operands.push(previous.into_frag());
-            operator = operator.with_cursor(last_comment);
         }
-        operators.push(operator);
+        let mut lines = Builder::new(fmt);
+        if let Some(comment) = lines.push_comments_ending_lines_after(&last_comment) {
+            lines.push_on_new_line(operator);
+            operator = lines.into_frag();
+            last_comment = comment;
+        }
+        operators.push(operator.with_cursor(last_comment));
         operands.push(operand);
     }
     let first = operands.remove(0);
@@ -93,7 +100,7 @@ pub(crate) fn short_first_operand(
     operand: &Frag,
     max_width: u32,
 ) -> Option<Frag> {
-    if first.comment_follows() || op.comment_follows() {
+    if first.comment_follows() || op.comment_follows() || op.starts_with_comment() {
         return None;
     }
     let first = fmt.flat_within(first.clone(), max_width)?;
@@ -112,7 +119,7 @@ pub(crate) fn flat_operands_then_last(
         fmt,
         std::iter::once(first.clone()).chain(operator_lines(fmt, front)),
     );
-    if front.comment_follows() || op.comment_follows() {
+    if front.comment_follows() || op.comment_follows() || op.starts_with_comment() {
         return None;
     }
     let front = fmt.flat_if_possible(front)?;
@@ -302,7 +309,8 @@ fn vertical_lines(fmt: &Formatter, head: &Frag, lines: &[Frag]) -> Frag {
     for k in 0..=lines.len() {
         let layout = Builder::head_then_lines(fmt, head.clone(), lines[k..].iter().cloned(), true);
         layouts = Some(fmt.alt_opt(layout, layouts));
-        if k == lines.len() {
+        // A line starting with a comment (`// c` / `&& b`) stays on its own
+        if k == lines.len() || lines[k].starts_with_comment() {
             break;
         }
         // The head may take the next line only after a closing delimiter, broken only where it does

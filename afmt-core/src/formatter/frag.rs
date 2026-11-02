@@ -75,6 +75,10 @@ impl Frag {
         self.branches.iter().any(|b| b.end.is_closing())
     }
 
+    pub fn starts_with_comment(&self) -> bool {
+        self.branches.iter().any(|b| b.start == Edge::Comment)
+    }
+
     pub fn comment_follows(&self) -> bool {
         self.cursor.as_ref().is_some_and(comment_follows)
     }
