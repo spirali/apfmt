@@ -803,6 +803,8 @@ pub(crate) fn delimited_list(
     if items.is_empty() {
         return delims.format_empty(fmt);
     }
+    // Limits the items in front of an overflowing last item, also when the list has no single line
+    let overflow_limit = layout.flat.unwrap_or(FlatLimit::MaxWidth);
     // A string spanning lines is not on a single line (Style Guide, as in rustfmt)
     let layout = layout.broken_if(items.iter().any(|item| fmt.has_multi_line_text(&item.frag)));
     let open = Some(delims.open.clone());
@@ -811,9 +813,14 @@ pub(crate) fn delimited_list(
     let overflow = (last_overflow.layouts())
         .filter(|_| !delims.has_own_line_comment() && !delims.has_line_comment_before_close())
         .and_then(|last_layouts| {
-            let limit = layout.flat.unwrap_or(FlatLimit::MaxWidth);
-            let overflow =
-                overflow_layout(fmt, delims, items, last_layouts, limit, layout.trailing)?;
+            let overflow = overflow_layout(
+                fmt,
+                delims,
+                items,
+                last_layouts,
+                overflow_limit,
+                layout.trailing,
+            )?;
             Some(match last_overflow {
                 Overflow::WeakPreference(_) => {
                     fmt.weak_preference(overflow, WeakPreference::PREFERRED)
