@@ -306,7 +306,7 @@ fn format_continue_expr(fmt: &Formatter, expr: ContinueExpr) -> Frag {
 
 /// `let pat = expr` in a condition, with the layouts of the head of `if let`
 fn format_let_expr(fmt: &Formatter, expr: LetExpr) -> Frag {
-    let_head_layouts(fmt, &expr).all(fmt)
+    let_head_layouts(fmt, &expr, false).all(fmt)
 }
 
 /// A broken `a && b` or `a..b`, also in parentheses or under a prefix operator or a cast (`!(a` / `    && b)`),
@@ -601,8 +601,9 @@ fn format_record_expr_field(fmt: &Formatter, field: &RecordExprField) -> Frag {
 }
 
 /// `let pat = expr` of `if let`, `while let` or a let chain; the expression moves after `=` when it
-/// fits there or saves a line (Style Guide), unlike a `let` statement.
-fn let_head_layouts(fmt: &Formatter, expr: &LetExpr) -> HeadLayouts {
+/// fits there or saves a line (Style Guide), unlike a `let` statement. With `flat_next_line`, only
+/// on one line there.
+fn let_head_layouts(fmt: &Formatter, expr: &LetExpr, flat_next_line: bool) -> HeadLayouts {
     let pat = pat_layouts(fmt, expr.pat().unwrap());
     let all_pat = pat.clone().all(fmt);
     let let_token = fmt.keyword(expr.let_token().unwrap());
@@ -611,17 +612,35 @@ fn let_head_layouts(fmt: &Formatter, expr: &LetExpr) -> HeadLayouts {
         |pat: Frag, rhs: Frag| Builder::concat(fmt, [let_token.clone(), pat, eq.clone(), rhs]);
     let rhs = format_head_expr(fmt, expr.expr().unwrap()).map(|frag| fmt.keep_together(frag));
     let HeadLayouts { hanging, other } = pattern_head(fmt, &pat, &all_pat, &rhs, with_pat);
-    let next_line = Builder::concat(
-        fmt,
-        [
-            let_token.clone(),
-            all_pat,
-            eq.clone(),
-            fmt.indented_line(rhs.all(fmt)),
-        ],
-    );
-    let hanging = fmt.alt_some(hanging, Some(next_line));
+    let rhs = rhs.all(fmt);
+    let next_line = if flat_next_line {
+        fmt.flat_if_possible(rhs)
+    } else {
+        Some(rhs)
+    }
+    .map(|rhs| {
+        Builder::concat(
+            fmt,
+            [
+                let_token.clone(),
+                all_pat,
+                eq.clone(),
+                fmt.indented_line(rhs),
+            ],
+        )
+    });
+    let hanging = fmt.alt_some(hanging, next_line);
     HeadLayouts { hanging, other }
+}
+
+/// The condition of a match arm guard: a `let` moves after `=` only if it then fits on one line
+pub(super) fn format_guard_condition(fmt: &Formatter, expr: Expr) -> Frag {
+    match &expr {
+        Expr::LetExpr(let_expr) if !has_attrs(let_expr) => {
+            let_head_layouts(fmt, let_expr, true).all(fmt)
+        }
+        _ => format_expr(fmt, expr),
+    }
 }
 
 /// A let chain that the Style Guide breaks before every `&&`: not just a simple operand and a `let`
@@ -649,7 +668,7 @@ pub(super) fn format_head_expr(fmt: &Formatter, expr: Expr) -> HeadLayouts {
         return postfix_chain_parts(fmt, expr).layouts;
     }
     if let Expr::LetExpr(let_expr) = &expr {
-        return let_head_layouts(fmt, let_expr);
+        return let_head_layouts(fmt, let_expr, false);
     }
     // `!a.b()`, `&a.b()`, `a.b() as T`, `(a.b())`: hangs as the chain does
     if let Some(chain) = operand_chain_in_parens(&expr) {

@@ -5,7 +5,8 @@ use super::chain::operand_chain;
 use super::common::push_label;
 use super::expr::{
     ExprPosition, NestedPlainBlocks, format_added_braces, format_expr, format_expr_at,
-    format_head_expr, format_head_with_block, plain_stmt_list, single_line_block_expr,
+    format_guard_condition, format_head_expr, format_head_with_block, plain_stmt_list,
+    single_line_block_expr,
 };
 use super::expr_list::{ExprItem, format_expr_item};
 use super::pat::pat_layouts;
@@ -232,7 +233,7 @@ fn format_match_arm(fmt: &Formatter, arm: &MatchArm, group: Option<AlignGroup>) 
     let pat = pat_layouts(fmt, arm.pat().unwrap());
     let all_pat = pat.clone().all(fmt);
     let guard = arm.guard().map(|guard| {
-        let condition = format_expr(fmt, guard.condition().unwrap());
+        let condition = format_guard_condition(fmt, guard.condition().unwrap());
         Builder::concat(
             fmt,
             [
