@@ -455,6 +455,11 @@ impl<'a> Formatter<'a> {
         self.has_flat_layout(&frag).then(|| self.flat(frag))
     }
 
+    /// Only layouts whose last line leaves `room` columns, for text that always follows on it
+    pub fn room_after(&self, frag: Frag, room: u32) -> Frag {
+        self.wrap(frag, |d| DocNode::RoomAfter(d, room))
+    }
+
     /// On a single line where it fits with `room` columns left after it, otherwise in any layout,
     /// whatever what follows could gain (`DocNode::Fallback`)
     pub fn flat_where_fits(&self, frag: Frag, room: u32) -> Frag {

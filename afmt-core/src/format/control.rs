@@ -98,6 +98,20 @@ pub(super) fn format_match_expr(fmt: &Formatter, expr: MatchExpr) -> Frag {
     format_head_with_block(fmt, expr.match_token().unwrap(), &head, arms)
 }
 
+/// All layouts of a `match`, and those with `head {` on one line (`None` if it cannot be)
+pub(super) fn match_expr_layouts(fmt: &Formatter, expr: &MatchExpr) -> (Frag, Option<Frag>) {
+    let (head, arms) = match_expr_parts(fmt, expr);
+    let keyword = expr.match_token().unwrap();
+    let flat_head = head.other.clone().map(|other| {
+        let mut builder = Builder::new(fmt);
+        builder.push_keyword(keyword.clone());
+        builder.push(fmt.room_after(fmt.flat(other), " {".len() as u32));
+        builder.push(arms.clone());
+        builder.into_frag()
+    });
+    (format_head_with_block(fmt, keyword, &head, arms), flat_head)
+}
+
 fn match_expr_parts(fmt: &Formatter, expr: &MatchExpr) -> (HeadLayouts, Frag) {
     let head = format_head_expr(fmt, expr.expr().unwrap());
     let list = expr.match_arm_list().unwrap();
@@ -162,17 +176,11 @@ fn arm_body_layouts(fmt: &Formatter, body: Expr) -> ArmBodyLayouts {
     let (inner, same_line_inner) = match &expr {
         // A `match` on the line of `=>` with its head on one line
         Expr::MatchExpr(match_expr) if !has_attrs(match_expr) => {
-            let (head, arms) = match_expr_parts(fmt, match_expr);
-            let keyword = match_expr.match_token().unwrap();
-            let flat_head = head.other.clone().map(|other| {
-                let mut builder = Builder::new(fmt);
-                builder.push_keyword(keyword.clone());
-                builder.push(fmt.flat(other));
-                builder.push(arms.clone());
-                fmt.keep_together(builder.into_frag())
-            });
-            let inner = format_head_with_block(fmt, keyword, &head, arms);
-            (fmt.keep_together(inner), flat_head)
+            let (inner, flat_head) = match_expr_layouts(fmt, match_expr);
+            (
+                fmt.keep_together(inner),
+                flat_head.map(|flat_head| fmt.keep_together(flat_head)),
+            )
         }
         // `if` here is in a block: it gets the layouts of a statement
         Expr::BlockExpr(_) | Expr::IfExpr(_) => {

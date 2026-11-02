@@ -1,6 +1,7 @@
 //! Closures
 
 use super::attr::debug_assert_attrs_placed;
+use super::control::match_expr_layouts;
 use super::expr::{
     NestedPlainBlocks, format_added_braces, format_block_or_inline, format_expr,
     inline_and_broken_block, plain_stmt_list, single_line_block_expr,
@@ -131,17 +132,32 @@ fn closure_body_layouts(
         }
         ClosureBody::InBraces(blocks, inner) => {
             let may_break = may_break_unbraced(&inner);
-            let inner = format_expr(fmt, inner);
-            let unbraced = blocks.skip_braces(fmt, unbraced(inner.clone(), may_break));
+            // Removing the braces does not break the head of a `match`: without them, the next
+            // pass would not offer the layouts that the braces allow here (see `overflow_layout`)
+            let (inner, without_braces) = match &inner {
+                Expr::MatchExpr(match_expr) if !has_attrs(match_expr) => {
+                    match_expr_layouts(fmt, match_expr)
+                }
+                _ => {
+                    let inner = format_expr(fmt, inner);
+                    let without_braces = unbraced(inner.clone(), may_break);
+                    (inner, Some(without_braces))
+                }
+            };
+            let unbraced = without_braces.map(|inner| blocks.skip_braces(fmt, inner));
             if !keep_braces {
                 let braced = blocks.format_with_tail(fmt, inner);
-                return (fmt.alt_frag(unbraced, braced), None);
+                let all = fmt.alt_some(unbraced, Some(braced));
+                return (all.expect("braces have a layout"), None);
             }
             let (inline, braced) = inline_and_broken_block(fmt, blocks.inner.clone(), inner);
             let inline = blocks.skip_outer_braces(fmt, inline);
             let braced = blocks.skip_outer_braces(fmt, braced);
-            let all = fmt.alt_frag(unbraced, braced.clone());
-            (all, Some(fmt.alt_frag(inline, braced)))
+            let all = fmt.alt_some(unbraced, Some(braced.clone()));
+            (
+                all.expect("braces have a layout"),
+                Some(fmt.alt_frag(inline, braced)),
+            )
         }
         ClosureBody::Expr(inner) => {
             let may_break = may_break_unbraced(&inner);
