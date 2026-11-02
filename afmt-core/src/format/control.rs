@@ -275,6 +275,9 @@ fn format_match_arm(fmt: &Formatter, arm: &MatchArm, group: Option<AlignGroup>) 
             Builder::concat(fmt, [guard, arrow])
         };
         let mut broken = Builder::concat(fmt, [all_pat, fmt.indented_line(guard.clone())]);
+        // After a multi-line pattern ending with closing delimiters, the guard stays on that line
+        // (Style Guide: "do not put the `if` clause on a new line"): `} if g(` / `    a,` / `) =>`
+        let closing_pat = (pat.other.clone()).and_then(|other| fmt.closing_last_line(other));
         // After a pattern not wider than the indent, the broken guard stays on its line where it
         // fits (`_ if a` / `    || b =>`), as in rustfmt and as the Style Guide does after `}`
         let flat_pat = pat.other.filter(|other| {
@@ -282,8 +285,12 @@ fn format_match_arm(fmt: &Formatter, arm: &MatchArm, group: Option<AlignGroup>) 
                 .is_some_and(|width| width <= fmt.config().tab_spaces)
         });
         if let Some(flat_pat) = flat_pat {
-            let short = Builder::concat(fmt, [flat_pat, fmt.multi_line(guard)]);
+            let short = Builder::concat(fmt, [flat_pat, fmt.multi_line(guard.clone())]);
             broken = fmt.fits_or(short, 0, broken);
+        }
+        if let Some(closing_pat) = closing_pat {
+            let short = Builder::concat(fmt, [closing_pat, fmt.multi_line(guard)]);
+            broken = fmt.alt_frag(broken, short);
         }
         let body = if empty_block {
             Frag::empty()
