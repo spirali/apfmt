@@ -2,6 +2,7 @@
 //! imports. The result is parsed again and formatted like any other source.
 
 mod empty_stmts;
+mod empty_where;
 mod imports;
 mod sort;
 
@@ -17,6 +18,7 @@ pub(crate) fn rewrite_source(file: &SourceFile, source: &str) -> Option<String> 
         .filter(|(range, _)| !in_imports(range))
         .collect();
     edits.extend(empty_stmts);
+    edits.extend(empty_where::empty_where_edits(file, source));
     apply_edits(source, edits)
 }
 

@@ -1,6 +1,7 @@
 use crate::comments::{is_code_kind, is_comment_kind};
 use crate::syntax_utils::{
-    MacroArgs, MacroRule, Placeholders, Reparsed, is_brace_macro, is_stray_semicolon, line_column,
+    MacroArgs, MacroRule, Placeholders, Reparsed, is_brace_macro, is_empty_where_clause,
+    is_stray_semicolon, line_column,
     macro_rules_rules, parse_macro_args, parse_transcriber, trailing_jump_stmt,
 };
 use ra_ap_syntax::ast::{self, HasAttrs, HasVisibility, Use, UseTree};
@@ -147,6 +148,9 @@ fn push_steps(
             }
             // `break;` is compared as the tail expression `break`, its `;` dropped
             WalkEvent::Enter(NodeOrToken::Node(node)) if is_trailing_jump_stmt(&node) => {
+                transparent.push(node);
+            }
+            WalkEvent::Enter(NodeOrToken::Node(node)) if is_empty_where_clause(&node) => {
                 transparent.push(node);
             }
             WalkEvent::Enter(NodeOrToken::Node(node))
@@ -465,6 +469,25 @@ mod tests {
         let input = "fn f() { ;; g();; /* a */ ; // b\n}";
         let output = "fn f() {\n    g(); /* a */ // b\n}";
         assert!(check_result_test(input, output).is_ok());
+    }
+
+    #[test]
+    fn removed_empty_where_passes() {
+        let input = "fn f() where {}\nstruct S where;";
+        let output = "fn f() {}\nstruct S;";
+        assert!(check_result_test(input, output).is_ok());
+    }
+
+    #[test]
+    fn removed_where_with_predicate_fails() {
+        let error = check_result_test("fn f() where T: C {}", "fn f() {}").unwrap_err();
+        assert!(error.contains("differs"), "{error}");
+    }
+
+    #[test]
+    fn removed_where_before_comment_fails() {
+        let result = check_result_test("fn f() where /* c */ {}", "fn f() /* c */ {}");
+        assert!(result.is_err());
     }
 
     #[test]
