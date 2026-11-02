@@ -20,12 +20,13 @@ pub use crate::config::{Config, NewlineStyle};
 use crate::format::format_source_file;
 use crate::formatter::{Builder, Formatter, Unsupported};
 use crate::rewrite::rewrite_source;
-use crate::syntax_utils::line_column;
+use crate::syntax_utils::LineColumns;
 pub use config::cargo::{CARGO_MANIFEST_NAME, find_cargo_manifest};
 pub use error::{Error, Result, UnsupportedSyntax};
 pub use ra_ap_syntax::Edition;
 use ra_ap_syntax::{AstNode, WalkEvent};
 use ra_ap_syntax::{NodeOrToken, SourceFile};
+use std::borrow::Cow;
 
 pub use crate::config::source::{ConfigOptions, config_for_source};
 pub use crate::modules::{ModuleFiles, module_files};
@@ -77,23 +78,30 @@ fn parse_source_code(config: &Config, code: &str) -> Result<SourceFile> {
     Ok(parse.tree())
 }
 
-/// The parsed source and the tree to format: the source after the rewrites, parsed again if changed
-fn prepare_source_code(config: &Config, code: &str) -> Result<(SourceFile, SourceFile)> {
+/// The parsed source, the tree to format and its text: the source after the rewrites, parsed again
+/// if changed
+fn prepare_source_code<'a>(
+    config: &Config,
+    code: &'a str,
+) -> Result<(SourceFile, SourceFile, Cow<'a, str>)> {
     let file = parse_source_code(config, code)?;
-    let prepared = match rewrite_source(&file, code) {
-        Some(rewritten) => parse_source_code(config, &rewritten).map_err(|error| {
-            Error::GenericError(format!("Rewriting the source broke the code: {error:?}"))
-        })?,
-        None => file.clone(),
+    let (prepared, text) = match rewrite_source(&file, code) {
+        Some(rewritten) => {
+            let prepared = parse_source_code(config, &rewritten).map_err(|error| {
+                Error::GenericError(format!("Rewriting the source broke the code: {error:?}"))
+            })?;
+            (prepared, Cow::Owned(rewritten))
+        }
+        None => (file.clone(), Cow::Borrowed(code)),
     };
     if config.dump_parse_tree {
         print_tree(&prepared);
     }
-    Ok((file, prepared))
+    Ok((file, prepared, text))
 }
 
 pub fn doc_graph_to_dot(config: &Config, code: &str) -> Result<String> {
-    let (_, file) = prepare_source_code(config, code)?;
+    let (_, file, _) = prepare_source_code(config, code)?;
     let fmt = Formatter::new(config);
     let mut chunks = Vec::new();
     format_source_file(&fmt, &file, |chunk| chunks.push(chunk));
@@ -108,20 +116,14 @@ pub struct Formatted {
 }
 
 /// In source order; a node in more layouts is listed once
-fn locate_unsupported(
-    source: &SourceFile,
-    mut unsupported: Vec<Unsupported>,
-) -> Vec<UnsupportedSyntax> {
-    if unsupported.is_empty() {
-        return Vec::new();
-    }
-    let source = source.syntax().to_string();
+fn locate_unsupported(source: &str, mut unsupported: Vec<Unsupported>) -> Vec<UnsupportedSyntax> {
     unsupported.sort_by_key(|u| (u.range.start(), u.range.end()));
     unsupported.dedup_by_key(|u| u.range);
+    let mut line_columns = LineColumns::new(source);
     unsupported
         .into_iter()
         .map(|u| {
-            let (line, column) = line_column(&source, u.range.start());
+            let (line, column) = line_columns.at(u.range.start());
             UnsupportedSyntax {
                 line,
                 column,
@@ -141,7 +143,7 @@ fn locate_unsupported(
 pub fn format_source_code(config: &Config, code: &str) -> Result<Formatted> {
     let source = code;
     let code = &*code.replace("\r\n", "\n");
-    let (file, prepared) = prepare_source_code(config, code)?;
+    let (file, prepared, prepared_text) = prepare_source_code(config, code)?;
 
     let fmt = Formatter::new(config);
     let mut out = String::with_capacity(code.len() * 2);
@@ -152,7 +154,7 @@ pub fn format_source_code(config: &Config, code: &str) -> Result<Formatted> {
         }
         fmt.render_into(chunk, &mut out);
     });
-    let unsupported = locate_unsupported(&prepared, fmt.take_unsupported());
+    let unsupported = locate_unsupported(&prepared_text, fmt.take_unsupported());
     if !unsupported.is_empty() && !config.allow_unsupported {
         return Err(Error::Unsupported(unsupported));
     }

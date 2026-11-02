@@ -432,10 +432,61 @@ fn fragment_specifiers(matcher: &ast::TokenTree) -> FxHashMap<String, String> {
 
 /// Both from 1, the column in characters
 pub(crate) fn line_column(code: &str, offset: TextSize) -> (usize, usize) {
-    let before = &code[..usize::from(offset).min(code.len())];
-    let line_start = before.rfind('\n').map_or(0, |i| i + 1);
-    (
-        before.matches('\n').count() + 1,
-        before[line_start..].chars().count() + 1,
-    )
+    LineColumns::new(code).at(offset)
+}
+
+/// `line_column` of ascending offsets, each scanning only the text after the previous one
+pub(crate) struct LineColumns<'a> {
+    code: &'a str,
+    scanned: usize,
+    line: usize,
+    line_start: usize,
+}
+
+impl<'a> LineColumns<'a> {
+    pub fn new(code: &'a str) -> Self {
+        LineColumns {
+            code,
+            scanned: 0,
+            line: 1,
+            line_start: 0,
+        }
+    }
+
+    pub fn at(&mut self, offset: TextSize) -> (usize, usize) {
+        let offset = usize::from(offset).min(self.code.len());
+        let text = &self.code[self.scanned..offset];
+        self.line += text.matches('\n').count();
+        if let Some(i) = text.rfind('\n') {
+            self.line_start = self.scanned + i + 1;
+        }
+        self.scanned = offset;
+        (self.line, self.code[self.line_start..offset].chars().count() + 1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn line_columns_of_ascending_offsets() {
+        let code = "aé\n\nbc\nd";
+        let mut line_columns = LineColumns::new(code);
+        // Repeated, then in the same line, then lines further, the last past the end
+        for (offset, expected) in [
+            (0, (1, 1)),
+            (0, (1, 1)),
+            (3, (1, 3)),
+            (4, (2, 1)),
+            (5, (3, 1)),
+            (6, (3, 2)),
+            (8, (4, 1)),
+            (100, (4, 2)),
+        ] {
+            let offset = TextSize::new(offset);
+            assert_eq!(line_columns.at(offset), expected, "{offset:?}");
+            assert_eq!(line_column(code, offset), expected, "{offset:?}");
+        }
+    }
 }
