@@ -2,7 +2,7 @@
 
 use super::expr::format_expr;
 use super::path::format_path;
-use crate::comments::{has_comments, is_code_kind};
+use crate::comments::{has_comments, is_code_kind, starts_on_line_of_previous_token};
 use crate::formatter::Edge::{Operator, Tight, Word};
 use crate::formatter::{Builder, Formatter, Frag};
 use crate::layout::list::{
@@ -249,7 +249,7 @@ fn format_token_list(fmt: &Formatter, tree: TokenTree, fill_paths: bool) -> Frag
     let Some(segments) = meta_segments(&tree) else {
         return Delimiters::of_token_tree(&tree).format_reindented(fmt);
     };
-    let hug = token_list_hug(&segments);
+    let hug = token_list_hug(&segments, fmt.config().max_width);
     let fill = fill_paths && segments.iter().all(|(segment, _)| is_path_segment(segment));
     let items = segments
         .into_iter()
@@ -261,8 +261,8 @@ fn format_token_list(fmt: &Formatter, tree: TokenTree, fill_paths: bool) -> Frag
     format_meta_list(fmt, tree.syntax(), items, hug, fill)
 }
 
-/// A single `a(...)`
-fn token_list_hug(segments: &[MetaSegment]) -> Hug {
+/// A single `a(...)`, or a single string spanning lines that hugs as in the source
+fn token_list_hug(segments: &[MetaSegment], max_width: u32) -> Hug {
     match segments {
         [(segment, _)]
             if segment
@@ -271,8 +271,24 @@ fn token_list_hug(segments: &[MetaSegment]) -> Hug {
         {
             Hug::Allowed
         }
+        [(segment, _)] if is_hugging_string_segment(segment) => {
+            let text = segment.last().map(|e| e.to_string()).unwrap_or_default();
+            Hug::of_string(&text, max_width)
+        }
         _ => Hug::Never,
     }
+}
+
+/// `"..."` or `name = "..."` spanning lines, starting on the line of `(` (`is_hugging_string`)
+fn is_hugging_string_segment(segment: &[SyntaxElement]) -> bool {
+    let is_multi_line_string = segment.last().and_then(|e| e.as_token()).is_some_and(|t| {
+        matches!(
+            t.kind(),
+            SyntaxKind::STRING | SyntaxKind::BYTE_STRING | SyntaxKind::C_STRING
+        ) && t.text().contains('\n')
+    });
+    is_multi_line_string
+        && (segment.first().and_then(|e| e.as_token())).is_some_and(starts_on_line_of_previous_token)
 }
 
 /// Without trivia, with the comma following it
@@ -381,14 +397,14 @@ mod tests {
             .find(|n| matches!(n.kind(), SyntaxKind::CFG_COMPOSITE | SyntaxKind::TOKEN_TREE))
             .unwrap();
         match TokenTree::cast(list.clone()) {
-            Some(tree) => token_list_hug(&meta_segments(&tree).unwrap()),
+            Some(tree) => token_list_hug(&meta_segments(&tree).unwrap(), 20),
             None => cfg_list_hug(&list),
         }
     }
 
     #[test]
     fn last_meta_hugs() {
-        use Hug::{Allowed, Never};
+        use Hug::{Allowed, Never, Only, Preferred};
         for (attr, expected) in [
             ("#[cfg(not(a))]", Never),
             ("#[cfg(all(a, b))]", Never),
@@ -400,6 +416,14 @@ mod tests {
             ("#[allow(a, b)]", Never),
             ("#[serde(rename(serialize = \"a\"))]", Allowed),
             ("#[serde(a, rename(b))]", Never),
+            ("#[a(\"b\nc\")]", Preferred),
+            ("#[a(b = \"c\nd\")]", Preferred),
+            ("#[a(b = r#\"c\nd\"#)]", Preferred),
+            ("#[a(\nb = \"c\nd\")]", Never),
+            ("#[a(\n\"b\nc\")]", Never),
+            ("#[a(b = \"c\")]", Never),
+            ("#[a(b = \"c\n1234567890123456789\")]", Only),
+            ("#[a(b, c = \"d\ne\")]", Never),
         ] {
             assert_eq!(hug(attr), expected, "{attr}");
         }

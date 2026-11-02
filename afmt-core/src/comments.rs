@@ -200,6 +200,13 @@ pub(crate) fn prev_code_token(token: &SyntaxToken) -> Option<SyntaxToken> {
     std::iter::successors(token.prev_token(), |t| t.prev_token()).find(|t| is_code_kind(t.kind()))
 }
 
+/// Only spaces between it and the code token before it
+pub(crate) fn starts_on_line_of_previous_token(token: &SyntaxToken) -> bool {
+    let previous = prev_code_token(token);
+    trivia_from(previous.and_then(|t| t.next_token()))
+        .all(|t| t.kind() == SyntaxKind::WHITESPACE && !t.text().contains('\n'))
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TriviaStop {
     Code,

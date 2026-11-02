@@ -6,7 +6,7 @@ use super::expr::{format_expr, unary_operand};
 use super::macros::{
     is_array_macro, is_copied_macro, is_list_macro, macro_argument_count,
 };
-use crate::comments::{prev_code_token, trivia_from};
+use crate::comments::starts_on_line_of_previous_token;
 use crate::doc::WeakPreference;
 use crate::format::common::format_repeat;
 use crate::formatter::{Formatter, Frag};
@@ -18,7 +18,7 @@ use crate::layout::list::{
 use crate::syntax_utils::{has_attrs, is_brace_macro};
 use crate::utils::with_is_last;
 use ra_ap_syntax::ast::{ArgList, ArrayExpr, CallExpr, Expr, HasArgList, LiteralKind, TupleExpr};
-use ra_ap_syntax::{AstNode, SyntaxKind, SyntaxNode};
+use ra_ap_syntax::{AstNode, SyntaxNode};
 
 /// A single argument that can start on the line of `(` and end on the line of `)`: the Style
 /// Guide's combinable expressions, also behind operators as rustfmt does (`f(&[` / `...` / `])`)
@@ -171,14 +171,15 @@ fn is_hugging_string(expr: &Expr) -> bool {
         literal.kind(),
         LiteralKind::String(_) | LiteralKind::ByteString(_) | LiteralKind::CString(_)
     );
-    is_string && literal.token().text().contains('\n') && starts_on_line_of_previous_token(expr)
+    is_string
+        && literal.token().text().contains('\n')
+        && expr_starts_on_line_of_previous_token(expr)
 }
 
-/// Only spaces between it and the code token before it
-fn starts_on_line_of_previous_token(expr: &Expr) -> bool {
-    let previous = (expr.syntax().first_token()).and_then(|t| prev_code_token(&t));
-    trivia_from(previous.and_then(|t| t.next_token()))
-        .all(|t| t.kind() == SyntaxKind::WHITESPACE && !t.text().contains('\n'))
+fn expr_starts_on_line_of_previous_token(expr: &Expr) -> bool {
+    expr.syntax()
+        .first_token()
+        .is_some_and(|t| starts_on_line_of_previous_token(&t))
 }
 
 /// A multi-line copied macro call as the last of more items, hugging the list in the source
@@ -189,7 +190,7 @@ fn is_hugging_copied_macro(fmt: &Formatter, exprs: &[Expr]) -> bool {
     };
     !rest.is_empty()
         && last.syntax().text().contains_char('\n')
-        && starts_on_line_of_previous_token(last)
+        && expr_starts_on_line_of_previous_token(last)
         && is_copied_macro(fmt, &without_refs(last))
 }
 
@@ -237,7 +238,7 @@ pub(super) fn is_literal_or_name(expr: &Expr) -> bool {
 
 /// How the last of `exprs` may hug the list `node`: a single combinable expression, a closure or a
 /// block after other expressions (`f(a, |x| {` / `...` / `})`)
-fn last_item_hug(node: &SyntaxNode, exprs: &[Expr]) -> Hug {
+fn last_item_hug(node: &SyntaxNode, exprs: &[Expr], max_width: u32) -> Hug {
     match exprs {
         [single] if is_preferred_hug(node, single) || is_block_with_simple_head(single) => {
             Hug::Preferred
@@ -245,7 +246,7 @@ fn last_item_hug(node: &SyntaxNode, exprs: &[Expr]) -> Hug {
         [single] if is_delimited_list_expr(single) => Hug::WeakPreference,
         // Not a tuple: its comma would follow the string (`(r#"` / `...` / `"#,)`)
         [single] if is_hugging_string(single) && !TupleExpr::can_cast(node.kind()) => {
-            Hug::Preferred
+            Hug::of_string(&single.syntax().text().to_string(), max_width)
         }
         [single] if is_combinable_expr(single) => Hug::Allowed,
         _ if is_overflowing_last(exprs) => Hug::Allowed,
@@ -255,13 +256,13 @@ fn last_item_hug(node: &SyntaxNode, exprs: &[Expr]) -> Hug {
 
 /// `f(g(a, b))`: a call with a single argument that may hug its list; not one with attributes,
 /// which are copied with it
-pub(super) fn has_single_hugging_argument(call: &CallExpr) -> bool {
+pub(super) fn has_single_hugging_argument(fmt: &Formatter, call: &CallExpr) -> bool {
     let Some(args) = call.arg_list() else {
         return false;
     };
     let exprs = args.args().collect::<Vec<_>>();
     matches!(exprs.as_slice(), [arg] if !has_attrs(arg))
-        && last_item_hug(args.syntax(), &exprs) != Hug::Never
+        && last_item_hug(args.syntax(), &exprs, fmt.config().max_width) != Hug::Never
 }
 
 /// All items simple and at most `short_array_element_width_threshold` wide: filled as in rustfmt,
@@ -371,7 +372,7 @@ pub(super) fn format_expr_list(
     refine: impl FnOnce(ListLayout) -> ListLayout,
 ) -> Frag {
     let exprs = node.children().filter_map(Expr::cast).collect::<Vec<_>>();
-    let hug = last_item_hug(node, &exprs);
+    let hug = last_item_hug(node, &exprs, fmt.config().max_width);
     let hugging_copied_macro = hug == Hug::Never && is_hugging_copied_macro(fmt, &exprs);
     let items = list_items_cast(node, |e| format_expr_item(fmt, e));
     let own_width = matches!(items.as_slice(), [item] if item.frag.own_width);
@@ -484,12 +485,12 @@ mod tests {
             })
             .unwrap();
         let exprs = list.children().filter_map(Expr::cast).collect::<Vec<_>>();
-        last_item_hug(&list, &exprs)
+        last_item_hug(&list, &exprs, 20)
     }
 
     #[test]
     fn last_item_hugs() {
-        use Hug::{Allowed, Never, Preferred, WeakPreference};
+        use Hug::{Allowed, Never, Only, Preferred, WeakPreference};
         for (code, expected) in [
             ("f(a)", Never),
             ("f(a.b)", Never),
@@ -522,6 +523,11 @@ mod tests {
             ("f(for x in y {})", Preferred),
             ("f(for x in y.iter() {})", Allowed),
             ("f(a, loop {})", Never),
+            ("f(\"a\n123456789012345678\")", Preferred),
+            ("f(\"a\n1234567890123456789\")", Only),
+            ("f(&\"a\n1234567890123456789\")", Only),
+            ("f(\n\"a\n1234567890123456789\")", Never),
+            ("(\"a\n1234567890123456789\",)", Never),
             ("Ok(m! { a })", Preferred),
             ("f(&m! { a })", Preferred),
             ("f(a, m! { b })", Never),

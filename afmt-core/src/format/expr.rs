@@ -126,7 +126,7 @@ fn format_assignment(fmt: &Formatter, expr: BinExpr) -> Frag {
 pub(super) fn format_rhs(fmt: &Formatter, expr: Expr) -> Frag {
     if let Expr::CallExpr(call) = without_try(&expr)
         && !has_attrs(&expr)
-        && has_single_hugging_argument(&call)
+        && has_single_hugging_argument(fmt, &call)
     {
         return fmt.same_or_indented_line(format_expr(fmt, expr), NextLine::SavingOneLine);
     }

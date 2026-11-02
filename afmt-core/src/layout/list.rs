@@ -7,7 +7,7 @@ use crate::comments::{
 use crate::doc::WeakPreference;
 use crate::formatter::Edge::{BraceClose, BraceOpen, Close, Comma, Open, Word};
 use crate::formatter::{Builder, Edge, Formatter, Frag};
-use crate::utils::with_is_last;
+use crate::utils::{text_width, with_is_last};
 use ra_ap_syntax::ast::TokenTree;
 use ra_ap_syntax::{AstNode, SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken, T};
 
@@ -107,6 +107,17 @@ pub(crate) enum Hug {
 }
 
 impl Hug {
+    /// A string spanning lines, hugging the list in the source: on a line of its own only if that
+    /// can make its last line fit (with a comma)
+    pub fn of_string(text: &str, max_width: u32) -> Hug {
+        let last_line = text.rsplit('\n').next().unwrap_or(text);
+        if text_width(last_line) >= max_width {
+            Hug::Only
+        } else {
+            Hug::Preferred
+        }
+    }
+
     pub fn overflow(self, overflow: &Overflow) -> Overflow {
         match (self, overflow) {
             (Hug::Never, _) => Overflow::Never,

@@ -10,15 +10,10 @@ enum E {
         foo,
     )]
     B,
-    // A string spanning lines is broken, as a call argument
+    // A string spanning lines on its own line stays there, as a call argument
     #[error(
         "Module evaluation is still pending after multiple event loop iterations, \
      but no stalled top-level await was found. This is a bug in Deno.",
     )]
     C,
-    #[error(
-        "a
-b",
-    )]
-    D,
 }

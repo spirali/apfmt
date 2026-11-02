@@ -12,7 +12,7 @@ use super::expr_list::{ExprItem, format_expr_item};
 use super::pat::pat_layouts;
 use super::stmt::format_block_expr;
 use crate::comments::{comments_break_line_after, has_comments};
-use crate::doc::AlignGroup;
+use crate::doc::{AlignGroup, Cost};
 use crate::formatter::Edge::{Operator, Word};
 use crate::formatter::{Builder, Formatter, Frag};
 use crate::layout::head::{HeadLayouts, pattern_head};
@@ -175,13 +175,19 @@ fn arm_body_layouts(fmt: &Formatter, body: Expr) -> ArmBodyLayouts {
     let control_flow = is_control_flow(&expr);
     let node = expr.syntax().clone();
     let (inner, same_line_inner) = match &expr {
-        // A `match` on the line of `=>` with its head on one line
+        // A `match` on the line of `=>` with its head on one line. Without braces in the source, also
+        // with a broken head, if the head does not fit on one line even in the block (as rustfmt)
         Expr::MatchExpr(match_expr) if !has_attrs(match_expr) => {
-            let (inner, flat_head) = match_expr_layouts(fmt, match_expr);
-            (
-                fmt.keep_together(inner),
-                flat_head.map(|flat_head| fmt.keep_together(flat_head)),
-            )
+            let (all, flat_head) = match_expr_layouts(fmt, match_expr);
+            let all = fmt.keep_together(all);
+            let flat_head = flat_head.map(|flat_head| fmt.keep_together(flat_head));
+            if blocks.is_some() {
+                (all, flat_head)
+            } else {
+                let broken = fmt.cost(all, Cost::splits(2));
+                let inner = fmt.alt_opt(broken, flat_head);
+                (inner.clone(), Some(inner))
+            }
         }
         // `if` here is in a block: it gets the layouts of a statement
         Expr::BlockExpr(_) | Expr::IfExpr(_) => {
