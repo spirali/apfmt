@@ -1,4 +1,5 @@
 use rustc_hash::{FxHashMap, FxHashSet};
+use smallvec::SmallVec;
 use std::fmt::Write;
 
 use crate::utils::text_width;
@@ -155,6 +156,10 @@ bitflags::bitflags! {
     }
 }
 
+/// The right parts of `Concat`s a scan has yet to visit: a stack instead of recursion, as a long
+/// list is a chain of `Concat`s as deep as the list is long
+type ScanStack = SmallVec<[DocId; 32]>;
+
 pub(crate) struct DocArena {
     nodes: Vec<DocNode>,
     strings: Vec<Box<str>>,
@@ -283,103 +288,164 @@ impl DocArena {
     /// none. Exact (except `ShortLastLine` and `RoomAfter`), not the width of the layout placed.
     pub fn min_flat_width(&mut self, doc: DocId) -> Option<u32> {
         let text_width = |text: &str| (!text.contains('\n')).then(|| text_width(text));
-        match self.get_node(doc) {
-            DocNode::Token(token) => text_width(token.text()),
-            DocNode::Text(t) => text_width(self.get_text(*t)),
-            DocNode::Empty | DocNode::AlignMark(_) => Some(0),
-            DocNode::Newline | DocNode::MultiLine(_) => None,
-            &DocNode::Flat(d)
-            | &DocNode::Nest(d)
-            | &DocNode::Align(d)
-            | &DocNode::KeepTogether(d, _)
-            | &DocNode::Cost(d, _)
-            | &DocNode::WeakPreference(d, _)
-            | &DocNode::ShortLastLine(d)
-            | &DocNode::RoomAfter(d, _)
-            | &DocNode::IgnoreOverflow(d) => self.min_flat_width(d),
-            &DocNode::FirstLineWithin(d, width) => self.min_flat_width(d).filter(|&w| w <= width),
-            &DocNode::Concat(a, b) => {
-                let width1 = self.min_flat_width(a)?;
-                Some(width1.saturating_add(self.min_flat_width(b)?))
-            }
-            DocNode::Alt(..) | DocNode::Fallback(..) => self.alt_info(doc).min_flat_width(),
+        let mut width = 0u32;
+        let mut next = Some(doc);
+        let mut parts = ScanStack::new();
+        while let Some(part) = next.take().or_else(|| parts.pop()) {
+            let part_width = match self.get_node(part) {
+                DocNode::Token(token) => text_width(token.text()),
+                DocNode::Text(t) => text_width(self.get_text(*t)),
+                DocNode::Empty | DocNode::AlignMark(_) => Some(0),
+                DocNode::Newline | DocNode::MultiLine(_) => None,
+                &DocNode::Flat(d)
+                | &DocNode::Nest(d)
+                | &DocNode::Align(d)
+                | &DocNode::KeepTogether(d, _)
+                | &DocNode::Cost(d, _)
+                | &DocNode::WeakPreference(d, _)
+                | &DocNode::ShortLastLine(d)
+                | &DocNode::RoomAfter(d, _)
+                | &DocNode::IgnoreOverflow(d) => {
+                    next = Some(d);
+                    continue;
+                }
+                &DocNode::FirstLineWithin(d, limit) => {
+                    self.min_flat_width(d).filter(|&w| w <= limit)
+                }
+                &DocNode::Concat(a, b) => {
+                    parts.push(b);
+                    next = Some(a);
+                    continue;
+                }
+                DocNode::Alt(..) | DocNode::Fallback(..) => self.alt_info(part).min_flat_width(),
+            };
+            width = width.saturating_add(part_width?);
         }
+        Some(width)
     }
 
     /// False only if a line break is forced in all alternatives (a multi-line token is allowed), or
     /// a `FirstLineWithin` cannot fit
     pub fn has_flat_layout(&mut self, doc: DocId) -> bool {
-        match self.get_node(doc) {
-            DocNode::Newline => false,
-            DocNode::Token(_) | DocNode::Text(_) | DocNode::Empty | DocNode::AlignMark(_) => true,
-            &DocNode::Nest(d)
-            | &DocNode::Align(d)
-            | &DocNode::Flat(d)
-            | &DocNode::MultiLine(d)
-            | &DocNode::KeepTogether(d, _)
-            | &DocNode::Cost(d, _)
-            | &DocNode::WeakPreference(d, _)
-            | &DocNode::ShortLastLine(d)
-            | &DocNode::RoomAfter(d, _)
-            | &DocNode::IgnoreOverflow(d) => self.has_flat_layout(d),
-            &DocNode::FirstLineWithin(d, width) => {
-                self.min_flat_width(d).is_some_and(|w| w <= width)
-            }
-            &DocNode::Concat(a, b) => self.has_flat_layout(a) && self.has_flat_layout(b),
-            DocNode::Alt(..) | DocNode::Fallback(..) => {
-                self.alt_flag(doc, AltFlags::HAS_FLAT_LAYOUT)
+        let mut next = Some(doc);
+        let mut parts = ScanStack::new();
+        while let Some(part) = next.take().or_else(|| parts.pop()) {
+            let flat = match self.get_node(part) {
+                DocNode::Newline => false,
+                DocNode::Token(_)
+                | DocNode::Text(_)
+                | DocNode::Empty
+                | DocNode::AlignMark(_) => true,
+                &DocNode::Nest(d)
+                | &DocNode::Align(d)
+                | &DocNode::Flat(d)
+                | &DocNode::MultiLine(d)
+                | &DocNode::KeepTogether(d, _)
+                | &DocNode::Cost(d, _)
+                | &DocNode::WeakPreference(d, _)
+                | &DocNode::ShortLastLine(d)
+                | &DocNode::RoomAfter(d, _)
+                | &DocNode::IgnoreOverflow(d) => {
+                    next = Some(d);
+                    true
+                }
+                &DocNode::FirstLineWithin(d, width) => {
+                    self.min_flat_width(d).is_some_and(|w| w <= width)
+                }
+                &DocNode::Concat(a, b) => {
+                    parts.push(b);
+                    next = Some(a);
+                    true
+                }
+                DocNode::Alt(..) | DocNode::Fallback(..) => {
+                    self.alt_flag(part, AltFlags::HAS_FLAT_LAYOUT)
+                }
+            };
+            if !flat {
+                return false;
             }
         }
+        true
     }
 
     /// A multi-line string literal, or source copied unchanged
     pub fn has_multi_line_text(&mut self, doc: DocId) -> bool {
-        match self.get_node(doc) {
-            DocNode::Token(token) => token.text().contains('\n'),
-            DocNode::Text(t) => self.get_text(*t).contains('\n'),
-            DocNode::Empty | DocNode::AlignMark(_) | DocNode::Newline => false,
-            &DocNode::Nest(d)
-            | &DocNode::Align(d)
-            | &DocNode::Flat(d)
-            | &DocNode::MultiLine(d)
-            | &DocNode::KeepTogether(d, _)
-            | &DocNode::Cost(d, _)
-            | &DocNode::WeakPreference(d, _)
-            | &DocNode::ShortLastLine(d)
-            | &DocNode::RoomAfter(d, _)
-            | &DocNode::IgnoreOverflow(d)
-            | &DocNode::FirstLineWithin(d, _) => self.has_multi_line_text(d),
-            &DocNode::Concat(a, b) => self.has_multi_line_text(a) || self.has_multi_line_text(b),
-            DocNode::Alt(..) | DocNode::Fallback(..) => {
-                self.alt_flag(doc, AltFlags::HAS_MULTI_LINE_TEXT)
+        let mut next = Some(doc);
+        let mut parts = ScanStack::new();
+        while let Some(part) = next.take().or_else(|| parts.pop()) {
+            let multi_line = match self.get_node(part) {
+                DocNode::Token(token) => token.text().contains('\n'),
+                DocNode::Text(t) => self.get_text(*t).contains('\n'),
+                DocNode::Empty | DocNode::AlignMark(_) | DocNode::Newline => false,
+                &DocNode::Nest(d)
+                | &DocNode::Align(d)
+                | &DocNode::Flat(d)
+                | &DocNode::MultiLine(d)
+                | &DocNode::KeepTogether(d, _)
+                | &DocNode::Cost(d, _)
+                | &DocNode::WeakPreference(d, _)
+                | &DocNode::ShortLastLine(d)
+                | &DocNode::RoomAfter(d, _)
+                | &DocNode::IgnoreOverflow(d)
+                | &DocNode::FirstLineWithin(d, _) => {
+                    next = Some(d);
+                    false
+                }
+                &DocNode::Concat(a, b) => {
+                    parts.push(b);
+                    next = Some(a);
+                    false
+                }
+                DocNode::Alt(..) | DocNode::Fallback(..) => {
+                    self.alt_flag(part, AltFlags::HAS_MULTI_LINE_TEXT)
+                }
+            };
+            if multi_line {
+                return true;
             }
         }
+        false
     }
 
     /// Outside `Flat`
     pub fn has_line_break(&mut self, doc: DocId) -> bool {
-        match self.get_node(doc) {
-            DocNode::Newline => true,
-            DocNode::Token(_)
-            | DocNode::Text(_)
-            | DocNode::Empty
-            | DocNode::AlignMark(_)
-            | DocNode::Flat(_) => false,
-            &DocNode::Nest(d)
-            | &DocNode::Align(d)
-            | &DocNode::MultiLine(d)
-            | &DocNode::KeepTogether(d, _)
-            | &DocNode::Cost(d, _)
-            | &DocNode::WeakPreference(d, _)
-            | &DocNode::ShortLastLine(d)
-            | &DocNode::RoomAfter(d, _)
-            | &DocNode::IgnoreOverflow(d)
-            | &DocNode::FirstLineWithin(d, _) => self.has_line_break(d),
-            &DocNode::Concat(a, b) => self.has_line_break(a) || self.has_line_break(b),
-            DocNode::Alt(..) | DocNode::Fallback(..) => {
-                self.alt_flag(doc, AltFlags::HAS_LINE_BREAK)
+        let mut next = Some(doc);
+        let mut parts = ScanStack::new();
+        while let Some(part) = next.take().or_else(|| parts.pop()) {
+            let line_break = match self.get_node(part) {
+                DocNode::Newline => true,
+                DocNode::Token(_)
+                | DocNode::Text(_)
+                | DocNode::Empty
+                | DocNode::AlignMark(_)
+                | DocNode::Flat(_) => false,
+                &DocNode::Nest(d)
+                | &DocNode::Align(d)
+                | &DocNode::MultiLine(d)
+                | &DocNode::KeepTogether(d, _)
+                | &DocNode::Cost(d, _)
+                | &DocNode::WeakPreference(d, _)
+                | &DocNode::ShortLastLine(d)
+                | &DocNode::RoomAfter(d, _)
+                | &DocNode::IgnoreOverflow(d)
+                | &DocNode::FirstLineWithin(d, _) => {
+                    next = Some(d);
+                    false
+                }
+                &DocNode::Concat(a, b) => {
+                    parts.push(b);
+                    next = Some(a);
+                    false
+                }
+                DocNode::Alt(..) | DocNode::Fallback(..) => {
+                    self.alt_flag(part, AltFlags::HAS_LINE_BREAK)
+                }
+            };
+            if line_break {
+                return true;
             }
         }
+        false
     }
 
     /// The narrowest first line of a broken layout that takes no dispreferred choice up to it: how
@@ -399,72 +465,84 @@ impl DocArena {
                 first_line: Some(text_width(first)),
             },
         };
-        match self.get_node(doc) {
-            DocNode::Token(token) => text(token.text()),
-            DocNode::Text(t) => text(self.get_text(*t)),
-            DocNode::Empty | DocNode::AlignMark(_) => NaturalWidths {
-                flat: Some(0),
-                first_line: None,
-            },
-            DocNode::Newline => NaturalWidths {
-                flat: None,
-                first_line: Some(0),
-            },
-            &DocNode::Nest(d)
-            | &DocNode::Align(d)
-            | &DocNode::WeakPreference(d, _)
-            | &DocNode::ShortLastLine(d)
-            | &DocNode::RoomAfter(d, _)
-            | &DocNode::IgnoreOverflow(d) => self.natural_widths(d),
-            &DocNode::Cost(d, cost) => {
-                if cost.0 > 0 {
-                    NaturalWidths::NONE
-                } else {
-                    self.natural_widths(d)
-                }
-            }
-            &DocNode::KeepTogether(d, cost) => {
-                let widths = self.natural_widths(d);
-                NaturalWidths {
-                    first_line: widths.first_line.filter(|_| cost.0 <= 0),
-                    ..widths
-                }
-            }
-            &DocNode::Flat(d) => NaturalWidths {
-                first_line: None,
-                ..self.natural_widths(d)
-            },
-            &DocNode::MultiLine(d) => NaturalWidths {
-                flat: None,
-                ..self.natural_widths(d)
-            },
-            &DocNode::FirstLineWithin(d, width) => {
-                let widths = self.natural_widths(d);
-                NaturalWidths {
-                    flat: widths.flat.filter(|&w| w <= width),
-                    first_line: widths.first_line.filter(|&w| w <= width),
-                }
-            }
-            &DocNode::Concat(a, b) => {
-                let first = self.natural_widths(a);
-                let Some(flat) = first.flat else {
-                    return NaturalWidths {
-                        flat: None,
-                        first_line: first.first_line,
-                    };
-                };
-                let second = self.natural_widths(b);
-                let after = |w: Option<u32>| w.map(|w| flat.saturating_add(w));
-                NaturalWidths {
-                    flat: after(second.flat),
-                    first_line: first.first_line,
-                }
-                .min(NaturalWidths {
+        // The parts on one line so far: the first line ends in a later part only after flat ones
+        let mut flat = 0u32;
+        let mut first_line = NaturalWidths::NONE;
+        let mut next = Some(doc);
+        let mut parts = ScanStack::new();
+        while let Some(part) = next.take().or_else(|| parts.pop()) {
+            let widths = match self.get_node(part) {
+                DocNode::Token(token) => text(token.text()),
+                DocNode::Text(t) => text(self.get_text(*t)),
+                DocNode::Empty | DocNode::AlignMark(_) => NaturalWidths {
+                    flat: Some(0),
+                    first_line: None,
+                },
+                DocNode::Newline => NaturalWidths {
                     flat: None,
-                    first_line: after(second.first_line),
-                })
-            }
-            DocNode::Alt(..) | DocNode::Fallback(..) => self.alt_info(doc).natural_widths(),
+                    first_line: Some(0),
+                },
+                &DocNode::Nest(d)
+                | &DocNode::Align(d)
+                | &DocNode::WeakPreference(d, _)
+                | &DocNode::ShortLastLine(d)
+                | &DocNode::RoomAfter(d, _)
+                | &DocNode::IgnoreOverflow(d) => {
+                    next = Some(d);
+                    continue;
+                }
+                &DocNode::Cost(d, cost) => {
+                    if cost.0 > 0 {
+                        NaturalWidths::NONE
+                    } else {
+                        next = Some(d);
+                        continue;
+                    }
+                }
+                &DocNode::KeepTogether(d, cost) => {
+                    if cost.0 <= 0 {
+                        next = Some(d);
+                        continue;
+                    }
+                    NaturalWidths {
+                        first_line: None,
+                        ..self.natural_widths(d)
+                    }
+                }
+                &DocNode::Flat(d) => NaturalWidths {
+                    first_line: None,
+                    ..self.natural_widths(d)
+                },
+                &DocNode::MultiLine(d) => NaturalWidths {
+                    flat: None,
+                    ..self.natural_widths(d)
+                },
+                &DocNode::FirstLineWithin(d, width) => {
+                    let widths = self.natural_widths(d);
+                    NaturalWidths {
+                        flat: widths.flat.filter(|&w| w <= width),
+                        first_line: widths.first_line.filter(|&w| w <= width),
+                    }
+                }
+                &DocNode::Concat(a, b) => {
+                    parts.push(b);
+                    next = Some(a);
+                    continue;
+                }
+                DocNode::Alt(..) | DocNode::Fallback(..) => self.alt_info(part).natural_widths(),
+            };
+            first_line = first_line.min(NaturalWidths {
+                flat: None,
+                first_line: widths.first_line.map(|w| flat.saturating_add(w)),
+            });
+            let Some(width) = widths.flat else {
+                return first_line;
+            };
+            flat = flat.saturating_add(width);
+        }
+        NaturalWidths {
+            flat: Some(flat),
+            ..first_line
         }
     }
 

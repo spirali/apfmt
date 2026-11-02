@@ -197,6 +197,15 @@ mod tests {
         );
     }
 
+    #[test]
+    fn long_list_does_not_overflow_stack_of_thread() {
+        let items = vec!["1"; 20_000].join(", ");
+        let code = format!("const A: [u8; 20000] = [{items}];");
+        let thread = std::thread::Builder::new().stack_size(2 * 1024 * 1024);
+        let handle = thread.spawn(move || format_source_code(&Config::default(), &code).is_ok());
+        assert!(handle.unwrap().join().unwrap());
+    }
+
     fn with_newlines(style: NewlineStyle, code: &str) -> String {
         let config = Config {
             newline_style: style,
