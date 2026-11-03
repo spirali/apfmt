@@ -6,7 +6,7 @@ use crate::comments::{
     line_ends_after, line_indentation, newlines_after, next_code_token, post_comments_stop,
     rest_of_line_is_comments, tokens_between, trivia_end, trivia_from,
 };
-use crate::doc::{COMMA_DOC, DocId, EMPTY_DOC, EMPTYLINE_DOC, NEWLINE_DOC, SEMICOLON_DOC};
+use crate::doc::{COMMA_DOC, DocId, NEWLINE_DOC, SEMICOLON_DOC};
 use crate::formatter::Edge::{Break, Comma, Nothing, Word};
 use ra_ap_syntax::{SyntaxKind, SyntaxToken};
 
@@ -124,21 +124,16 @@ impl<'a> Builder<'a> {
         if newlines == 0 {
             return;
         }
-        let mut blank = (newlines - 1).min(self.fmt.config.blank_lines_upper_bound);
+        let blank = (newlines - 1).min(self.fmt.config.blank_lines_upper_bound);
         if blank == 0 {
             self.end_line_after_line_comment();
             return;
         }
-        let mut doc_id = EMPTY_DOC;
-        blank += 1;
-        while blank > 1 {
-            doc_id = self.fmt.concat(doc_id, EMPTYLINE_DOC);
-            blank -= 2;
+        // After a line already ended (the first line of `push_lines`) one newline fewer
+        self.push_line_break_if(NEWLINE_DOC, |end| end != Nothing);
+        for _ in 0..blank {
+            self.push_newline();
         }
-        if blank == 1 {
-            doc_id = self.fmt.concat(doc_id, NEWLINE_DOC);
-        }
-        self.push_line_break_if(doc_id, |_| true);
     }
 
     /// Pushes the comments after the cursor and moves the cursor to the last of them; the

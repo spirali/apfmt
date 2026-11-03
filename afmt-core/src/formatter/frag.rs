@@ -3,7 +3,7 @@
 use crate::comments::comment_follows;
 use crate::doc::{DocId, EMPTY_DOC, NEWLINE_DOC, SPACE_DOC};
 use crate::formatter::Edge::Nothing;
-use ra_ap_syntax::SyntaxToken;
+use ra_ap_syntax::{SyntaxKind, SyntaxToken};
 use smallvec::{SmallVec, smallvec};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -73,6 +73,10 @@ impl Frag {
 
     pub fn may_end_with_delimiter(&self) -> bool {
         self.branches.iter().any(|b| b.end.is_closing())
+    }
+
+    pub fn cursor_is(&self, kind: SyntaxKind) -> bool {
+        self.cursor.as_ref().is_some_and(|token| token.kind() == kind)
     }
 
     pub fn starts_with_comment(&self) -> bool {

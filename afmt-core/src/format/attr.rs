@@ -2,7 +2,7 @@
 
 use super::expr::format_expr;
 use super::path::format_path;
-use crate::comments::{has_comments, is_code_kind, starts_on_line_of_previous_token};
+use crate::comments::{comment_follows, has_comments, is_code_kind, starts_on_line_of_previous_token};
 use crate::formatter::Edge::{Operator, Tight, Word};
 use crate::formatter::{Builder, Formatter, Frag};
 use crate::layout::list::{
@@ -26,6 +26,13 @@ pub(super) fn format_attr(fmt: &Formatter, attr: Attr) -> Frag {
     }
     let meta = format_meta(fmt, attr.meta().unwrap());
     builder.push(Delimiters::brackets_of(attr.syntax()).enclose(fmt, meta));
+    // A blank line in front of an attribute of the same kind is dropped, as in rustfmt
+    let next_attr = attr.syntax().next_sibling().and_then(Attr::cast);
+    if next_attr.is_some_and(|next| next.excl_token().is_some() == attr.excl_token().is_some())
+        && !builder.cursor().is_some_and(comment_follows)
+    {
+        builder.flush_trivia();
+    }
     builder.into_frag()
 }
 

@@ -146,7 +146,7 @@ fn chain(fmt: &Formatter, first: Frag, rest: &[(Frag, Frag)], indent: bool) -> F
     let vertical = if indent {
         vertical_lines(fmt, &first, &lines)
     } else {
-        Builder::head_then_lines(fmt, first, lines, false)
+        Builder::head_then_lines_without_blanks(fmt, first, lines, false)
     };
     fmt.alt_frag(fmt.flat(flat), vertical)
 }
@@ -302,20 +302,27 @@ fn lines_after_head(fmt: &Formatter, head: &Frag, lines: &[Frag]) -> (Frag, Opti
 }
 
 /// `head` followed by `lines`, each block-indented (an operator chain). A short head takes the next
-/// lines while its last line is short: `a + b` / `    + c`, also `foo(` / `...` / `) + c`
+/// lines while its last line is short: `a + b` / `    + c`, also `foo(` / `...` / `)? + c`
 fn vertical_lines(fmt: &Formatter, head: &Frag, lines: &[Frag]) -> Frag {
     let mut head = head.clone();
     let mut layouts: Option<Frag> = None;
     for k in 0..=lines.len() {
-        let layout = Builder::head_then_lines(fmt, head.clone(), lines[k..].iter().cloned(), true);
+        let layout = Builder::head_then_lines_without_blanks(
+            fmt,
+            head.clone(),
+            lines[k..].iter().cloned(),
+            true,
+        );
         layouts = Some(fmt.alt_opt(layout, layouts));
         // A line starting with a comment (`// c` / `&& b`) stays on its own
         if k == lines.len() || lines[k].starts_with_comment() {
             break;
         }
-        // The head may take the next line only after a closing delimiter, broken only where it does
-        // not fit on one line, whatever the lines after it gain; otherwise a head on a single line
-        head = if k == 0 && head.may_end_with_delimiter() {
+        // The head may take the next line only after a closing delimiter or `?`, broken only where
+        // it does not fit on one line, whatever the lines after it gain; otherwise a head on a
+        // single line
+        let closes = head.may_end_with_delimiter() || head.cursor_is(SyntaxKind::QUESTION);
+        head = if k == 0 && closes {
             line_after(fmt, fmt.flat_where_fits(head, 0), &lines[k])
         } else if let Some(longer_head) = short_head_then(fmt, head, &lines[k]) {
             longer_head

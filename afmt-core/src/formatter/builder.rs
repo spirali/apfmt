@@ -59,7 +59,20 @@ impl<'a> Builder<'a> {
     ) -> Frag {
         let mut builder = Builder::new(fmt);
         builder.push(head);
-        builder.push_lines(lines, indent);
+        builder.push_lines(lines, indent, true);
+        builder.into_frag()
+    }
+
+    /// As `head_then_lines`, with the blank lines between the lines dropped unless a comment follows
+    pub fn head_then_lines_without_blanks(
+        fmt: &'a Formatter,
+        head: Frag,
+        lines: impl IntoIterator<Item = Frag>,
+        indent: bool,
+    ) -> Frag {
+        let mut builder = Builder::new(fmt);
+        builder.push(head);
+        builder.push_lines(lines, indent, false);
         builder.into_frag()
     }
 
@@ -148,7 +161,12 @@ impl<'a> Builder<'a> {
 
     /// Each of `lines` on its own line, indented with `indent`, e.g. `.b()`, `&& b`; own-line
     /// comments in between keep their own lines
-    pub fn push_lines(&mut self, lines: impl IntoIterator<Item = Frag>, indent: bool) {
+    pub fn push_lines(
+        &mut self,
+        lines: impl IntoIterator<Item = Frag>,
+        indent: bool,
+        keep_blank_lines: bool,
+    ) {
         let mut lines = lines.into_iter().peekable();
         if lines.peek().is_none() {
             return;
@@ -159,7 +177,8 @@ impl<'a> Builder<'a> {
         // The newline belongs to `nested`, so it is indented with it
         nested.push_newline();
         for line in lines {
-            nested.push_on_new_line(line);
+            nested.flush_trivia_and_end_line_with(keep_blank_lines);
+            nested.push(line);
         }
         let nested = nested.into_frag();
         self.push_line_break_if(EMPTY_DOC, |end| end == Break);
