@@ -1,4 +1,4 @@
-# options that afmt does not have, with their default values
+# options that apfmt does not have, with their default values
 hard_tabs = false
 newline_style = "Auto"
 reorder_imports = true

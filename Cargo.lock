@@ -3,32 +3,6 @@
 version = 4
 
 [[package]]
-name = "afmt"
-version = "0.1.0"
-dependencies = [
- "afmt-core",
- "anstream",
- "anstyle",
- "clap",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "afmt-core"
-version = "0.1.0"
-dependencies = [
- "bitflags",
- "ra_ap_parser",
- "ra_ap_syntax",
- "rustc-hash 2.1.3",
- "serde",
- "smallvec",
- "toml",
- "unicode-width",
-]
-
-[[package]]
 name = "anstream"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -76,6 +50,32 @@ dependencies = [
  "anstyle",
  "once_cell_polyfill",
  "windows-sys",
+]
+
+[[package]]
+name = "apfmt"
+version = "0.1.0"
+dependencies = [
+ "anstream",
+ "anstyle",
+ "apfmt-core",
+ "clap",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "apfmt-core"
+version = "0.1.0"
+dependencies = [
+ "bitflags",
+ "ra_ap_parser",
+ "ra_ap_syntax",
+ "rustc-hash 2.1.3",
+ "serde",
+ "smallvec",
+ "toml",
+ "unicode-width",
 ]
 
 [[package]]

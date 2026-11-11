@@ -1,4 +1,4 @@
-// rustfmt copies a whole definition when one of its rules does not parse; afmt formats the rules
+// rustfmt copies a whole definition when one of its rules does not parse; apfmt formats the rules
 // that parse, also with `vis` and `lifetime` metavariables
 macro_rules! c {
     // first

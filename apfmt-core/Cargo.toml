@@ -1,0 +1,17 @@
+[package]
+name = "apfmt-core"
+description = "The formatting library of apfmt, an experimental Rust code formatter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+bitflags = "2"
+ra_ap_parser = "0.0.359"
+ra_ap_syntax = "0.0.359"
+rustc-hash = "2.1"
+serde = { version = "1", features = ["derive"] }
+smallvec = "1.16"
+toml = { version = "1.1", default-features = false, features = ["display", "parse", "serde", "std"] }
+unicode-width = "0.2"

@@ -4,26 +4,26 @@
 # dependencies = ["rich>=13"]
 # ///
 """
-Test harness for afmt.
+Test harness for apfmt.
 
 `test`: for every .rs file in tests/sources:
   1. format it with `rustfmt` (reference output); if `<name>.expected.rs` exists
      next to it, that file is used as the reference instead (for cases where
-     afmt intentionally differs from rustfmt)
-  2. format it with `afmt` and compare with the reference
-  3. format the afmt output again with `afmt` and check idempotency
-  Unsupported syntax fails a test, except in `<name>.unsupported.rs`: there afmt runs with
+     apfmt intentionally differs from rustfmt)
+  2. format it with `apfmt` and compare with the reference
+  3. format the apfmt output again with `apfmt` and check idempotency
+  Unsupported syntax fails a test, except in `<name>.unsupported.rs`: there apfmt runs with
   `--unsupported warn`, must report some unsupported syntax (otherwise the test should be
   renamed), and `<name>.unsupported.expected.rs` is required as the reference (it checks what
-  afmt keeps, e.g. attributes that rustfmt would drop).
-  If `<name>.rustfmt.toml` exists next to the test, both rustfmt and afmt read it as their
+  apfmt keeps, e.g. attributes that rustfmt would drop).
+  If `<name>.rustfmt.toml` exists next to the test, both rustfmt and apfmt read it as their
   config file (`--config-path`); when it sets `edition`, `--edition` is not passed to them.
-  If `<name>.afmt.toml` exists, afmt reads it instead (rustfmt still reads `<name>.rustfmt.toml`
-  or nothing); for afmt's own options, the reference is usually `<name>.expected.rs`.
+  If `<name>.apfmt.toml` exists, apfmt reads it instead (rustfmt still reads `<name>.rustfmt.toml`
+  or nothing); for apfmt's own options, the reference is usually `<name>.expected.rs`.
   Otherwise both get an empty config file, so no `rustfmt.toml` in the working directory, its
   ancestors, the home directory or the user's configuration directory changes the results.
 
-`compare`: show afmt and rustfmt output side by side for selected tests.
+`compare`: show apfmt and rustfmt output side by side for selected tests.
   The comparison is always against rustfmt; `<name>.expected.rs` files are ignored.
   Outputs are shown unaligned, line N next to line N, with changed lines highlighted
   (with --align, lines are aligned by inserting blank lines and differing lines are highlighted).
@@ -33,14 +33,14 @@ Usage:
   uv run tests/run.py test basic            # only tests whose path contains "basic"
   uv run tests/run.py test 'basic/*main*'   # glob filters are supported too
   uv run tests/run.py test --list           # list tests
-  uv run tests/run.py test -v basic         # for failures also print input, afmt and reference output
+  uv run tests/run.py test -v basic         # for failures also print input, apfmt and reference output
 
   uv run tests/run.py compare calls         # side by side for tests whose path contains "calls"
   uv run tests/run.py compare --list calls  # list selected tests
   uv run tests/run.py compare -a calls      # also show tests where outputs are equal
   uv run tests/run.py compare -A calls      # align outputs by inserting blank lines
 
-`bench`: measure how long the release build of afmt takes to format selected tests
+`bench`: measure how long the release build of apfmt takes to format selected tests
   (tests in tests/sources/benchmarks when no filter is given). Every file is formatted
   --warmup times without measuring, then --runs times; the report shows the mean,
   standard deviation, min, median and max of the wall time and the mean CPU time
@@ -88,18 +88,18 @@ from rich.table import Table
 from rich.text import Text
 
 EXPECTED_SUFFIX = ".expected.rs"
-# The config file of a test, read by both rustfmt and afmt (see `config_args`)
+# The config file of a test, read by both rustfmt and apfmt (see `config_args`)
 CONFIG_SUFFIX = ".rustfmt.toml"
-# The afmt config file of a test, read by afmt only, instead of `CONFIG_SUFFIX`
-AFMT_CONFIG_SUFFIX = ".afmt.toml"
-# Tests of syntax that afmt copies unchanged (see `run_test`)
+# The apfmt config file of a test, read by apfmt only, instead of `CONFIG_SUFFIX`
+APFMT_CONFIG_SUFFIX = ".apfmt.toml"
+# Tests of syntax that apfmt copies unchanged (see `run_test`)
 UNSUPPORTED_SUFFIX = ".unsupported.rs"
 
 TESTS_DIR = Path(__file__).resolve().parent
 ROOT_DIR = TESTS_DIR.parent
 SOURCES_DIR = TESTS_DIR / "sources"
 CURRENT_DIR = TESTS_DIR / "current"
-DEFAULT_AFMT = ROOT_DIR / "target" / "debug" / "afmt"
+DEFAULT_APFMT = ROOT_DIR / "target" / "debug" / "apfmt"
 
 console = Console()
 
@@ -156,13 +156,13 @@ def sibling_path(source: Path, suffix: str) -> Path:
     return source.with_name(source.name.removesuffix(".rs") + suffix)
 
 
-def config_args(source: Path | None, args, afmt: bool = False) -> list[str]:
-    """The options passing the config of a test to rustfmt or (with `afmt`) afmt: an explicit
+def config_args(source: Path | None, args, apfmt: bool = False) -> list[str]:
+    """The options passing the config of a test to rustfmt or (with `apfmt`) apfmt: an explicit
     config file, so that neither looks one up, and the edition unless the config file sets it.
-    rustfmt gets `<name>.rustfmt.toml`; afmt gets `<name>.afmt.toml`, else `<name>.rustfmt.toml`;
+    rustfmt gets `<name>.rustfmt.toml`; apfmt gets `<name>.apfmt.toml`, else `<name>.rustfmt.toml`;
     both get an empty file when the test has none. Raises `CommandError` for a malformed config
     file."""
-    suffixes = [AFMT_CONFIG_SUFFIX, CONFIG_SUFFIX] if afmt else [CONFIG_SUFFIX]
+    suffixes = [APFMT_CONFIG_SUFFIX, CONFIG_SUFFIX] if apfmt else [CONFIG_SUFFIX]
     configs = [sibling_path(source, s) for s in suffixes] if source else []
     config = next((c for c in configs if c.exists()), None)
     if config is None:
@@ -188,7 +188,7 @@ def run_rustfmt(code: str, args, source: Path | None) -> str:
     return stdout
 
 
-# What afmt reports on stderr for each piece of syntax it copies unchanged
+# What apfmt reports on stderr for each piece of syntax it copies unchanged
 UNSUPPORTED_MESSAGE = "not supported yet"
 
 
@@ -196,23 +196,23 @@ def is_unsupported_test(source: Path) -> bool:
     return source.name.endswith(UNSUPPORTED_SUFFIX)
 
 
-def afmt_options(unsupported: bool) -> list[str]:
-    """Unsupported syntax fails a test instead of being copied unchanged (afmt's default is
+def apfmt_options(unsupported: bool) -> list[str]:
+    """Unsupported syntax fails a test instead of being copied unchanged (apfmt's default is
     `warn`), except with `unsupported`: then it is copied and reported on stderr"""
     return ["--unsupported", "warn" if unsupported else "error"]
 
 
-def run_afmt(code: str, args, source: Path | None) -> tuple[str, str]:
-    """afmt's output and stderr for the test `source`, see `afmt_options` and `config_args`.
-    afmt runs in the temporary directory of the tests: it reads the edition from the nearest
+def run_apfmt(code: str, args, source: Path | None) -> tuple[str, str]:
+    """apfmt's output and stderr for the test `source`, see `apfmt_options` and `config_args`.
+    apfmt runs in the temporary directory of the tests: it reads the edition from the nearest
     `Cargo.toml` of its working directory (as `cargo fmt` passes it), which would override the
     one of the config file of a test"""
     unsupported = source is not None and is_unsupported_test(source)
     return run_cmd(
         [
-            str(args.afmt),
-            *afmt_options(unsupported),
-            *config_args(source, args, afmt=True),
+            str(args.apfmt),
+            *apfmt_options(unsupported),
+            *config_args(source, args, apfmt=True),
             "--result-check",
         ],
         stdin=code,
@@ -260,17 +260,17 @@ def run_test(source: Path, args) -> Result:
     result.outputs[expected_name] = expected
 
     try:
-        actual, stderr = run_afmt(code, args, source)
+        actual, stderr = run_apfmt(code, args, source)
     except CommandError as e:
-        result.failures.append(Failure("afmt error", str(e)))
+        result.failures.append(Failure("apfmt error", str(e)))
         return result
-    result.outputs["afmt.rs"] = actual
+    result.outputs["apfmt.rs"] = actual
 
     if unsupported and UNSUPPORTED_MESSAGE not in stderr:
         result.failures.append(
             Failure(
                 "no unsupported syntax",
-                f"afmt supports all of it now: rename the test to drop "
+                f"apfmt supports all of it now: rename the test to drop "
                 f"`{UNSUPPORTED_SUFFIX.removesuffix('.rs')}`",
             )
         )
@@ -280,25 +280,25 @@ def run_test(source: Path, args) -> Result:
         result.failures.append(
             Failure(
                 "mismatch",
-                f"afmt output differs from {expected_name}",
-                make_diff(expected, actual, expected_name, "afmt.rs"),
+                f"apfmt output differs from {expected_name}",
+                make_diff(expected, actual, expected_name, "apfmt.rs"),
             )
         )
         return result
 
     try:
-        second, _ = run_afmt(actual, args, source)
+        second, _ = run_apfmt(actual, args, source)
     except CommandError as e:
-        result.failures.append(Failure("afmt error (2nd pass)", str(e)))
+        result.failures.append(Failure("apfmt error (2nd pass)", str(e)))
         return result
-    result.outputs["afmt2.rs"] = second
+    result.outputs["apfmt2.rs"] = second
 
     if second != actual:
         result.failures.append(
             Failure(
                 "not idempotent",
-                "afmt(afmt(input)) differs from afmt(input)",
-                make_diff(actual, second, "afmt.rs", "afmt2.rs"),
+                "apfmt(apfmt(input)) differs from apfmt(input)",
+                make_diff(actual, second, "apfmt.rs", "apfmt2.rs"),
             )
         )
     return result
@@ -344,7 +344,7 @@ def print_source(title: str, code: str) -> None:
     )
 
 
-REPORT_ORDER = ("input.rs", "afmt.rs", "expected.rs", "rustfmt.rs", "afmt2.rs")
+REPORT_ORDER = ("input.rs", "apfmt.rs", "expected.rs", "rustfmt.rs", "apfmt2.rs")
 
 
 def report_failure(result: Result, max_diff_lines: int, verbose: bool) -> None:
@@ -385,8 +385,8 @@ def collect_sources(filters: list[str]) -> list[Path]:
     return [s for s in sources if matches(s)]
 
 
-def build_afmt(release: bool) -> None:
-    cmd = ["cargo", "build", "-p", "afmt"]
+def build_apfmt(release: bool) -> None:
+    cmd = ["cargo", "build", "-p", "apfmt"]
     if release:
         cmd.append("--release")
     console.print(f"[dim]$ {' '.join(cmd)}[/dim]")
@@ -437,7 +437,7 @@ def side_by_side(title: str, left: str, right: str, raw: bool) -> Table:
         padding=(0, 1),
     )
     table.add_column("", justify="right", style="dim", no_wrap=True)
-    table.add_column("afmt", ratio=1, overflow="fold")
+    table.add_column("apfmt", ratio=1, overflow="fold")
     table.add_column("", justify="right", style="dim", no_wrap=True)
     table.add_column("rustfmt", ratio=1, overflow="fold")
 
@@ -506,25 +506,25 @@ def list_sources(sources: list[Path], show_reference: bool) -> None:
             reference = Text("expected.rs", style="bold cyan")
         else:
             reference = Text("rustfmt", style="dark_orange")
-        for suffix in [CONFIG_SUFFIX, AFMT_CONFIG_SUFFIX]:
+        for suffix in [CONFIG_SUFFIX, APFMT_CONFIG_SUFFIX]:
             if sibling_path(s, suffix).exists():
                 reference += Text(f" + {suffix.removeprefix('.')}", style="magenta")
         console.print(Text(f"{name:<{width}}  ") + reference, soft_wrap=True)
 
 
 def prepare_tools(args, need_rustfmt: bool = True) -> None:
-    """Builds afmt (unless disabled) and checks that the formatters exist."""
-    if args.afmt is None:
-        args.afmt = (
-            ROOT_DIR / "target" / ("release" if args.release else "debug") / "afmt"
+    """Builds apfmt (unless disabled) and checks that the formatters exist."""
+    if args.apfmt is None:
+        args.apfmt = (
+            ROOT_DIR / "target" / ("release" if args.release else "debug") / "apfmt"
         )
         if not args.no_build:
-            build_afmt(args.release)
-    if not args.afmt.exists():
-        console.print(f"[bold red]afmt binary not found:[/bold red] {args.afmt}")
+            build_apfmt(args.release)
+    if not args.apfmt.exists():
+        console.print(f"[bold red]apfmt binary not found:[/bold red] {args.apfmt}")
         sys.exit(2)
-    # afmt does not run in the current directory (`run_afmt`)
-    args.afmt = args.afmt.resolve()
+    # apfmt does not run in the current directory (`run_apfmt`)
+    args.apfmt = args.apfmt.resolve()
     if need_rustfmt:
         if shutil.which(args.rustfmt) is None:
             console.print(f"[bold red]rustfmt not found:[/bold red] {args.rustfmt}")
@@ -579,7 +579,7 @@ def cmd_test(args, sources: list[Path]) -> None:
             names = " ".join(r.name for r in failures)
             console.print(
                 f"[dim]Hint: run `uv run tests/run.py test -v {names}` to also see the input, "
-                "afmt output and reference output[/dim]",
+                "apfmt output and reference output[/dim]",
                 highlight=False,
                 soft_wrap=True,
             )
@@ -595,24 +595,24 @@ def cmd_compare(args, sources: list[Path]) -> None:
         code = source.read_text()
         errors = []
         try:
-            afmt_out, _ = run_afmt(code, args, source)
+            apfmt_out, _ = run_apfmt(code, args, source)
         except CommandError as e:
-            afmt_out = ""
-            errors.append(f"afmt error: {e}")
+            apfmt_out = ""
+            errors.append(f"apfmt error: {e}")
         try:
             rustfmt_out = run_rustfmt(code, args, source)
         except CommandError as e:
             rustfmt_out = ""
             errors.append(f"rustfmt error: {e}")
 
-        if not errors and afmt_out == rustfmt_out:
+        if not errors and apfmt_out == rustfmt_out:
             same += 1
             if not args.all:
                 continue
             title = f"{name} [green](identical)[/green]"
         else:
             title = f"{name} [red](differs)[/red]"
-        console.print(side_by_side(title, afmt_out, rustfmt_out, not args.align))
+        console.print(side_by_side(title, apfmt_out, rustfmt_out, not args.align))
         for err in errors:
             console.print(Text(err, style="bold red"))
         console.print()
@@ -686,11 +686,15 @@ class BenchFile:
 
 def bench_commands(args) -> dict[str, list[str]]:
     """The measured command of every tool; the same commands as `test` uses, without
-    afmt's --result-check unless it is asked for."""
-    afmt = [str(args.afmt), *afmt_options(False), *config_args(None, args, afmt=True)]
+    apfmt's --result-check unless it is asked for."""
+    apfmt = [
+        str(args.apfmt),
+        *apfmt_options(False),
+        *config_args(None, args, apfmt=True),
+    ]
     if args.result_check:
-        afmt.append("--result-check")
-    commands = {"afmt": afmt}
+        apfmt.append("--result-check")
+    commands = {"apfmt": apfmt}
     if args.compare:
         commands["rustfmt"] = [args.rustfmt, *config_args(None, args)]
     return commands
@@ -779,7 +783,7 @@ def format_seconds(seconds: float) -> str:
 
 
 def format_ratio(ratio: float, better: str = "faster", worse: str = "slower") -> Text:
-    """`ratio` is afmt / rustfmt (time or memory); below 1 afmt is `better`."""
+    """`ratio` is apfmt / rustfmt (time or memory); below 1 apfmt is `better`."""
     if ratio <= 1:
         return Text(f"{ratio:.2f}× ({1 / ratio:.2f}× {better})", style="green")
     return Text(f"{ratio:.2f}× ({ratio:.2f}× {worse})", style="red")
@@ -868,7 +872,7 @@ def write_bench_results(
     total_peak_rss: dict[str, int | None],
 ) -> None:
     commands = bench_commands(args)
-    tools = {"afmt": {"command": commands["afmt"]}}
+    tools = {"apfmt": {"command": commands["apfmt"]}}
     if "rustfmt" in commands:
         tools["rustfmt"] = {
             "command": commands["rustfmt"],
@@ -1033,24 +1037,24 @@ def cmd_bench(args, sources: list[Path]) -> None:
 
     size = sum(f.bytes for f in files)
     lines = sum(f.lines for f in files)
-    afmt_mean = total_stats["afmt"].mean
+    apfmt_mean = total_stats["apfmt"].mean
     console.print(
-        f"[bold]afmt throughput:[/bold] {lines / afmt_mean:,.0f} lines/s, "
-        f"{size / afmt_mean / 1024:,.0f} KiB/s ({lines} lines, {size / 1024:.1f} KiB per run)",
+        f"[bold]apfmt throughput:[/bold] {lines / apfmt_mean:,.0f} lines/s, "
+        f"{size / apfmt_mean / 1024:,.0f} KiB/s ({lines} lines, {size / 1024:.1f} KiB per run)",
         highlight=False,
     )
 
     if "rustfmt" in commands:
         table = Table(
-            title="afmt / rustfmt (mean wall time, peak memory)",
+            title="apfmt / rustfmt (mean wall time, peak memory)",
             title_justify="left",
             title_style="bold",
         )
         table.add_column("test")
-        table.add_column("afmt", justify="right")
+        table.add_column("apfmt", justify="right")
         table.add_column("rustfmt", justify="right")
         table.add_column("ratio")
-        table.add_column("afmt mem", justify="right")
+        table.add_column("apfmt mem", justify="right")
         table.add_column("rustfmt mem", justify="right")
         table.add_column("mem ratio")
         time_ratios: list[float] = []
@@ -1059,18 +1063,18 @@ def cmd_bench(args, sources: list[Path]) -> None:
         def add_row(
             name: str, stats: dict[str, Stats], peak_rss: dict[str, int | None]
         ) -> None:
-            time_ratio = stats["afmt"].mean / stats["rustfmt"].mean
+            time_ratio = stats["apfmt"].mean / stats["rustfmt"].mean
             memory_ratio = None
-            if peak_rss["afmt"] is not None and peak_rss["rustfmt"] is not None:
-                memory_ratio = peak_rss["afmt"] / peak_rss["rustfmt"]
+            if peak_rss["apfmt"] is not None and peak_rss["rustfmt"] is not None:
+                memory_ratio = peak_rss["apfmt"] / peak_rss["rustfmt"]
                 memory_ratios.append(memory_ratio)
             time_ratios.append(time_ratio)
             table.add_row(
                 name,
-                format_seconds(stats["afmt"].mean),
+                format_seconds(stats["apfmt"].mean),
                 format_seconds(stats["rustfmt"].mean),
                 format_ratio(time_ratio),
-                format_bytes(peak_rss["afmt"]),
+                format_bytes(peak_rss["apfmt"]),
                 format_bytes(peak_rss["rustfmt"]),
                 format_memory_ratio(memory_ratio),
             )
@@ -1105,19 +1109,19 @@ def main() -> None:
         "--list", action="store_true", help="list selected tests and exit"
     )
     common.add_argument(
-        "--afmt", type=Path, help=f"afmt binary (default: {DEFAULT_AFMT})"
+        "--apfmt", type=Path, help=f"apfmt binary (default: {DEFAULT_APFMT})"
     )
     common.add_argument("--rustfmt", default="rustfmt", help="rustfmt binary")
     common.add_argument(
         "--edition",
         default="2024",
-        help="edition passed to rustfmt and afmt (unless the config file of a test sets it)",
+        help="edition passed to rustfmt and apfmt (unless the config file of a test sets it)",
     )
     common.add_argument(
         "--no-build", action="store_true", help="do not run cargo build"
     )
     common.add_argument(
-        "--release", action="store_true", help="build and use release afmt"
+        "--release", action="store_true", help="build and use release apfmt"
     )
     common.add_argument(
         "--timeout", type=float, default=10.0, help="per-command timeout (s)"
@@ -1127,20 +1131,20 @@ def main() -> None:
         "the given substring or matches the given glob"
     )
 
-    parser = argparse.ArgumentParser(description="afmt test harness")
+    parser = argparse.ArgumentParser(description="apfmt test harness")
     commands = parser.add_subparsers(dest="command", required=True)
 
     test = commands.add_parser(
         "test",
         parents=[common],
-        help="compare afmt with the reference and check idempotency",
+        help="compare apfmt with the reference and check idempotency",
     )
     test.add_argument("filters", nargs="*", help=f"run only {filters_help}")
     test.add_argument(
         "-v",
         "--verbose",
         action="store_true",
-        help="for failed tests print input, afmt output and reference output before the diff",
+        help="for failed tests print input, apfmt output and reference output before the diff",
     )
     test.add_argument("-j", "--jobs", type=int, default=None, help="parallel jobs")
     test.add_argument(
@@ -1148,7 +1152,7 @@ def main() -> None:
     )
 
     compare = commands.add_parser(
-        "compare", parents=[common], help="side-by-side afmt vs rustfmt output"
+        "compare", parents=[common], help="side-by-side apfmt vs rustfmt output"
     )
     compare.add_argument("filters", nargs="+", help=filters_help)
     compare.add_argument(
@@ -1168,7 +1172,7 @@ def main() -> None:
     bench = commands.add_parser(
         "bench",
         parents=[common],
-        help="measure the speed of release afmt (and rustfmt)",
+        help="measure the speed of release apfmt (and rustfmt)",
     )
     bench.add_argument(
         "filters",
@@ -1194,7 +1198,7 @@ def main() -> None:
     bench.add_argument(
         "--result-check",
         action="store_true",
-        help="run afmt with --result-check (slower)",
+        help="run apfmt with --result-check (slower)",
     )
     bench.add_argument(
         "-o", "--output", type=Path, help="store the results as JSON into this file"
@@ -1220,7 +1224,7 @@ def main() -> None:
         sys.exit(1)
 
     prepare_tools(args, need_rustfmt=args.command != "bench" or args.compare)
-    with tempfile.TemporaryDirectory(prefix="afmt-tests-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="apfmt-tests-") as tmp:
         # the config of tests without their own config file (`config_args`)
         args.empty_config = Path(tmp) / "rustfmt.toml"
         args.empty_config.write_text("")

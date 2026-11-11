@@ -1,2 +1,2 @@
-# rustfmt requires a string (`"2021"`); afmt also accepts an integer
+# rustfmt requires a string (`"2021"`); apfmt also accepts an integer
 edition = 2021

@@ -1,4 +1,4 @@
-// Transcribers with a repetition, which neither rustfmt nor afmt parses, are copied
+// Transcribers with a repetition, which neither rustfmt nor apfmt parses, are copied
 macro_rules! define_wrapped_type {
     ($name: ident, $type: ty $(, $visibility: vis)?) => {
         #[derive(::std::clone::Clone)]
