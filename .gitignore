@@ -1,3 +1,7 @@
 __pycache__
 .idea
 target
+.*
+docs2
+CLAUDE.md
+TODO
