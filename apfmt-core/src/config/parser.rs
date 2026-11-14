@@ -299,11 +299,7 @@ mod tests {
 
     #[test]
     fn unknown_option_is_an_error() {
-        for toml in [
-            "max_widht = 80",
-            "hard_tabs = true",
-            "dump_parse_tree = true",
-        ] {
+        for toml in ["max_w = 80", "hard_tabs = true", "dump_parse_tree = true"] {
             let config = TomlConfig::parse(toml).unwrap();
             let Err(GenericError(message)) = config.check_unknown() else {
                 panic!("`{toml}` is accepted");

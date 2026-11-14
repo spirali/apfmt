@@ -1021,6 +1021,7 @@ def main():
     with args.input.open("rb") as file:
         data = tomllib.load(file)
     output = args.output or args.input.with_suffix(".html")
+    output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(render_page(data, args.title), encoding="utf-8", newline="")
     print(
         f"{output}: {output.stat().st_size / 1_000_000:.1f} MB, {len(data['item'])} differences"
