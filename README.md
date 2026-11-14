@@ -11,6 +11,8 @@ An experimental Rust code formatter. Layouts are chosen by a printer based on th
   - If the `apfmt` output is worse, it is a bug.
 * `apfmt` loads and tries to respect the configuration in `rustfmt.toml`. If `apfmt.toml` exists in a directory, it is loaded and the `rustfmt.toml` in that directory is ignored.
 
+[Differences between apfmt and rustfmt](https://spirali.github.io/apfmt/)
+
 
 ## Usage
 

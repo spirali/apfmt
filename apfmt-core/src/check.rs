@@ -157,7 +157,8 @@ fn push_steps(
             | WalkEvent::Leave(NodeOrToken::Node(node))
                 if transparent.contains(&node) => {}
             WalkEvent::Enter(NodeOrToken::Token(token))
-                if token.parent().is_some_and(|p| transparent.contains(&p)) => {}
+                if token.parent().is_some_and(|p| transparent.contains(&p))
+                    && !is_comment_kind(token.kind()) => {}
             WalkEvent::Enter(NodeOrToken::Node(node)) if node.kind() == SyntaxKind::USE => {
                 let canonical = canonical_use(&Use::cast(node.clone()).unwrap());
                 out.push((
@@ -485,9 +486,9 @@ mod tests {
     }
 
     #[test]
-    fn removed_where_before_comment_fails() {
-        let result = check_result_test("fn f() where /* c */ {}", "fn f() /* c */ {}");
-        assert!(result.is_err());
+    fn removed_where_keeps_comment() {
+        assert!(check_result_test("fn f() where /* c */ {}", "fn f() /* c */ {}").is_ok());
+        assert!(check_result_test("fn f() where /* c */ {}", "fn f() {}").is_err());
     }
 
     #[test]

@@ -59,16 +59,12 @@ where
     T: Clone,
 {}
 
-// A comment keeps it
-fn comment_inline()
-where
-    /* c */ {}
-fn comment_line()
-where // d
+// A comment stays, `where` goes
+fn comment_inline() /* c */ {}
+fn comment_line() // d
 {}
 fn comment_own_line()
-where
-    // e
+// e
 {}
 
 // A comment in front of it stays

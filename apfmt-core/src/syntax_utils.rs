@@ -2,7 +2,7 @@
 
 use rustc_hash::FxHashMap;
 
-use crate::comments::{comment_follows, is_code_kind, line_indentation};
+use crate::comments::{is_code_kind, line_indentation};
 use ra_ap_syntax::ast::{self, HasAttrs, HasModuleItem};
 use ra_ap_syntax::{
     AstNode, Edition, NodeOrToken, SourceFile, SyntaxKind, SyntaxNode, SyntaxToken, T, TextSize,
@@ -77,10 +77,7 @@ pub(crate) fn is_stray_semicolon(token: &SyntaxToken) -> bool {
 /// A `where` without predicates, not followed by a comment, removed by `rewrite/empty_where.rs`
 pub(crate) fn is_empty_where_clause(node: &SyntaxNode) -> bool {
     ast::WhereClause::cast(node.clone()).is_some_and(|clause| {
-        clause.predicates().next().is_none()
-            && clause
-                .where_token()
-                .is_some_and(|token| !comment_follows(&token))
+        clause.predicates().next().is_none() && clause.where_token().is_some()
     })
 }
 

@@ -7430,12 +7430,12 @@ where
 
 [[item]]
 id = 'empty-where-removed'
-name = 'An empty `where` is removed everywhere'
-summary = 'apfmt removes a `where` without predicates from every item; rustfmt keeps it in some places.'
+name = 'An empty `where` is removed'
+summary = 'apfmt removes a `where` without predicates, keeping its comments; rustfmt keeps it in some places.'
 description = '''
 apfmt removes a `where` without predicates from every item, as rustfmt does, except that rustfmt keeps it after a return type and writes `where {` at column 0 when the source has `where {` on its own line in an indented item. Both are open issues in rustfmt ([#5407](https://github.com/rust-lang/rustfmt/issues/5407), [#6385](https://github.com/rust-lang/rustfmt/issues/6385)).
 
-A comment right after `where` keeps it: rustfmt writes `fn f() where /* c */ {}`, and apfmt lays it out like any `where`. With a comment in front of `where`, apfmt keeps the comment and removes `where`, while rustfmt keeps `where`. Code under `#[rustfmt::skip]` and macro arguments are not changed.
+With a comment right after or in front of `where`, apfmt keeps the comment and removes `where`, while rustfmt keeps `where` (`fn f() where /* c */ {}`). Code under `#[rustfmt::skip]` and macro arguments are not changed.
 '''
 rationale = 'A `where` without predicates has no effect, and open issues in rustfmt propose removing it there too.'
 level = "low"
@@ -7523,9 +7523,7 @@ show_input = false
 [[item.samples.outputs]]
 versions = ['apfmt-c9342b5']
 output = '''
-fn f()
-where
-    /* c */ {}
+fn f() /* c */ {}
 '''
 
 [[item.samples.outputs]]

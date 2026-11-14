@@ -42,7 +42,7 @@ impl M {
 // With predicates, it stays
 fn with_predicate<T>(a: T) where T: Clone {}
 
-// A comment keeps it
+// A comment stays, `where` goes
 fn comment_inline() where /* c */ {}
 fn comment_line() where // d
 {}
